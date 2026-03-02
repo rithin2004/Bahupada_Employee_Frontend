@@ -47,6 +47,10 @@ export function RacksAdminEditor() {
   const [totalCount, setTotalCount] = useState(0);
   const [creating, setCreating] = useState(false);
   const [openAddDialog, setOpenAddDialog] = useState(false);
+  const [openWarehouseDialog, setOpenWarehouseDialog] = useState(false);
+  const [creatingWarehouseInline, setCreatingWarehouseInline] = useState(false);
+  const [newWarehouseCode, setNewWarehouseCode] = useState("");
+  const [newWarehouseName, setNewWarehouseName] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -59,22 +63,23 @@ export function RacksAdminEditor() {
   const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
-  useEffect(() => {
-    async function loadWarehouses() {
-      try {
-        const res = asObject(await fetchBackend("/masters/warehouses?page=1&page_size=100"));
-        setWarehouses(
-          asArray(res.items)
-            .map((row) => ({
-              id: String(row.id ?? ""),
-              label: `${String(row.name ?? "Warehouse")} (${String(row.code ?? "-")})`,
-            }))
-            .filter((row) => row.id)
-        );
-      } catch {
-        setWarehouses([]);
-      }
+  async function loadWarehouses() {
+    try {
+      const res = asObject(await fetchBackend("/masters/warehouses?page=1&page_size=100"));
+      setWarehouses(
+        asArray(res.items)
+          .map((row) => ({
+            id: String(row.id ?? ""),
+            label: `${String(row.name ?? "Warehouse")} (${String(row.code ?? "-")})`,
+          }))
+          .filter((row) => row.id)
+      );
+    } catch {
+      setWarehouses([]);
     }
+  }
+
+  useEffect(() => {
     void loadWarehouses();
   }, []);
 
@@ -138,6 +143,33 @@ export function RacksAdminEditor() {
       toast.error(message, { duration: 5000 });
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function createInlineWarehouse() {
+    if (!newWarehouseCode.trim() || !newWarehouseName.trim()) {
+      toast.error("Warehouse code and name are required.", { duration: 4000 });
+      return;
+    }
+
+    setCreatingWarehouseInline(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/warehouses", {
+          code: newWarehouseCode.trim(),
+          name: newWarehouseName.trim(),
+        })
+      );
+      await loadWarehouses();
+      setForm((prev) => ({ ...prev, warehouse_id: String(created.id ?? "") }));
+      setOpenWarehouseDialog(false);
+      setNewWarehouseCode("");
+      setNewWarehouseName("");
+      toast.success(`Warehouse added: ${String(created.name ?? newWarehouseName.trim())}`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Warehouse create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingWarehouseInline(false);
     }
   }
 
@@ -218,13 +250,48 @@ export function RacksAdminEditor() {
               <DialogTrigger asChild>
                 <Button>Add Rack</Button>
               </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Add Rack</DialogTitle>
-                </DialogHeader>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Add Rack</DialogTitle>
+                  </DialogHeader>
                 <div className="grid gap-3">
                   <div className="space-y-1">
-                    <Label>Warehouse *</Label>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label>Warehouse *</Label>
+                      <Dialog open={openWarehouseDialog} onOpenChange={setOpenWarehouseDialog}>
+                        <DialogTrigger asChild>
+                          <Button size="sm" type="button" variant="outline">+ Add Warehouse</Button>
+                        </DialogTrigger>
+                        <DialogContent className="w-[92vw] max-w-[520px]">
+                          <DialogHeader>
+                            <DialogTitle>Add Warehouse</DialogTitle>
+                            <DialogDescription>Create a warehouse without leaving rack creation.</DialogDescription>
+                          </DialogHeader>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label>Code *</Label>
+                              <Input value={newWarehouseCode} onChange={(e) => setNewWarehouseCode(e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Name *</Label>
+                              <Input value={newWarehouseName} onChange={(e) => setNewWarehouseName(e.target.value)} />
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setOpenWarehouseDialog(false)}>
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={createInlineWarehouse}
+                              disabled={creatingWarehouseInline || !newWarehouseCode.trim() || !newWarehouseName.trim()}
+                            >
+                              {creatingWarehouseInline ? "Adding..." : "Add Warehouse"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    </div>
                     <select
                       className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
                       value={form.warehouse_id}

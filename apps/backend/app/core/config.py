@@ -35,9 +35,7 @@ class Settings(BaseSettings):
 
     gzip_enabled: bool = True
     gzip_minimum_size_bytes: int = 1024
-    cors_allow_origins: str = (
-        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001"
-    )
+    cors_allow_origins: str = "*"
 
     pagination_default_page_size: int = 50
     pagination_max_page_size: int = 100
