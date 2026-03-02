@@ -114,6 +114,14 @@ export function EmployeesAdminEditor() {
   const [search, setSearch] = useState("");
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
+  const [openWarehouseDialog, setOpenWarehouseDialog] = useState(false);
+  const [openRoleDialog, setOpenRoleDialog] = useState(false);
+  const [creatingWarehouseInline, setCreatingWarehouseInline] = useState(false);
+  const [creatingRoleInline, setCreatingRoleInline] = useState(false);
+  const [newWarehouseCode, setNewWarehouseCode] = useState("");
+  const [newWarehouseName, setNewWarehouseName] = useState("");
+  const [newRoleName, setNewRoleName] = useState("");
+  const [newRoleDescription, setNewRoleDescription] = useState("");
   const [totalPages, setTotalPages] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -294,6 +302,58 @@ export function EmployeesAdminEditor() {
     }
   }
 
+  async function createInlineWarehouse() {
+    if (!newWarehouseCode.trim() || !newWarehouseName.trim()) {
+      return;
+    }
+    setCreatingWarehouseInline(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/warehouses", {
+          code: newWarehouseCode.trim(),
+          name: newWarehouseName.trim(),
+        })
+      );
+      await loadReferenceData();
+      setCreateForm((prev) => ({ ...prev, warehouse_id: String(created.id ?? "") }));
+      setNewWarehouseCode("");
+      setNewWarehouseName("");
+      setOpenWarehouseDialog(false);
+      toast.success(`Added warehouse ${String(created.name ?? newWarehouseName.trim())}.`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Warehouse create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingWarehouseInline(false);
+    }
+  }
+
+  async function createInlineRole() {
+    if (!newRoleName.trim()) {
+      return;
+    }
+    setCreatingRoleInline(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/roles", {
+          role_name: newRoleName.trim(),
+          portal_scope: "EMPLOYEE",
+          description: newRoleDescription.trim() || null,
+          is_active: true,
+        })
+      );
+      await loadReferenceData();
+      setCreateForm((prev) => ({ ...prev, role_id: String(created.id ?? "") }));
+      setNewRoleName("");
+      setNewRoleDescription("");
+      setOpenRoleDialog(false);
+      toast.success(`Added sub role ${String(created.role_name ?? newRoleName.trim())}.`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Sub role create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingRoleInline(false);
+    }
+  }
+
   async function deleteSelected() {
     if (!selectedIds.length || loading) {
       return;
@@ -424,7 +484,35 @@ export function EmployeesAdminEditor() {
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Sub Role (Optional)</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Sub Role (Optional)</Label>
+                    <Dialog open={openRoleDialog} onOpenChange={setOpenRoleDialog}>
+                      <DialogTrigger asChild>
+                        <Button type="button" variant="outline" size="sm">
+                          + Add Sub Role
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Add Sub Role</DialogTitle>
+                          <DialogDescription>Create an employee role option and return to the employee form.</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <Label>Role Name *</Label>
+                            <Input value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Description</Label>
+                            <Input value={newRoleDescription} onChange={(e) => setNewRoleDescription(e.target.value)} />
+                          </div>
+                          <Button onClick={createInlineRole} disabled={creatingRoleInline || !newRoleName.trim()}>
+                            {creatingRoleInline ? "Adding..." : "Add Sub Role"}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
                   <select
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                     value={createForm.role_id}
@@ -439,7 +527,38 @@ export function EmployeesAdminEditor() {
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Warehouse *</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Warehouse *</Label>
+                    <Dialog open={openWarehouseDialog} onOpenChange={setOpenWarehouseDialog}>
+                      <DialogTrigger asChild>
+                        <Button type="button" variant="outline" size="sm">
+                          + Add Warehouse
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Add Warehouse</DialogTitle>
+                          <DialogDescription>Create a warehouse and return to the employee form.</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <Label>Code *</Label>
+                            <Input value={newWarehouseCode} onChange={(e) => setNewWarehouseCode(e.target.value)} />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Name *</Label>
+                            <Input value={newWarehouseName} onChange={(e) => setNewWarehouseName(e.target.value)} />
+                          </div>
+                          <Button
+                            onClick={createInlineWarehouse}
+                            disabled={creatingWarehouseInline || !newWarehouseCode.trim() || !newWarehouseName.trim()}
+                          >
+                            {creatingWarehouseInline ? "Adding..." : "Add Warehouse"}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
                   <select
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                     value={createForm.warehouse_id}

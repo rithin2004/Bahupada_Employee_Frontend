@@ -125,6 +125,9 @@ export function ProcurementCreateFlow() {
   const [billPage, setBillPage] = useState(1);
   const [showNewChallan, setShowNewChallan] = useState(false);
   const [showNewBill, setShowNewBill] = useState(false);
+  const [showVendorCreate, setShowVendorCreate] = useState(false);
+  const [showWarehouseCreate, setShowWarehouseCreate] = useState(false);
+  const [showRackCreate, setShowRackCreate] = useState(false);
   const [previewChallan, setPreviewChallan] = useState<ChallanForBill | null>(null);
   const [selectedChallanId, setSelectedChallanId] = useState("");
   const [billNumber, setBillNumber] = useState(createBillNo);
@@ -134,6 +137,14 @@ export function ProcurementCreateFlow() {
   const [feedback, setFeedback] = useState("");
   const [submittingChallan, setSubmittingChallan] = useState(false);
   const [submittingBill, setSubmittingBill] = useState(false);
+  const [creatingVendor, setCreatingVendor] = useState(false);
+  const [creatingWarehouse, setCreatingWarehouse] = useState(false);
+  const [creatingRack, setCreatingRack] = useState(false);
+  const [newVendorName, setNewVendorName] = useState("");
+  const [newWarehouseCode, setNewWarehouseCode] = useState("");
+  const [newWarehouseName, setNewWarehouseName] = useState("");
+  const [newRackType, setNewRackType] = useState("");
+  const [newRackRows, setNewRackRows] = useState("1");
 
   async function loadMasters() {
     try {
@@ -161,6 +172,33 @@ export function ProcurementCreateFlow() {
       const message = `Load failed: ${error instanceof Error ? error.message : "Unknown error"}`;
       setFeedback(message);
       toast.error(message, { duration: 5000 });
+    }
+  }
+
+  async function loadRacksForWarehouse(currentWarehouseId: string, currentRackId = "") {
+    if (!currentWarehouseId) {
+      setRacks([]);
+      setRackId("");
+      return;
+    }
+    try {
+      const params = new URLSearchParams();
+      params.set("page", "1");
+      params.set("page_size", "100");
+      params.set("warehouse_id", currentWarehouseId);
+      const res = asObject(await fetchBackend(`/masters/racks?${params.toString()}`));
+      const rows = asArray(res.items)
+        .map((row) => ({
+          id: String(row.id ?? ""),
+          label: String(row.rack_type ?? `Rack ${String(row.id ?? "").slice(0, 6)}`),
+        }))
+        .filter((row) => row.id);
+      setRacks(rows);
+      if (!rows.some((rack) => rack.id === currentRackId)) {
+        setRackId("");
+      }
+    } catch {
+      setRacks([]);
     }
   }
 
@@ -225,34 +263,84 @@ export function ProcurementCreateFlow() {
   }, []);
 
   useEffect(() => {
-    async function loadRacks() {
-      if (!warehouseId) {
-        setRacks([]);
-        setRackId("");
-        return;
-      }
-      try {
-        const params = new URLSearchParams();
-        params.set("page", "1");
-        params.set("page_size", "100");
-        params.set("warehouse_id", warehouseId);
-        const res = asObject(await fetchBackend(`/masters/racks?${params.toString()}`));
-        const rows = asArray(res.items)
-          .map((row) => ({
-            id: String(row.id ?? ""),
-            label: String(row.rack_type ?? `Rack ${String(row.id ?? "").slice(0, 6)}`),
-          }))
-          .filter((row) => row.id);
-        setRacks(rows);
-        if (!rows.some((rack) => rack.id === rackId)) {
-          setRackId("");
-        }
-      } catch {
-        setRacks([]);
-      }
-    }
-    void loadRacks();
+    void loadRacksForWarehouse(warehouseId, rackId);
   }, [warehouseId, rackId]);
+
+  async function createInlineVendor() {
+    if (!newVendorName.trim()) {
+      return;
+    }
+    setCreatingVendor(true);
+    try {
+      const created = asObject(await postBackend("/masters/vendors", { name: newVendorName.trim() }));
+      await loadMasters();
+      setVendorId(String(created.id ?? ""));
+      setNewVendorName("");
+      setShowVendorCreate(false);
+      toast.success(`Added vendor ${String(created.name ?? newVendorName.trim())}.`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Vendor create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingVendor(false);
+    }
+  }
+
+  async function createInlineWarehouse() {
+    if (!newWarehouseCode.trim() || !newWarehouseName.trim()) {
+      return;
+    }
+    setCreatingWarehouse(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/warehouses", {
+          code: newWarehouseCode.trim(),
+          name: newWarehouseName.trim(),
+        })
+      );
+      await loadMasters();
+      const createdId = String(created.id ?? "");
+      setWarehouseId(createdId);
+      setNewWarehouseCode("");
+      setNewWarehouseName("");
+      setShowWarehouseCreate(false);
+      toast.success(`Added warehouse ${String(created.name ?? newWarehouseName.trim())}.`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Warehouse create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingWarehouse(false);
+    }
+  }
+
+  async function createInlineRack() {
+    if (!warehouseId) {
+      return;
+    }
+    const numberOfRows = Number(newRackRows);
+    if (!Number.isInteger(numberOfRows) || numberOfRows < 1) {
+      toast.error("Number of rows must be at least 1.", { duration: 5000 });
+      return;
+    }
+    setCreatingRack(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/racks", {
+          warehouse_id: warehouseId,
+          rack_type: newRackType.trim() || null,
+          number_of_rows: numberOfRows,
+        })
+      );
+      await loadRacksForWarehouse(warehouseId, String(created.id ?? ""));
+      setRackId(String(created.id ?? ""));
+      setNewRackType("");
+      setNewRackRows("1");
+      setShowRackCreate(false);
+      toast.success("Added rack.", { duration: 4000 });
+    } catch (error) {
+      toast.error(`Rack create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingRack(false);
+    }
+  }
 
   useEffect(() => {
     async function searchProducts() {
@@ -527,7 +615,30 @@ export function ProcurementCreateFlow() {
                     <div className="space-y-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-1">
-                          <Label>Vendor *</Label>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label>Vendor *</Label>
+                            <Dialog open={showVendorCreate} onOpenChange={setShowVendorCreate}>
+                              <DialogTrigger asChild>
+                                <Button type="button" variant="outline" size="sm">
+                                  + Add Vendor
+                                </Button>
+                              </DialogTrigger>
+                              <DialogContent className="sm:max-w-md">
+                                <DialogHeader>
+                                  <DialogTitle>Add Vendor</DialogTitle>
+                                </DialogHeader>
+                                <div className="space-y-3">
+                                  <div className="space-y-1">
+                                    <Label>Name *</Label>
+                                    <Input value={newVendorName} onChange={(e) => setNewVendorName(e.target.value)} />
+                                  </div>
+                                  <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorName.trim()}>
+                                    {creatingVendor ? "Adding..." : "Add Vendor"}
+                                  </Button>
+                                </div>
+                              </DialogContent>
+                            </Dialog>
+                          </div>
                           <select
                             className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
                             value={vendorId}
@@ -542,7 +653,37 @@ export function ProcurementCreateFlow() {
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <Label>Warehouse *</Label>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label>Warehouse *</Label>
+                            <Dialog open={showWarehouseCreate} onOpenChange={setShowWarehouseCreate}>
+                              <DialogTrigger asChild>
+                                <Button type="button" variant="outline" size="sm">
+                                  + Add Warehouse
+                                </Button>
+                              </DialogTrigger>
+                              <DialogContent className="sm:max-w-md">
+                                <DialogHeader>
+                                  <DialogTitle>Add Warehouse</DialogTitle>
+                                </DialogHeader>
+                                <div className="space-y-3">
+                                  <div className="space-y-1">
+                                    <Label>Code *</Label>
+                                    <Input value={newWarehouseCode} onChange={(e) => setNewWarehouseCode(e.target.value)} />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label>Name *</Label>
+                                    <Input value={newWarehouseName} onChange={(e) => setNewWarehouseName(e.target.value)} />
+                                  </div>
+                                  <Button
+                                    onClick={createInlineWarehouse}
+                                    disabled={creatingWarehouse || !newWarehouseCode.trim() || !newWarehouseName.trim()}
+                                  >
+                                    {creatingWarehouse ? "Adding..." : "Add Warehouse"}
+                                  </Button>
+                                </div>
+                              </DialogContent>
+                            </Dialog>
+                          </div>
                           <select
                             className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
                             value={warehouseId}
@@ -557,7 +698,40 @@ export function ProcurementCreateFlow() {
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <Label>Rack (Optional)</Label>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label>Rack (Optional)</Label>
+                            <Dialog open={showRackCreate} onOpenChange={setShowRackCreate}>
+                              <DialogTrigger asChild>
+                                <Button type="button" variant="outline" size="sm" disabled={!warehouseId}>
+                                  + Add Rack
+                                </Button>
+                              </DialogTrigger>
+                              <DialogContent className="sm:max-w-md">
+                                <DialogHeader>
+                                  <DialogTitle>Add Rack</DialogTitle>
+                                </DialogHeader>
+                                <div className="space-y-3">
+                                  {!warehouseId ? (
+                                    <p className="text-sm text-muted-foreground">Select a warehouse first.</p>
+                                  ) : (
+                                    <>
+                                      <div className="space-y-1">
+                                        <Label>Rack Type</Label>
+                                        <Input value={newRackType} onChange={(e) => setNewRackType(e.target.value)} />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label>Number of Rows *</Label>
+                                        <Input value={newRackRows} onChange={(e) => setNewRackRows(e.target.value)} />
+                                      </div>
+                                      <Button onClick={createInlineRack} disabled={creatingRack}>
+                                        {creatingRack ? "Adding..." : "Add Rack"}
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </DialogContent>
+                            </Dialog>
+                          </div>
                           <select
                             className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
                             value={rackId}

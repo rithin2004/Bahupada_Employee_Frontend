@@ -49,6 +49,7 @@ from app.schemas.masters import (
     ProductUpdate,
     RackCreate,
     RackUpdate,
+    RoleCreate,
     RouteCreate,
     VehicleCreate,
     VendorCreate,
@@ -436,6 +437,15 @@ async def list_customers(
 @router.post("/customer-categories")
 async def create_customer_category(payload: CustomerCategoryCreate, db: AsyncSession = Depends(get_db)):
     obj = CustomerCategory(**payload.model_dump())
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.post("/roles")
+async def create_role(payload: RoleCreate, db: AsyncSession = Depends(get_db)):
+    obj = Role(**payload.model_dump())
     db.add(obj)
     await db.commit()
     await db.refresh(obj)

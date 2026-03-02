@@ -128,6 +128,14 @@ export function ProductsAdminEditor() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
   const [hsnOptions, setHsnOptions] = useState<HSNOption[]>([]);
+  const [openUnitDialog, setOpenUnitDialog] = useState(false);
+  const [openHsnDialog, setOpenHsnDialog] = useState(false);
+  const [creatingUnit, setCreatingUnit] = useState(false);
+  const [creatingHsn, setCreatingHsn] = useState(false);
+  const [newUnitName, setNewUnitName] = useState("");
+  const [newHsnCode, setNewHsnCode] = useState("");
+  const [newHsnDescription, setNewHsnDescription] = useState("");
+  const [newHsnGstPercent, setNewHsnGstPercent] = useState("0");
 
   const selected = useMemo(() => products.find((row) => row.id === openId) ?? null, [openId, products]);
 
@@ -165,31 +173,32 @@ export function ProductsAdminEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, search, pageSize]);
 
-  useEffect(() => {
-    async function loadReferences() {
-      try {
-        const [unitsRes, hsnRes] = await Promise.all([
-          fetchBackend("/masters/units?page=1&page_size=100"),
-          fetchBackend("/masters/hsn?page=1&page_size=100"),
-        ]);
-        setUnits(
-          asArray(asObject(unitsRes).items).map((item) => ({
-            id: String(item.id ?? ""),
-            unit_name: String(item.unit_name ?? ""),
-          }))
-        );
-        setHsnOptions(
-          asArray(asObject(hsnRes).items).map((item) => ({
-            id: String(item.id ?? ""),
-            hsn_code: String(item.hsn_code ?? ""),
-            gst_percent: String(item.gst_percent ?? "0"),
-          }))
-        );
-      } catch {
-        setUnits([]);
-        setHsnOptions([]);
-      }
+  async function loadReferences() {
+    try {
+      const [unitsRes, hsnRes] = await Promise.all([
+        fetchBackend("/masters/units?page=1&page_size=100"),
+        fetchBackend("/masters/hsn?page=1&page_size=100"),
+      ]);
+      setUnits(
+        asArray(asObject(unitsRes).items).map((item) => ({
+          id: String(item.id ?? ""),
+          unit_name: String(item.unit_name ?? ""),
+        }))
+      );
+      setHsnOptions(
+        asArray(asObject(hsnRes).items).map((item) => ({
+          id: String(item.id ?? ""),
+          hsn_code: String(item.hsn_code ?? ""),
+          gst_percent: String(item.gst_percent ?? "0"),
+        }))
+      );
+    } catch {
+      setUnits([]);
+      setHsnOptions([]);
     }
+  }
+
+  useEffect(() => {
     void loadReferences();
   }, []);
 
@@ -289,6 +298,67 @@ export function ProductsAdminEditor() {
       toast.error(message, { duration: 5000 });
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function createInlineUnit() {
+    if (!newUnitName.trim()) {
+      return;
+    }
+    setCreatingUnit(true);
+    try {
+      const created = asObject(await postBackend("/masters/units", { unit_name: newUnitName.trim() }));
+      const unitName = String(created.unit_name ?? newUnitName.trim());
+      await loadReferences();
+      setCreateForm((prev) => ({
+        ...prev,
+        unit: unitName,
+        primary_unit_id: prev.primary_unit_id || String(created.id ?? ""),
+      }));
+      setNewUnitName("");
+      setOpenUnitDialog(false);
+      toast.success(`Added unit ${unitName}.`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Unit create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingUnit(false);
+    }
+  }
+
+  async function createInlineHsn() {
+    if (!newHsnCode.trim()) {
+      return;
+    }
+    const gstPercent = Number(newHsnGstPercent);
+    if (!Number.isFinite(gstPercent)) {
+      toast.error("GST percent must be numeric.", { duration: 5000 });
+      return;
+    }
+    setCreatingHsn(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/hsn", {
+          hsn_code: newHsnCode.trim(),
+          description: newHsnDescription.trim() || null,
+          gst_percent: gstPercent,
+          is_active: true,
+        })
+      );
+      await loadReferences();
+      setCreateForm((prev) => ({
+        ...prev,
+        hsn_id: String(created.id ?? ""),
+        tax_percent: String(created.gst_percent ?? gstPercent),
+      }));
+      setNewHsnCode("");
+      setNewHsnDescription("");
+      setNewHsnGstPercent("0");
+      setOpenHsnDialog(false);
+      toast.success(`Added HSN ${String(created.hsn_code ?? newHsnCode.trim())}.`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`HSN create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingHsn(false);
     }
   }
 
@@ -446,11 +516,78 @@ export function ProductsAdminEditor() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Unit *</Label>
-                  <Input value={createForm.unit} onChange={(e) => setCreateForm((prev) => ({ ...prev, unit: e.target.value }))} />
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Unit *</Label>
+                    <Dialog open={openUnitDialog} onOpenChange={setOpenUnitDialog}>
+                      <DialogTrigger asChild>
+                        <Button type="button" variant="outline" size="sm">
+                          + Add Unit
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Add Unit</DialogTitle>
+                          <DialogDescription>Create the unit and return to the product form.</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <Label>Unit Name *</Label>
+                            <Input value={newUnitName} onChange={(e) => setNewUnitName(e.target.value)} />
+                          </div>
+                          <Button onClick={createInlineUnit} disabled={creatingUnit || !newUnitName.trim()}>
+                            {creatingUnit ? "Adding..." : "Add Unit"}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                  <select
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    value={createForm.unit}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, unit: e.target.value }))}
+                  >
+                    <option value="">{units.length ? "Select unit" : "No units found"}</option>
+                    {units.map((unit) => (
+                      <option key={unit.id} value={unit.unit_name}>
+                        {unit.unit_name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="space-y-1">
-                  <Label>HSN</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>HSN</Label>
+                    <Dialog open={openHsnDialog} onOpenChange={setOpenHsnDialog}>
+                      <DialogTrigger asChild>
+                        <Button type="button" variant="outline" size="sm">
+                          + Add HSN
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Add HSN</DialogTitle>
+                          <DialogDescription>Create the HSN and return to the product form.</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <Label>HSN Code *</Label>
+                            <Input value={newHsnCode} onChange={(e) => setNewHsnCode(e.target.value)} />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Description</Label>
+                            <Input value={newHsnDescription} onChange={(e) => setNewHsnDescription(e.target.value)} />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>GST Percent *</Label>
+                            <Input value={newHsnGstPercent} onChange={(e) => setNewHsnGstPercent(e.target.value)} />
+                          </div>
+                          <Button onClick={createInlineHsn} disabled={creatingHsn || !newHsnCode.trim()}>
+                            {creatingHsn ? "Adding..." : "Add HSN"}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
                   <select
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                     value={createForm.hsn_id}

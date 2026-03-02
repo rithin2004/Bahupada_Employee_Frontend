@@ -97,6 +97,12 @@ export function CustomersAdminEditor() {
   const [openAddDialog, setOpenAddDialog] = useState(false);
   const [creating, setCreating] = useState(false);
   const [categories, setCategories] = useState<CustomerCategory[]>([]);
+  const [openCategoryDialog, setOpenCategoryDialog] = useState(false);
+  const [creatingCategoryInline, setCreatingCategoryInline] = useState(false);
+  const [newCategoryCode, setNewCategoryCode] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryType, setNewCategoryType] = useState<CustomerType>("B2B");
+  const [newCategoryPriceClass, setNewCategoryPriceClass] = useState<"A" | "B" | "C">("A");
   const [gstPdfFile, setGstPdfFile] = useState<File | null>(null);
   const [panPdfFile, setPanPdfFile] = useState<File | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -148,6 +154,38 @@ export function CustomersAdminEditor() {
       setCategories(asArray(res.items).map(mapCustomerCategory));
     } catch {
       setCategories([]);
+    }
+  }
+
+  async function createInlineCategory() {
+    if (!newCategoryCode.trim() || !newCategoryName.trim()) {
+      toast.error("Category code and name are required.", { duration: 4000 });
+      return;
+    }
+
+    setCreatingCategoryInline(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/customer-categories", {
+          code: newCategoryCode.trim(),
+          name: newCategoryName.trim(),
+          customer_type: newCategoryType,
+          price_class: newCategoryPriceClass,
+          is_active: true,
+        })
+      );
+      await loadCategories();
+      setForm((prev) => ({ ...prev, customer_category_id: String(created.id ?? "") }));
+      setOpenCategoryDialog(false);
+      setNewCategoryCode("");
+      setNewCategoryName("");
+      setNewCategoryType("B2B");
+      setNewCategoryPriceClass("A");
+      toast.success(`Customer category added: ${String(created.name ?? newCategoryName.trim())}`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingCategoryInline(false);
     }
   }
 
@@ -388,7 +426,69 @@ export function CustomersAdminEditor() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label>Customer Category</Label>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label>Customer Category</Label>
+                      <Dialog open={openCategoryDialog} onOpenChange={setOpenCategoryDialog}>
+                        <DialogTrigger asChild>
+                          <Button size="sm" type="button" variant="outline">+ Add Category</Button>
+                        </DialogTrigger>
+                        <DialogContent className="w-[92vw] max-w-[520px]">
+                          <DialogHeader>
+                            <DialogTitle>Add Customer Category</DialogTitle>
+                            <DialogDescription>Create a category without leaving customer creation.</DialogDescription>
+                          </DialogHeader>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label>Code *</Label>
+                              <Input value={newCategoryCode} onChange={(e) => setNewCategoryCode(e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Name *</Label>
+                              <Input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Customer Type *</Label>
+                              <select
+                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                value={newCategoryType}
+                                onChange={(e) => setNewCategoryType((e.target.value === "B2B" ? "B2B" : "B2C") as CustomerType)}
+                              >
+                                <option value="B2B">B2B</option>
+                                <option value="B2C">B2C</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Price Class *</Label>
+                              <select
+                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                value={newCategoryPriceClass}
+                                onChange={(e) =>
+                                  setNewCategoryPriceClass(
+                                    (e.target.value === "B" ? "B" : e.target.value === "C" ? "C" : "A") as "A" | "B" | "C"
+                                  )
+                                }
+                              >
+                                <option value="A">A</option>
+                                <option value="B">B</option>
+                                <option value="C">C</option>
+                              </select>
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setOpenCategoryDialog(false)}>
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={createInlineCategory}
+                              disabled={creatingCategoryInline || !newCategoryCode.trim() || !newCategoryName.trim()}
+                            >
+                              {creatingCategoryInline ? "Adding..." : "Add Category"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    </div>
                     <select
                       className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
                       value={form.customer_category_id}

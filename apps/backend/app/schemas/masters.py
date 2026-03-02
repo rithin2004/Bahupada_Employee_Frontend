@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.entities import CustomerClass, CustomerType, EmployeeRole, Gender
+from app.models.entities import CustomerClass, CustomerType, EmployeeRole, Gender, PortalScope
 
 
 class StrictModel(BaseModel):
@@ -281,6 +281,13 @@ class CustomerCategoryCreate(StrictModel):
     name: str
     customer_type: CustomerType = CustomerType.B2B
     price_class: str = Field(pattern="^[ABC]$")
+    is_active: bool = True
+
+
+class RoleCreate(StrictModel):
+    role_name: str
+    portal_scope: PortalScope = PortalScope.EMPLOYEE
+    description: str | None = None
     is_active: bool = True
 
 
