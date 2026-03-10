@@ -20,7 +20,7 @@ FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 COPY pyproject.toml .
-RUN uv pip install --system fastapi "uvicorn[standard]" boto3 sqlalchemy asyncpg alembic pydantic pydantic-settings "python-jose[cryptography]" "passlib[argon2]" "passlib[bcrypt]" python-multipart celery openpyxl bcrypt
+RUN uv pip install --system fastapi "uvicorn[standard]" boto3 sqlalchemy asyncpg alembic pydantic pydantic-settings "python-jose[cryptography]" "passlib[argon2]" "passlib[bcrypt]" python-multipart celery openpyxl bcrypt httpx
 COPY . .
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 INNER_EOF

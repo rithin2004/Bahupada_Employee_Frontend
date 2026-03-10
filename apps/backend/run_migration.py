@@ -1,20 +1,21 @@
 import asyncio
+import sys
 from app.db.session import engine
-import os
 
-async def run_sql_file():
-    print("Connecting...")
-    with open("migrations/024_sales_order_latency_indexes.sql", "r") as f:
+async def run_sql_file(filename: str):
+    print(f"Reading {filename}...")
+    with open(filename, "r") as f:
         sql = f.read()
 
     async with engine.begin() as conn:
         from sqlalchemy import text
-        for statement in sql.split(';'):
-            if statement.strip():
-                print(f"Executing: {statement.strip()}")
-                await conn.execute(text(statement.strip()))
+        print(f"Executing content of {filename}...")
+        await conn.execute(text(sql))
                 
     print("Done")
 
 if __name__ == "__main__":
-    asyncio.run(run_sql_file())
+    if len(sys.argv) < 2:
+        print("Usage: python run_migration.py <sql_file>")
+        sys.exit(1)
+    asyncio.run(run_sql_file(sys.argv[1]))
