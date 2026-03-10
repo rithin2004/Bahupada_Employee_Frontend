@@ -34,7 +34,7 @@ export default async function EmployeeStockPage() {
   const data = await getStockData();
 
   return (
-    <AppShell role="employee" activeKey="stock" userName="Employee User">
+    <AppShell role="employee" activeKey="stock-lookup" userName="Employee User">
       <div className="space-y-6">
         <div className="space-y-2">
           <LiveBadge live={data.live} />

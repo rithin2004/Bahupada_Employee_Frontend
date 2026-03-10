@@ -20,6 +20,24 @@ class SalesOrderCreate(BaseModel):
     items: list[SalesOrderItemIn]
 
 
+class SalesOrderPreviewItem(BaseModel):
+    product_id: uuid.UUID
+    sku: str
+    product_name: str
+    unit: str
+    quantity: Decimal
+    unit_price: Decimal
+    selling_price: Decimal
+    discount_percent: Decimal | None = None
+    is_free_item: bool = False
+
+
+class SalesOrderPreviewResponse(BaseModel):
+    items: list[SalesOrderPreviewItem]
+    subtotal: Decimal
+    final_total: Decimal
+
+
 class SalesOrderPrepareCreate(BaseModel):
     sales_order_id: uuid.UUID
     invoice_number: str | None = None

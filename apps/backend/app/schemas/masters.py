@@ -36,9 +36,25 @@ class AreaCreate(StrictModel):
     longitude: Decimal | None = None
 
 
+class AreaUpdate(BaseModel):
+    area_name: str | None = None
+    city: str | None = None
+    state: str | None = None
+    pincode: str | None = None
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    is_active: bool | None = None
+
+
 class RouteCreate(StrictModel):
     route_name: str
     area_id: uuid.UUID
+
+
+class RouteUpdate(BaseModel):
+    route_name: str | None = None
+    area_id: uuid.UUID | None = None
+    is_active: bool | None = None
 
 
 class WarehouseCreate(StrictModel):
@@ -69,6 +85,13 @@ class VehicleCreate(StrictModel):
     registration_no: str
     vehicle_name: str | None = None
     capacity_kg: Decimal | None = None
+
+
+class VehicleUpdate(BaseModel):
+    registration_no: str | None = None
+    vehicle_name: str | None = None
+    capacity_kg: Decimal | None = None
+    is_active: bool | None = None
 
 
 class EmployeeCreate(StrictModel):
@@ -150,6 +173,8 @@ class CustomerCreate(StrictModel):
     phone: str | None = None
     email: str | None = None
     credit_limit: Decimal = Decimal("0")
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
     is_line_sale_outlet: bool = False
 
 
@@ -229,6 +254,8 @@ class CustomerUpdate(BaseModel):
     phone: str | None = None
     email: str | None = None
     credit_limit: Decimal | None = None
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
     is_line_sale_outlet: bool | None = None
     is_active: bool | None = None
 

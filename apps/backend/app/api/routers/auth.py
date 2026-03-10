@@ -119,6 +119,7 @@ def _auth_user_info(
         portal_scope=portal_scope,
         session_id=session_id,
         employee_id=str(employee.id) if employee is not None else None,
+        employee_role=employee.role.value if employee is not None else None,
         customer_id=str(customer.id) if customer is not None else None,
         display_name=display_name,
     )

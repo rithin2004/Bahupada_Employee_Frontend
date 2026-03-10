@@ -103,6 +103,44 @@ class PartyLedgerEntryKind(str, Enum):
     MANUAL_ADJUSTMENT = "MANUAL_ADJUSTMENT"
 
 
+class InvoiceWorkflowStatus(str, Enum):
+    PACKERS_ASSIGNED = "PACKERS_ASSIGNED"
+    VERIFICATION_PENDING = "VERIFICATION_PENDING"
+    PACKING_STARTED = "PACKING_STARTED"
+    READY_TO_DISPATCH = "READY_TO_DISPATCH"
+    VEHICLE_ALLOCATED = "VEHICLE_ALLOCATED"
+    LOADED = "LOADED"
+    DELIVERY_STARTED = "DELIVERY_STARTED"
+    DELIVERY_SUCCESSFUL = "DELIVERY_SUCCESSFUL"
+    CANCELLED = "CANCELLED"
+
+
+class ShortfallReason(str, Enum):
+    DAMAGED_PRODUCTS = "DAMAGED_PRODUCTS"
+    NO_STOCK_AVAILABLE = "NO_STOCK_AVAILABLE"
+    QUALITY_ISSUE = "QUALITY_ISSUE"
+    OTHER = "OTHER"
+
+
+class SupervisorDecision(str, Enum):
+    VERIFIED = "VERIFIED"
+    REJECTED = "REJECTED"
+
+
+class NotificationType(str, Enum):
+    PACKER_ASSIGNMENT = "PACKER_ASSIGNMENT"
+    SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"
+    PACKING_START = "PACKING_START"
+    ADMIN_READY_TO_DISPATCH = "ADMIN_READY_TO_DISPATCH"
+    PACKER_REASSIGNED = "PACKER_REASSIGNED"
+    ADMIN_VEHICLE_ALLOCATION_REQUIRED = "ADMIN_VEHICLE_ALLOCATION_REQUIRED"
+    DELIVERY_CREW_ASSIGNED = "DELIVERY_CREW_ASSIGNED"
+    SUPERVISOR_LOADING_READY = "SUPERVISOR_LOADING_READY"
+    RUN_READY_TO_START = "RUN_READY_TO_START"
+    DELIVERY_COMPLETED = "DELIVERY_COMPLETED"
+    DELIVERY_FAILED_RETURNED = "DELIVERY_FAILED_RETURNED"
+
+
 class PaymentFlowDirection(str, Enum):
     INCOMING = "INCOMING"
     OUTGOING = "OUTGOING"
@@ -462,6 +500,8 @@ class Customer(Base, TimestampMixin):
     owner_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
     route_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("route_master.id"), nullable=True)
     route_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     customer_class: Mapped[CustomerClass] = mapped_column(SQLEnum(CustomerClass, name="customer_class"))
@@ -731,6 +771,9 @@ class SalesFinalInvoice(Base, TimestampMixin):
     total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
     status: Mapped[str] = mapped_column(String(30), default=VoucherStatus.CREATED.value)
     delivery_status: Mapped[str] = mapped_column(String(40), default="pending")
+    e_invoice_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    gst_invoice_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    eway_bill_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -760,6 +803,93 @@ class InvoiceVersion(Base):
     change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class InvoiceAssignmentBatch(Base, TimestampMixin):
+    __tablename__ = "invoice_assignment_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    batch_code: Mapped[str] = mapped_column(String(120), unique=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default=InvoiceWorkflowStatus.PACKERS_ASSIGNED.value)
+
+
+class InvoiceAssignmentBatchInvoice(Base, TimestampMixin):
+    __tablename__ = "invoice_assignment_batch_invoices"
+    __table_args__ = (UniqueConstraint("batch_id", "sales_final_invoice_id", name="uq_batch_invoice"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoice_assignment_batches.id"), nullable=False)
+    sales_final_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_final_invoices.id"), nullable=False)
+    assigned_packer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False)
+    assigned_supervisor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default=InvoiceWorkflowStatus.PACKERS_ASSIGNED.value)
+    requested_verification_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    rejection_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ready_for_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InvoiceExecutionItem(Base, TimestampMixin):
+    __tablename__ = "invoice_execution_items"
+    __table_args__ = (
+        UniqueConstraint("batch_invoice_id", "sales_final_invoice_item_id", name="uq_invoice_execution_item"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoice_assignment_batch_invoices.id"), nullable=False)
+    sales_final_invoice_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_final_invoice_items.id"), nullable=False)
+    product_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("products.id"), nullable=False)
+    original_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    actual_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    shortfall_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
+    shortfall_reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    supervisor_decision: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    supervisor_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class InvoicePackingOutput(Base, TimestampMixin):
+    __tablename__ = "invoice_packing_outputs"
+    __table_args__ = (UniqueConstraint("batch_invoice_id", name="uq_invoice_packing_output"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoice_assignment_batch_invoices.id"), nullable=False)
+    total_boxes_or_bags: Mapped[int] = mapped_column(Integer, default=0)
+    loose_cases: Mapped[int] = mapped_column(Integer, default=0)
+    full_cases: Mapped[int] = mapped_column(Integer, default=0)
+    packing_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class UserNotification(Base):
+    __tablename__ = "user_notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    type: Mapped[str] = mapped_column(String(60), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InvoiceShortfallReturn(Base, TimestampMixin):
+    __tablename__ = "invoice_shortfall_returns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoice_assignment_batch_invoices.id"), nullable=False)
+    sales_final_invoice_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_final_invoice_items.id"), nullable=False)
+    returned_sales_order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_orders.id"), nullable=False)
+    returned_sales_order_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sales_order_items.id"), nullable=True)
+    product_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("products.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 
 class SalesReturn(Base, TimestampMixin):
@@ -879,8 +1009,21 @@ class DeliveryRun(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
     run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    vehicle_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("vehicles.id"), nullable=True)
+    driver_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    in_vehicle_employee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    bill_manager_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    loader_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default=InvoiceWorkflowStatus.VEHICLE_ALLOCATED.value)
+    total_weight_grams: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
     optimized: Mapped[bool] = mapped_column(Boolean, default=False)
     route_engine: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    optimized_route_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route_provider: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    route_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    loading_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DeliveryRunStop(Base):
@@ -888,9 +1031,21 @@ class DeliveryRunStop(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     delivery_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("delivery_runs.id"), nullable=False)
-    sales_order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_orders.id"), nullable=False)
-    stop_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    reverse_load_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    sales_order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True)
+    sales_final_invoice_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sales_final_invoices.id"), nullable=True)
+    stop_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reverse_load_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    loading_sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    distance_meters: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default=InvoiceWorkflowStatus.VEHICLE_ALLOCATED.value)
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
+    customer_longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
     eta_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -903,6 +1058,15 @@ class DeliveryAssignment(Base):
     helper_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False)
     bill_manager_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False)
     loader_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False)
+
+
+class DeliveryRunSourceBatch(Base, TimestampMixin):
+    __tablename__ = "delivery_run_source_batches"
+    __table_args__ = (UniqueConstraint("delivery_run_id", "invoice_assignment_batch_id", name="uq_delivery_run_source_batch"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("delivery_runs.id"), nullable=False)
+    invoice_assignment_batch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoice_assignment_batches.id"), nullable=False)
 
 
 class PodEvent(Base, TimestampMixin):
@@ -968,7 +1132,19 @@ class Scheme(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scheme_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    scheme_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    customer_category_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customer_categories.id"), nullable=False)
+    condition_basis: Mapped[str] = mapped_column(String(20), nullable=False)
+    threshold_value: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    threshold_unit: Mapped[str] = mapped_column(String(10), nullable=False)
+    brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sub_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    product_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    reward_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    reward_discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    reward_product_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    reward_product_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -1179,6 +1355,15 @@ Index("idx_payments_customer_created", Payment.customer_id, Payment.created_at.d
 Index("idx_payments_customer_date", Payment.customer_id, Payment.payment_date.desc())
 Index("idx_payment_allocations_payment", PaymentAllocation.payment_id)
 Index("idx_payment_allocations_invoice", PaymentAllocation.sales_final_invoice_id)
+Index("idx_sales_final_invoices_delivery_status", SalesFinalInvoice.delivery_status, SalesFinalInvoice.created_at.desc())
+Index("idx_invoice_assignment_batches_wh_status", InvoiceAssignmentBatch.warehouse_id, InvoiceAssignmentBatch.status, InvoiceAssignmentBatch.created_at.desc())
+Index("idx_invoice_assignment_batch_invoices_status", InvoiceAssignmentBatchInvoice.status, InvoiceAssignmentBatchInvoice.created_at.desc())
+Index("idx_invoice_assignment_batch_invoices_packer", InvoiceAssignmentBatchInvoice.assigned_packer_id, InvoiceAssignmentBatchInvoice.status)
+Index("idx_invoice_assignment_batch_invoices_supervisor", InvoiceAssignmentBatchInvoice.assigned_supervisor_id, InvoiceAssignmentBatchInvoice.status)
+Index("idx_invoice_assignment_batch_invoices_invoice", InvoiceAssignmentBatchInvoice.sales_final_invoice_id)
+Index("idx_invoice_execution_items_batch_invoice", InvoiceExecutionItem.batch_invoice_id)
+Index("idx_invoice_shortfall_returns_batch_invoice", InvoiceShortfallReturn.batch_invoice_id)
+Index("idx_user_notifications_user_unread", UserNotification.user_id, UserNotification.is_read, UserNotification.created_at.desc())
 Index("idx_party_ledger_accounts_party", PartyLedgerAccount.party_type, PartyLedgerAccount.party_id)
 Index("idx_party_ledger_entries_account_date", PartyLedgerEntry.account_id, PartyLedgerEntry.entry_date.asc(), PartyLedgerEntry.created_at.asc())
 Index("idx_party_ledger_entries_reference", PartyLedgerEntry.reference_type, PartyLedgerEntry.reference_id)

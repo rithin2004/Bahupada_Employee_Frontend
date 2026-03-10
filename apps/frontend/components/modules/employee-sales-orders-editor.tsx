@@ -55,6 +55,19 @@ type CartItem = CreateStockRow & {
   quantity: number;
 };
 
+type PreviewItem = {
+  product_id: string;
+  sku: string;
+  product_name: string;
+  unit: string;
+  quantity: number;
+  unit_price: number;
+  selling_price: number;
+  discount_percent: number;
+  is_free_item: boolean;
+  warehouse_name: string;
+};
+
 function toNumber(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -96,6 +109,11 @@ export function EmployeeSalesOrdersEditor() {
   const [stockSearchInput, setStockSearchInput] = useState("");
   const [draftQtyByBatch, setDraftQtyByBatch] = useState<Record<string, number>>({});
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewFeedback, setPreviewFeedback] = useState("");
+  const [previewItems, setPreviewItems] = useState<PreviewItem[]>([]);
+  const [previewSubtotal, setPreviewSubtotal] = useState(0);
+  const [previewFinalTotal, setPreviewFinalTotal] = useState(0);
 
   async function loadQueue() {
     setQueueLoading(true);
@@ -272,6 +290,11 @@ export function EmployeeSalesOrdersEditor() {
     setStockSearchInput("");
     setDraftQtyByBatch({});
     setCartItems([]);
+    setPreviewLoading(false);
+    setPreviewFeedback("");
+    setPreviewItems([]);
+    setPreviewSubtotal(0);
+    setPreviewFinalTotal(0);
   }
 
   function getDraftQty(row: CreateStockRow): number {
@@ -326,6 +349,84 @@ export function EmployeeSalesOrdersEditor() {
   function removeCartItem(batchId: string) {
     setCartItems((prev) => prev.filter((item) => item.batch_id !== batchId));
   }
+
+  useEffect(() => {
+    if (!openCreateDialog) {
+      return;
+    }
+    if (!selectedCustomerId || cartItems.length === 0) {
+      setPreviewLoading(false);
+      setPreviewFeedback("");
+      setPreviewItems([]);
+      setPreviewSubtotal(0);
+      setPreviewFinalTotal(0);
+      return;
+    }
+
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        setPreviewLoading(true);
+        setPreviewFeedback("");
+        try {
+          const grouped = new Map<string, { warehouseName: string; items: Map<string, number> }>();
+          for (const item of cartItems) {
+            const entry = grouped.get(item.warehouse_id) ?? {
+              warehouseName: item.warehouse_name,
+              items: new Map<string, number>(),
+            };
+            entry.items.set(item.product_id, (entry.items.get(item.product_id) ?? 0) + item.quantity);
+            grouped.set(item.warehouse_id, entry);
+          }
+
+          const responses = await Promise.all(
+            [...grouped.entries()].map(async ([warehouseId, entry]) => {
+              const response = asObject(
+                await postBackend("/sales/sales-orders/preview", {
+                  warehouse_id: warehouseId,
+                  customer_id: selectedCustomerId,
+                  source: "SALESMAN",
+                  items: [...entry.items.entries()].map(([productId, quantity]) => ({
+                    product_id: productId,
+                    quantity,
+                  })),
+                })
+              );
+              return {
+                warehouseName: entry.warehouseName,
+                items: asArray(response.items).map((row) => ({
+                  product_id: String(row.product_id ?? ""),
+                  sku: String(row.sku ?? "-"),
+                  product_name: String(row.product_name ?? "-"),
+                  unit: String(row.unit ?? "-"),
+                  quantity: toNumber(row.quantity),
+                  unit_price: toNumber(row.unit_price),
+                  selling_price: toNumber(row.selling_price),
+                  discount_percent: toNumber(row.discount_percent),
+                  is_free_item: Boolean(row.is_free_item),
+                  warehouse_name: entry.warehouseName || "-",
+                })),
+                subtotal: toNumber(response.subtotal),
+                finalTotal: toNumber(response.final_total),
+              };
+            })
+          );
+
+          setPreviewItems(responses.flatMap((response) => response.items));
+          setPreviewSubtotal(responses.reduce((sum, response) => sum + response.subtotal, 0));
+          setPreviewFinalTotal(responses.reduce((sum, response) => sum + response.finalTotal, 0));
+        } catch (error) {
+          setPreviewItems([]);
+          setPreviewSubtotal(0);
+          setPreviewFinalTotal(0);
+          setPreviewFeedback(`Preview failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+        } finally {
+          setPreviewLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [cartItems, openCreateDialog, selectedCustomerId]);
 
   async function createSalesOrder() {
     if (placingOrder) {
@@ -601,6 +702,61 @@ export function EmployeeSalesOrdersEditor() {
                   ))}
                 </div>
               )}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">Order Preview</h4>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                    Subtotal {formatPrice(previewSubtotal)} | Final {formatPrice(previewFinalTotal)}
+                  </p>
+                </div>
+                {previewFeedback ? <p className="rounded-md border px-3 py-2 text-sm text-red-600 dark:text-red-300">{previewFeedback}</p> : null}
+                <div className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800">
+                  <Table className="w-full table-fixed text-sm">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[34%]">Product</TableHead>
+                        <TableHead className="w-[18%]">Warehouse</TableHead>
+                        <TableHead className="w-[10%] text-right">Qty</TableHead>
+                        <TableHead className="w-[14%] text-right">Unit</TableHead>
+                        <TableHead className="w-[14%] text-right">Final</TableHead>
+                        <TableHead className="w-[10%]">Type</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {previewLoading
+                        ? Array.from({ length: 4 }).map((_, index) => (
+                            <TableRow key={`employee-preview-skeleton-${index}`}>
+                              {Array.from({ length: 6 }).map((__, col) => (
+                                <TableCell key={`employee-preview-skeleton-${index}-${col}`}><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                              ))}
+                            </TableRow>
+                          ))
+                        : null}
+                      {!previewLoading && previewItems.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center text-muted-foreground">
+                            No preview available yet.
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                      {!previewLoading &&
+                        previewItems.map((item, index) => (
+                          <TableRow key={`${item.warehouse_name}-${item.product_id}-${index}`}>
+                            <TableCell>
+                              <p className="font-medium">{item.product_name}</p>
+                              <p className="text-xs text-zinc-600 dark:text-zinc-400">{item.sku} | {item.unit}</p>
+                            </TableCell>
+                            <TableCell>{item.warehouse_name}</TableCell>
+                            <TableCell className="text-right">{item.quantity}</TableCell>
+                            <TableCell className="text-right">{formatPrice(item.unit_price)}</TableCell>
+                            <TableCell className="text-right">{formatPrice(item.selling_price)}</TableCell>
+                            <TableCell>{item.is_free_item ? "Free" : item.discount_percent > 0 ? `${item.discount_percent}% off` : "-"}</TableCell>
+                          </TableRow>
+                        ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
               <Button onClick={() => void createSalesOrder()} disabled={placingOrder || cartItems.length === 0 || !selectedCustomerId}>
                 {placingOrder ? "Creating..." : "Create Sales Order"}
               </Button>

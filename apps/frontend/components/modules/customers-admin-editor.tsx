@@ -39,6 +39,8 @@ type CustomerRow = {
   pan_number: string;
   email: string;
   credit_limit: string;
+  latitude: string;
+  longitude: string;
   is_line_sale_outlet: boolean;
   is_active: boolean;
 };
@@ -69,6 +71,8 @@ function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
     pan_number: String(row.pan_number ?? ""),
     email: String(row.email ?? ""),
     credit_limit: String(row.credit_limit ?? "0"),
+    latitude: String(row.latitude ?? ""),
+    longitude: String(row.longitude ?? ""),
     is_line_sale_outlet: Boolean(row.is_line_sale_outlet ?? false),
     is_active: Boolean(row.is_active ?? true),
   };
@@ -127,6 +131,8 @@ export function CustomersAdminEditor() {
     pan_number: "",
     credit_limit: "0",
     email: "",
+    latitude: "",
+    longitude: "",
     is_line_sale_outlet: false,
   });
 
@@ -264,6 +270,8 @@ export function CustomersAdminEditor() {
         pan_number: selected.pan_number.trim() || null,
         email: selected.email.trim() || null,
         credit_limit: Number(selected.credit_limit || "0"),
+        latitude: selected.latitude.trim() ? Number(selected.latitude) : null,
+        longitude: selected.longitude.trim() ? Number(selected.longitude) : null,
         is_line_sale_outlet: selected.is_line_sale_outlet,
         is_active: selected.is_active,
       });
@@ -344,6 +352,8 @@ export function CustomersAdminEditor() {
         pan_doc: panDocPath || null,
         email: form.email.trim() || null,
         credit_limit: Number(form.credit_limit || "0"),
+        latitude: form.latitude.trim() ? Number(form.latitude) : null,
+        longitude: form.longitude.trim() ? Number(form.longitude) : null,
         is_line_sale_outlet: form.is_line_sale_outlet,
       });
 
@@ -362,6 +372,8 @@ export function CustomersAdminEditor() {
         pan_number: "",
         credit_limit: "0",
         email: "",
+        latitude: "",
+        longitude: "",
         is_line_sale_outlet: false,
       });
       setGstPdfFile(null);
@@ -573,6 +585,24 @@ export function CustomersAdminEditor() {
                     <Input value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} />
                   </div>
                   <div className="space-y-1">
+                    <Label>Latitude</Label>
+                    <Input
+                      type="number"
+                      step="0.0000001"
+                      value={form.latitude}
+                      onChange={(e) => setForm((prev) => ({ ...prev, latitude: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Longitude</Label>
+                    <Input
+                      type="number"
+                      step="0.0000001"
+                      value={form.longitude}
+                      onChange={(e) => setForm((prev) => ({ ...prev, longitude: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1">
                     <Label>Credit Limit</Label>
                     <Input
                       type="number"
@@ -765,6 +795,24 @@ export function CustomersAdminEditor() {
                                 <div className="space-y-1">
                                   <Label>Email</Label>
                                   <Input value={selected.email} onChange={(e) => updateSelected("email", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Latitude</Label>
+                                  <Input
+                                    type="number"
+                                    step="0.0000001"
+                                    value={selected.latitude}
+                                    onChange={(e) => updateSelected("latitude", e.target.value)}
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Longitude</Label>
+                                  <Input
+                                    type="number"
+                                    step="0.0000001"
+                                    value={selected.longitude}
+                                    onChange={(e) => updateSelected("longitude", e.target.value)}
+                                  />
                                 </div>
                                 <div className="space-y-1">
                                   <Label>Credit Limit</Label>

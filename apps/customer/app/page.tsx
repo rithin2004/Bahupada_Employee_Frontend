@@ -73,6 +73,19 @@ type OrderItemRow = {
   unit_price: number;
 };
 
+type OrderPreviewItemRow = {
+  product_id: string;
+  sku: string;
+  product_name: string;
+  unit: string;
+  quantity: number;
+  unit_price: number;
+  selling_price: number;
+  discount_percent: number;
+  is_free_item: boolean;
+  warehouse_name: string;
+};
+
 async function getJson(path: string) {
   const response = await fetchWithCustomerAuth(path, { method: "GET" });
   if (!response.ok) {
@@ -127,6 +140,11 @@ export default function CustomerDashboardPage() {
   const [orderItemsError, setOrderItemsError] = useState("");
   const [viewOrderId, setViewOrderId] = useState<string | null>(null);
   const [viewOrderItems, setViewOrderItems] = useState<OrderItemRow[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [previewItems, setPreviewItems] = useState<OrderPreviewItemRow[]>([]);
+  const [previewSubtotal, setPreviewSubtotal] = useState(0);
+  const [previewFinalTotal, setPreviewFinalTotal] = useState(0);
   const { active, sidebarOpen, cartOpen, feedback } = uiState;
   const { searchInput, search, rows, currentCursor, nextCursor, cursorHistory, hasMore, totalItems, lastLoadedKey } = inventoryState;
   const { cartItems, draftQtyByBatch } = cartState;
@@ -380,6 +398,85 @@ export default function CustomerDashboardPage() {
       description: `Quantity: ${requestedQty}`,
     });
   }
+
+  useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+    if (!selectedCustomerId || cartItems.length === 0) {
+      setPreviewLoading(false);
+      setPreviewError("");
+      setPreviewItems([]);
+      setPreviewSubtotal(0);
+      setPreviewFinalTotal(0);
+      return;
+    }
+
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        setPreviewLoading(true);
+        setPreviewError("");
+        try {
+          const grouped = new Map<string, { warehouseName: string; items: Map<string, number> }>();
+          for (const item of cartItems) {
+            const entry = grouped.get(item.warehouse_id) ?? {
+              warehouseName: item.warehouse_name,
+              items: new Map<string, number>(),
+            };
+            entry.items.set(item.product_id, (entry.items.get(item.product_id) ?? 0) + item.quantity);
+            grouped.set(item.warehouse_id, entry);
+          }
+
+          const responses = await Promise.all(
+            [...grouped.entries()].map(async ([warehouseId, entry]) => {
+              const response = asObject(
+                await postJson("/sales/sales-orders/preview", {
+                  warehouse_id: warehouseId,
+                  customer_id: selectedCustomerId,
+                  source: "CUSTOMER",
+                  items: [...entry.items.entries()].map(([productId, quantity]) => ({
+                    product_id: productId,
+                    quantity,
+                  })),
+                })
+              );
+
+              return {
+                warehouseName: entry.warehouseName,
+                items: asArray(response.items).map((row) => ({
+                  product_id: String(row.product_id ?? ""),
+                  sku: String(row.sku ?? "-"),
+                  product_name: String(row.product_name ?? "-"),
+                  unit: String(row.unit ?? "-"),
+                  quantity: toNumber(row.quantity),
+                  unit_price: toNumber(row.unit_price),
+                  selling_price: toNumber(row.selling_price),
+                  discount_percent: toNumber(row.discount_percent),
+                  is_free_item: Boolean(row.is_free_item),
+                  warehouse_name: entry.warehouseName || "-",
+                })),
+                subtotal: toNumber(response.subtotal),
+                finalTotal: toNumber(response.final_total),
+              };
+            })
+          );
+
+          setPreviewItems(responses.flatMap((response) => response.items));
+          setPreviewSubtotal(responses.reduce((sum, response) => sum + response.subtotal, 0));
+          setPreviewFinalTotal(responses.reduce((sum, response) => sum + response.finalTotal, 0));
+        } catch (error) {
+          setPreviewItems([]);
+          setPreviewSubtotal(0);
+          setPreviewFinalTotal(0);
+          setPreviewError(`Preview failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+        } finally {
+          setPreviewLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [cartItems, mounted, selectedCustomerId]);
 
   async function createSalesChallan() {
     if (placingOrder) {
@@ -992,6 +1089,65 @@ export default function CustomerDashboardPage() {
                   )}
                 </tbody>
               </table>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">Order Preview</h4>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                  Subtotal {formatPrice(previewSubtotal)} | Final {formatPrice(previewFinalTotal)}
+                </p>
+              </div>
+              {previewError ? <p className="rounded-md border px-3 py-2 text-sm text-red-600 dark:text-red-300">{previewError}</p> : null}
+              <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+                <table className="w-full table-fixed text-sm">
+                  <thead>
+                    <tr>
+                      <th className="w-[34%] bg-zinc-200/80 px-3 py-3 text-left font-semibold uppercase tracking-wide text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-200">Product</th>
+                      <th className="w-[18%] bg-zinc-200/80 px-3 py-3 text-left font-semibold uppercase tracking-wide text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-200">Warehouse</th>
+                      <th className="w-[10%] bg-zinc-200/80 px-3 py-3 text-right font-semibold uppercase tracking-wide text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-200">Qty</th>
+                      <th className="w-[14%] bg-zinc-200/80 px-3 py-3 text-right font-semibold uppercase tracking-wide text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-200">Unit</th>
+                      <th className="w-[14%] bg-zinc-200/80 px-3 py-3 text-right font-semibold uppercase tracking-wide text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-200">Final</th>
+                      <th className="w-[10%] bg-zinc-200/80 px-3 py-3 text-left font-semibold uppercase tracking-wide text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-200">Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewLoading
+                      ? Array.from({ length: 4 }).map((_, i) => (
+                          <tr key={`customer-preview-sk-${i}`} className={i % 2 === 0 ? "bg-zinc-50/80 dark:bg-zinc-900/30" : "bg-white dark:bg-zinc-950"}>
+                            {Array.from({ length: 6 }).map((__, j) => (
+                              <td key={`customer-preview-sk-${i}-${j}`} className="border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">
+                                <div className="h-5 w-full max-w-[120px] animate-pulse rounded bg-zinc-300 dark:bg-zinc-700" />
+                              </td>
+                            ))}
+                          </tr>
+                        ))
+                      : null}
+                    {!previewLoading && previewItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-4 py-8 text-center text-zinc-500 dark:text-zinc-400">
+                          No preview available yet.
+                        </td>
+                      </tr>
+                    ) : null}
+                    {!previewLoading
+                      ? previewItems.map((item, i) => (
+                          <tr key={`preview-${item.warehouse_name}-${item.product_id}-${i}`} className={i % 2 === 0 ? "bg-zinc-50/80 dark:bg-zinc-900/30" : "bg-white dark:bg-zinc-950"}>
+                            <td className="border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">
+                              <p className="break-words font-medium">{item.product_name || "-"}</p>
+                              <p className="mt-0.5 break-words text-xs text-zinc-600 dark:text-zinc-400">{item.sku || "-"} | {item.unit || "-"}</p>
+                            </td>
+                            <td className="break-words border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">{item.warehouse_name}</td>
+                            <td className="border-b border-zinc-200 px-3 py-3 text-right dark:border-zinc-800">{item.quantity}</td>
+                            <td className="border-b border-zinc-200 px-3 py-3 text-right dark:border-zinc-800">{formatPrice(item.unit_price)}</td>
+                            <td className="border-b border-zinc-200 px-3 py-3 text-right dark:border-zinc-800">{formatPrice(item.selling_price)}</td>
+                            <td className="border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">{item.is_free_item ? "Free" : item.discount_percent > 0 ? `${item.discount_percent}% off` : "-"}</td>
+                          </tr>
+                        ))
+                      : null}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div className="mt-4 flex items-center justify-end">

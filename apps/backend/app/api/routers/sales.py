@@ -43,21 +43,72 @@ from app.schemas.sales import (
     SalesFinalInvoiceEditRequest,
     SalesOrderPrepareCreate,
     SalesOrderCreate,
+    SalesOrderPreviewResponse,
     SalesReturnCreate,
 )
 from app.schemas.auth import AuthUserInfo
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
 from app.services.finance import post_customer_sales_invoice_receivable, post_party_ledger_entry
 from app.services.pricing import resolve_price_for_customer
+from app.services.schemes import apply_schemes_to_sales_order, build_sales_order_preview
 from app.services.stock import (
     consume_reserved_stock_for_final_invoice,
     consume_reserved_stock_for_final_invoice_quantities,
+    release_reserved_stock_for_sales_order,
     reserve_stock_fefo_for_sales_order,
-    reserve_stock_fefo_for_sales_order_quantities,
 )
 from app.services.workflow import assert_voucher_transition
 
 router = APIRouter()
+
+
+@router.post("/sales-orders/preview", response_model=SalesOrderPreviewResponse, dependencies=[Depends(require_permission("sales", "read"))])
+async def preview_sales_order(
+    payload: SalesOrderCreate,
+    db: AsyncSession = Depends(get_db),
+    auth: AuthUserInfo = Depends(require_any_portal),
+):
+    if auth.portal == "CUSTOMER" and auth.customer_id != str(payload.customer_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Customer access denied")
+
+    customer = await db.get(Customer, payload.customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    preview_items = await build_sales_order_preview(
+        db,
+        customer=customer,
+        warehouse_id=payload.warehouse_id,
+        items=[(item.product_id, Decimal(item.quantity)) for item in payload.items],
+    )
+
+    subtotal = Decimal("0")
+    final_total = Decimal("0")
+    response_items: list[dict[str, object]] = []
+    for item in preview_items:
+        line_subtotal = Decimal(item.unit_price) * Decimal(item.quantity)
+        line_total = Decimal(item.selling_price) * Decimal(item.quantity)
+        subtotal += line_subtotal
+        final_total += line_total
+        response_items.append(
+            {
+                "product_id": item.product_id,
+                "sku": item.sku,
+                "product_name": item.product_name,
+                "unit": item.unit,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "selling_price": item.selling_price,
+                "discount_percent": item.discount_percent,
+                "is_free_item": item.is_free_item,
+            }
+        )
+
+    return {
+        "items": response_items,
+        "subtotal": subtotal,
+        "final_total": final_total,
+    }
 
 
 @router.post("/sales-orders", dependencies=[Depends(require_permission("sales", "create"))])
@@ -93,7 +144,6 @@ async def create_sales_order(
         )
     ).scalar_one_or_none()
 
-    created_new_order = order is None
     if order is None:
         invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
         if invoice_number is None:
@@ -109,7 +159,6 @@ async def create_sales_order(
         db.add(order)
         await db.flush()
 
-    appended_quantities: list[tuple[uuid.UUID, Decimal]] = []
     for item in payload.items:
         product = await db.get(Product, item.product_id)
         if product is None:
@@ -121,6 +170,7 @@ async def create_sales_order(
                 .where(
                     SalesOrderItem.sales_order_id == order.id,
                     SalesOrderItem.product_id == item.product_id,
+                    SalesOrderItem.is_bundle_child.is_(False),
                 )
                 .limit(1)
             )
@@ -139,26 +189,18 @@ async def create_sales_order(
             existing_item.quantity = Decimal(existing_item.quantity) + Decimal(item.quantity)
             if existing_item.selling_price is None:
                 existing_item.selling_price = existing_item.unit_price
-        appended_quantities.append((item.product_id, Decimal(item.quantity)))
 
     await db.flush()
     try:
-        if created_new_order:
-            # Reserve at sales-order creation so inventory reflects challan intent immediately.
-            await reserve_stock_fefo_for_sales_order(
-                db,
-                order,
-                allow_negative_override=True,
-                override_reason="AUTO_NEGATIVE_OVERRIDE",
-            )
-        else:
-            await reserve_stock_fefo_for_sales_order_quantities(
-                db,
-                order,
-                appended_quantities,
-                allow_negative_override=True,
-                override_reason="AUTO_NEGATIVE_OVERRIDE",
-            )
+        await apply_schemes_to_sales_order(db, order, customer)
+        await db.flush()
+        await release_reserved_stock_for_sales_order(db, order)
+        await reserve_stock_fefo_for_sales_order(
+            db,
+            order,
+            allow_negative_override=True,
+            override_reason="AUTO_NEGATIVE_OVERRIDE",
+        )
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

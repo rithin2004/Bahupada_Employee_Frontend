@@ -19,6 +19,21 @@ class SalesmanMonthlyPlanOut(BaseModel):
     year: int
 
 
+class DeliveryMonthlyPlanCreate(BaseModel):
+    plan_name: str
+    month: int
+    year: int
+
+
+class DeliveryMonthlyPlanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    plan_name: str
+    month: int
+    year: int
+
+
 class SalesmanDailyAssignmentUpsert(BaseModel):
     duty_date: date
     salesman_id: uuid.UUID
@@ -59,3 +74,21 @@ class DeliveryDailyAssignmentOut(BaseModel):
     helper_id: uuid.UUID | None
     bill_manager_id: uuid.UUID | None
     loader_id: uuid.UUID | None
+
+
+class DeliveryDailyAssignmentSummary(BaseModel):
+    id: uuid.UUID
+    monthly_plan_id: uuid.UUID
+    duty_date: date
+    vehicle_id: uuid.UUID | None = None
+    vehicle_name: str | None = None
+    registration_no: str | None = None
+    capacity_kg: float | None = None
+    driver_id: uuid.UUID | None = None
+    driver_name: str | None = None
+    helper_id: uuid.UUID | None = None
+    helper_name: str | None = None
+    bill_manager_id: uuid.UUID | None = None
+    bill_manager_name: str | None = None
+    loader_id: uuid.UUID | None = None
+    loader_name: str | None = None

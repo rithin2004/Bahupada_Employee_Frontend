@@ -39,6 +39,7 @@ from app.models.entities import (
 )
 from app.schemas.masters import (
     AreaCreate,
+    AreaUpdate,
     CompanyCreate,
     CustomerCreate,
     CustomerCategoryCreate,
@@ -51,7 +52,9 @@ from app.schemas.masters import (
     RackUpdate,
     RoleCreate,
     RouteCreate,
+    RouteUpdate,
     VehicleCreate,
+    VehicleUpdate,
     VendorCreate,
     VendorUpdate,
     WarehouseCreate,
@@ -519,9 +522,21 @@ async def list_vendors(
 async def list_areas(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(AreaMaster).where(AreaMaster.is_active.is_(True)).order_by(AreaMaster.created_at.desc())
+    stmt = select(AreaMaster).where(AreaMaster.is_active.is_(True))
+    if search and search.strip():
+        q = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                AreaMaster.area_name.ilike(q),
+                AreaMaster.city.ilike(q),
+                AreaMaster.state.ilike(q),
+                AreaMaster.pincode.ilike(q),
+            )
+        )
+    stmt = stmt.order_by(AreaMaster.created_at.desc())
     return await _paginate(db, stmt, page, page_size)
 
 
@@ -529,10 +544,43 @@ async def list_areas(
 async def list_routes(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(RouteMaster).where(RouteMaster.is_active.is_(True)).order_by(RouteMaster.created_at.desc())
-    return await _paginate(db, stmt, page, page_size)
+    stmt = (
+        select(
+            RouteMaster.id.label("id"),
+            RouteMaster.route_name.label("route_name"),
+            RouteMaster.area_id.label("area_id"),
+            AreaMaster.area_name.label("area_name"),
+            RouteMaster.is_active.label("is_active"),
+            RouteMaster.created_at.label("created_at"),
+        )
+        .select_from(RouteMaster)
+        .outerjoin(AreaMaster, AreaMaster.id == RouteMaster.area_id)
+        .where(RouteMaster.is_active.is_(True))
+    )
+    if search and search.strip():
+        q = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                RouteMaster.route_name.ilike(q),
+                AreaMaster.area_name.ilike(q),
+            )
+        )
+    stmt = stmt.order_by(RouteMaster.created_at.desc())
+    total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+    total = (await db.execute(total_stmt)).scalar_one()
+    rows = (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))).mappings().all()
+    items = [dict(row) for row in rows]
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return {
+        "items": jsonable_encoder(items),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/units")
@@ -637,6 +685,95 @@ async def list_employees(
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
+
+@router.get("/vehicles")
+async def list_vehicles(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Vehicle).where(Vehicle.is_active.is_(True))
+    if search and search.strip():
+        q = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Vehicle.registration_no.ilike(q),
+                Vehicle.vehicle_name.ilike(q),
+            )
+        )
+    stmt = stmt.order_by(Vehicle.created_at.desc())
+    return await _paginate(db, stmt, page, page_size)
+
+
+@router.get("/routes/{route_id}")
+async def get_route(route_id: str, db: AsyncSession = Depends(get_db)):
+    return await _get_or_404(db, RouteMaster, uuid.UUID(route_id), "Route")
+
+
+@router.get("/areas/{area_id}")
+async def get_area(area_id: str, db: AsyncSession = Depends(get_db)):
+    return await _get_or_404(db, AreaMaster, uuid.UUID(area_id), "Area")
+
+
+@router.patch("/areas/{area_id}")
+async def patch_area(area_id: str, payload: AreaUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, AreaMaster, uuid.UUID(area_id), "Area")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/areas/{area_id}")
+async def deactivate_area(area_id: str, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, AreaMaster, uuid.UUID(area_id), "Area")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
+
+
+@router.patch("/routes/{route_id}")
+async def patch_route(route_id: str, payload: RouteUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, RouteMaster, uuid.UUID(route_id), "Route")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/routes/{route_id}")
+async def deactivate_route(route_id: str, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, RouteMaster, uuid.UUID(route_id), "Route")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
+
+
+@router.get("/vehicles/{vehicle_id}")
+async def get_vehicle(vehicle_id: str, db: AsyncSession = Depends(get_db)):
+    return await _get_or_404(db, Vehicle, uuid.UUID(vehicle_id), "Vehicle")
+
+
+@router.patch("/vehicles/{vehicle_id}")
+async def patch_vehicle(vehicle_id: str, payload: VehicleUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, Vehicle, uuid.UUID(vehicle_id), "Vehicle")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/vehicles/{vehicle_id}")
+async def deactivate_vehicle(vehicle_id: str, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, Vehicle, uuid.UUID(vehicle_id), "Vehicle")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
 
 
 async def _get_or_404(db: AsyncSession, model, entity_id, name: str):
