@@ -67,7 +67,7 @@ export function ModuleWorkspace({ role, activeKey, navLabel, basePath, filters, 
       <div className="space-y-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <Link href={role === "admin" ? "/admin" : "/employee"} className="hover:text-foreground">
+            <Link href="/dashboard" className="hover:text-foreground">
               Dashboard
             </Link>
             <span>/</span>

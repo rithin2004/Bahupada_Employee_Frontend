@@ -56,5 +56,6 @@ class AuthUserInfo(BaseModel):
     portal_scope: str | None = None
     session_id: str | None = None
     employee_id: str | None = None
+    employee_role: str | None = None
     customer_id: str | None = None
     display_name: str | None = None

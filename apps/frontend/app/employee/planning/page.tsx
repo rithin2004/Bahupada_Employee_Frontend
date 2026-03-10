@@ -24,7 +24,7 @@ export default async function EmployeePlanningPage() {
   const data = await getPlanningData();
 
   return (
-    <AppShell role="employee" activeKey="planning" userName="Employee User">
+    <AppShell role="employee" activeKey="calendar" userName="Employee User">
       <div className="space-y-6">
         <div className="space-y-2">
           <LiveBadge live={data.live} />

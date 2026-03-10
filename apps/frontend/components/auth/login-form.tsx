@@ -10,8 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { AppRole } from "@/lib/navigation";
-import { asObject, backendApiBaseUrl, writePortalSession } from "@/lib/backend-api";
+import type { AppRole, EmployeeRole } from "@/lib/navigation";
+import { defaultRouteForAdmin, defaultRouteForEmployee } from "@/lib/navigation";
+import { asObject, backendApiBaseUrl, fetchWithPortalAuth, writePortalSession } from "@/lib/backend-api";
 
 type LoginFormProps = {
   role: AppRole;
@@ -21,7 +22,6 @@ type LoginFormProps = {
 
 export function LoginForm({ role, title, description }: LoginFormProps) {
   const router = useRouter();
-  const dashboardHref = role === "admin" ? "/admin" : "/employee";
   const portal = role === "admin" ? "ADMIN" : "EMPLOYEE";
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -56,8 +56,17 @@ export function LoginForm({ role, title, description }: LoginFormProps) {
         accessToken: String(payload.access_token ?? ""),
         refreshToken: String(payload.refresh_token ?? ""),
       });
+      let landingHref = role === "admin" ? defaultRouteForAdmin() : defaultRouteForEmployee(null);
+      if (role === "employee") {
+        const meResponse = await fetchWithPortalAuth("/auth/me", { method: "GET" });
+        if (meResponse.ok) {
+          const mePayload = asObject(await meResponse.json().catch(() => ({})));
+          const employeeRole = typeof mePayload.employee_role === "string" ? (mePayload.employee_role as EmployeeRole) : null;
+          landingHref = defaultRouteForEmployee(employeeRole);
+        }
+      }
       toast.success(`${role === "admin" ? "Admin" : "Employee"} login successful.`);
-      router.push(dashboardHref);
+      router.push(landingHref);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Login failed");
     } finally {

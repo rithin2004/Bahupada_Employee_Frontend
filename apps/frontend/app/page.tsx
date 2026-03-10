@@ -28,7 +28,7 @@ export default function HomePage() {
                 <Link href="/auth/admin-login">Go to Admin Login</Link>
               </Button>
               <Button asChild variant="outline" className="w-full">
-                <Link href="/admin">Open Admin Dashboard Directly</Link>
+                <Link href="/dashboard">Open Admin Dashboard Directly</Link>
               </Button>
             </CardContent>
           </Card>
@@ -46,7 +46,7 @@ export default function HomePage() {
                 <Link href="/auth/employee-login">Go to Employee Login</Link>
               </Button>
               <Button asChild variant="outline" className="w-full">
-                <Link href="/employee">Open Employee Dashboard Directly</Link>
+                <Link href="/dashboard">Open Employee Dashboard Directly</Link>
               </Button>
             </CardContent>
           </Card>

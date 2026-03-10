@@ -4,6 +4,7 @@ from app.api.routers import (
     auth,
     customer_portal,
     delivery,
+    delivery_workflow,
     finance,
     masters,
     packing,
@@ -22,6 +23,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(masters.router, prefix="/masters", tags=["masters"], dependencies=[Depends(require_admin_portal)])
 api_router.include_router(procurement.router, prefix="/procurement", tags=["procurement"], dependencies=[Depends(require_admin_portal)])
 api_router.include_router(sales.router, prefix="/sales", tags=["sales"])
+api_router.include_router(delivery_workflow.router, prefix="/delivery-workflow", tags=["delivery-workflow"])
 api_router.include_router(packing.router, prefix="/packing", tags=["packing"], dependencies=[Depends(require_module_access("packing"))])
 api_router.include_router(delivery.router, prefix="/delivery", tags=["delivery"], dependencies=[Depends(require_module_access("delivery"))])
 api_router.include_router(finance.router, prefix="/finance", tags=["finance"], dependencies=[Depends(require_admin_portal)])

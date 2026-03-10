@@ -30,7 +30,7 @@ export default async function AdminModulePage({ params, searchParams }: AdminMod
       role="admin"
       activeKey={selectedModule.key}
       navLabel={selectedModule.label}
-      basePath={`/admin/${selectedModule.key}`}
+      basePath={selectedModule.href}
       filters={filters}
       data={data}
     />

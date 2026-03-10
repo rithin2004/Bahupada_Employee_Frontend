@@ -30,7 +30,7 @@ export default async function EmployeeModulePage({ params, searchParams }: Emplo
       role="employee"
       activeKey={selectedModule.key}
       navLabel={selectedModule.label}
-      basePath={`/employee/${selectedModule.key}`}
+      basePath={selectedModule.href}
       filters={filters}
       data={data}
     />

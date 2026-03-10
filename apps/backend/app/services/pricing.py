@@ -13,8 +13,6 @@ from app.models.entities import (
     Pricing,
     Product,
     RouteProductPrice,
-    Scheme,
-    SchemeProduct,
 )
 
 
@@ -91,28 +89,6 @@ async def resolve_price_for_customer(
 
     if class_price is not None and Decimal(class_price) > 0:
         return _quantize(class_price), "CLASS_PRICE"
-
-    current_date = at_date or date.today()
-    scheme_discount = (
-        await session.execute(
-            select(SchemeProduct.discount_percent)
-            .join(Scheme, Scheme.id == SchemeProduct.scheme_id)
-            .where(
-                SchemeProduct.product_id == product.id,
-                Scheme.is_active.is_(True),
-                Scheme.start_date <= current_date,
-                Scheme.end_date >= current_date,
-                SchemeProduct.discount_percent.is_not(None),
-            )
-            .order_by(SchemeProduct.discount_percent.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-
-    if scheme_discount is not None:
-        base = Decimal(pricing_row.mrp if pricing_row and pricing_row.mrp else product.base_price)
-        discounted = base * (Decimal("1") - (Decimal(scheme_discount) / Decimal("100")))
-        return _quantize(discounted), "SCHEME_PRICE"
 
     if pricing_row is not None and Decimal(pricing_row.mrp) > 0:
         return _quantize(pricing_row.mrp), "MRP_BASE"

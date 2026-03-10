@@ -105,6 +105,51 @@ async def reserve_stock_fefo_for_sales_order(
     )
 
 
+async def release_reserved_stock_for_sales_order(
+    session: AsyncSession,
+    sales_order: SalesOrder,
+):
+    reserve_items_res = await session.execute(
+        select(SalesOrderReservation).where(SalesOrderReservation.sales_order_id == sales_order.id)
+    )
+    reserve_items = reserve_items_res.scalars().all()
+
+    for reserve in reserve_items:
+        qty = Decimal(reserve.reserved_quantity or 0)
+        if qty <= 0:
+            await session.delete(reserve)
+            continue
+
+        if reserve.batch_number != "NEGATIVE_OVERRIDE":
+            batch_res = await session.execute(
+                select(InventoryBatch).where(
+                    InventoryBatch.warehouse_id == sales_order.warehouse_id,
+                    InventoryBatch.product_id == reserve.product_id,
+                    InventoryBatch.batch_no == reserve.batch_number,
+                )
+            )
+            batch = batch_res.scalar_one_or_none()
+            if batch is None:
+                raise ValueError("Reserved batch not found during sales order rebuild")
+
+            batch.reserved_quantity = max(Decimal(batch.reserved_quantity or 0) - qty, Decimal("0"))
+            batch.available_quantity = Decimal(batch.available_quantity or 0) + qty
+
+        session.add(
+            StockMovement(
+                warehouse_id=sales_order.warehouse_id,
+                product_id=reserve.product_id,
+                batch_no=reserve.batch_number or "UNKNOWN",
+                move_type=StockMoveType.RELEASE,
+                quantity=qty,
+                reference_type="sales_order",
+                reference_id=sales_order.id,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.delete(reserve)
+
+
 async def reserve_stock_fefo_for_sales_order_quantities(
     session: AsyncSession,
     sales_order: SalesOrder,
