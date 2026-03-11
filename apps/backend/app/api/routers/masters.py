@@ -27,6 +27,9 @@ from app.models.entities import (
     EmployeeRole,
     HSNMaster,
     Pricing,
+    ProductBrand,
+    ProductCategory,
+    ProductSubCategory,
     Product,
     Rack,
     Role,
@@ -65,6 +68,12 @@ from app.schemas.masters import (
     HSNMasterCreate,
     HSNMasterUpdate,
     PricingUpdate,
+    ProductBrandCreate,
+    ProductBrandUpdate,
+    ProductCategoryCreate,
+    ProductCategoryUpdate,
+    ProductSubCategoryCreate,
+    ProductSubCategoryUpdate,
 )
 from app.services.s3_storage import upload_customer_doc
 
@@ -106,6 +115,58 @@ def _decode_products_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         return created_at, product_id
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor") from exc
+
+
+async def _require_active_lookup(db: AsyncSession, model, lookup_id: uuid.UUID | None, label: str):
+    if lookup_id is None:
+        return None
+    obj = await db.get(model, lookup_id)
+    if obj is None or not getattr(obj, "is_active", True):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {label}")
+    return obj
+
+
+async def _apply_product_reference_fields(db: AsyncSession, data: dict) -> dict:
+    primary_unit_id = data.get("primary_unit_id")
+    if primary_unit_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="primary_unit_id is required")
+
+    primary_unit = await _require_active_lookup(db, Unit, primary_unit_id, "primary_unit_id")
+    secondary_unit = await _require_active_lookup(db, Unit, data.get("secondary_unit_id"), "secondary_unit_id")
+    third_unit = await _require_active_lookup(db, Unit, data.get("third_unit_id"), "third_unit_id")
+    brand = await _require_active_lookup(db, ProductBrand, data.get("brand_id"), "brand_id")
+    category = await _require_active_lookup(db, ProductCategory, data.get("category_id"), "category_id")
+    sub_category = await _require_active_lookup(db, ProductSubCategory, data.get("sub_category_id"), "sub_category_id")
+
+    if sub_category is not None and category is not None and sub_category.category_id not in (None, category.id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="sub_category_id does not belong to category_id")
+
+    secondary_qty = data.pop("secondary_unit_quantity", None) if "secondary_unit_quantity" in data else None
+    third_qty = data.pop("third_unit_quantity", None) if "third_unit_quantity" in data else None
+
+    if secondary_unit is None:
+        data["secondary_unit_id"] = None
+        data["conv_2_to_1"] = None
+    else:
+        data["conv_2_to_1"] = secondary_qty
+
+    if third_unit is None:
+        data["third_unit_id"] = None
+        data["conv_3_to_2"] = None
+        data["conv_3_to_1"] = None
+    else:
+        data["conv_3_to_2"] = third_qty
+        if secondary_qty is not None and third_qty is not None:
+            data["conv_3_to_1"] = secondary_qty * third_qty
+        else:
+            data["conv_3_to_1"] = None
+
+    data["unit"] = primary_unit.unit_name
+    data["brand"] = getattr(brand, "name", None)
+    data["category"] = getattr(category, "name", None)
+    data["sub_category"] = getattr(sub_category, "name", None)
+    data["display_name"] = data.get("name")
+    return data
 
 
 @router.post("/companies")
@@ -187,7 +248,8 @@ async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(ge
 
 @router.post("/products")
 async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_db)):
-    obj = Product(**payload.model_dump())
+    data = await _apply_product_reference_fields(db, payload.model_dump())
+    obj = Product(**data)
     db.add(obj)
     await db.commit()
     await db.refresh(obj)
@@ -269,6 +331,35 @@ async def create_hsn(payload: HSNMasterCreate, db: AsyncSession = Depends(get_db
     return obj
 
 
+@router.post("/product-brands")
+async def create_product_brand(payload: ProductBrandCreate, db: AsyncSession = Depends(get_db)):
+    obj = ProductBrand(**payload.model_dump())
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.post("/product-categories")
+async def create_product_category(payload: ProductCategoryCreate, db: AsyncSession = Depends(get_db)):
+    obj = ProductCategory(**payload.model_dump())
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.post("/product-sub-categories")
+async def create_product_sub_category(payload: ProductSubCategoryCreate, db: AsyncSession = Depends(get_db)):
+    if payload.category_id is not None:
+        await _require_active_lookup(db, ProductCategory, payload.category_id, "category_id")
+    obj = ProductSubCategory(**payload.model_dump())
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
 @router.get("/products")
 async def list_products(
     page: int = Query(1, ge=1),
@@ -281,7 +372,43 @@ async def list_products(
 ):
     # Keep legacy offset pagination for existing modules/tests.
     use_cursor_mode = limit is not None or cursor is not None
-    base_stmt = select(Product).where(Product.is_active.is_(True))
+    base_stmt = (
+        select(
+            Product.id.label("id"),
+            Product.sku.label("sku"),
+            Product.name.label("name"),
+            Product.display_name.label("display_name"),
+            Product.brand_id.label("brand_id"),
+            Product.category_id.label("category_id"),
+            Product.sub_category_id.label("sub_category_id"),
+            Product.brand.label("brand"),
+            Product.category.label("category"),
+            Product.sub_category.label("sub_category"),
+            Product.description.label("description"),
+            Product.hsn_id.label("hsn_id"),
+            Product.primary_unit_id.label("primary_unit_id"),
+            Product.secondary_unit_id.label("secondary_unit_id"),
+            Product.third_unit_id.label("third_unit_id"),
+            Product.conv_2_to_1.label("secondary_unit_quantity"),
+            Product.conv_3_to_2.label("third_unit_quantity"),
+            Product.weight_in_grams.label("weight_in_grams"),
+            Product.is_bundle.label("is_bundle"),
+            Product.bundle_price_override.label("bundle_price_override"),
+            Product.base_price.label("base_price"),
+            Product.tax_percent.label("tax_percent"),
+            Product.unit.label("unit"),
+            Product.is_active.label("is_active"),
+            Product.created_at.label("created_at"),
+            ProductBrand.name.label("brand_name"),
+            ProductCategory.name.label("category_name"),
+            ProductSubCategory.name.label("sub_category_name"),
+        )
+        .select_from(Product)
+        .outerjoin(ProductBrand, ProductBrand.id == Product.brand_id)
+        .outerjoin(ProductCategory, ProductCategory.id == Product.category_id)
+        .outerjoin(ProductSubCategory, ProductSubCategory.id == Product.sub_category_id)
+        .where(Product.is_active.is_(True))
+    )
     ranking = None
     if search and search.strip():
         term = search.strip()
@@ -293,6 +420,8 @@ async def list_products(
                 Product.name.ilike(q),
                 Product.display_name.ilike(q),
                 Product.brand.ilike(q),
+                ProductCategory.name.ilike(q),
+                ProductSubCategory.name.ilike(q),
             )
         )
         ranking = case(
@@ -309,7 +438,24 @@ async def list_products(
             stmt = base_stmt.order_by(ranking.asc(), Product.created_at.desc())
         else:
             stmt = base_stmt.order_by(Product.created_at.desc())
-        return await _paginate(db, stmt, page, page_size)
+        total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+        total = (await db.execute(total_stmt)).scalar_one()
+        rows = (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))).mappings().all()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["brand"] = item.get("brand_name") or item.get("brand")
+            item["category"] = item.get("category_name") or item.get("category")
+            item["sub_category"] = item.get("sub_category_name") or item.get("sub_category")
+            items.append(item)
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+        return {
+            "items": jsonable_encoder(items),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
 
     resolved_limit = limit or 50
     cursor_created_at: datetime | None = None
@@ -334,17 +480,25 @@ async def list_products(
         count_stmt = select(func.count()).select_from(base_stmt.subquery())
         total = (await db.execute(count_stmt)).scalar_one()
     result = await db.execute(stmt.limit(resolved_limit + 1))
-    rows = result.scalars().all()
+    rows = result.mappings().all()
     has_more = len(rows) > resolved_limit
     items = rows[:resolved_limit]
 
     next_cursor: str | None = None
     if has_more and items:
         last = items[-1]
-        next_cursor = _encode_products_cursor(last.created_at, str(last.id))
+        next_cursor = _encode_products_cursor(last["created_at"], str(last["id"]))
+
+    serialized_items = []
+    for row in items:
+        item = dict(row)
+        item["brand"] = item.get("brand_name") or item.get("brand")
+        item["category"] = item.get("category_name") or item.get("category")
+        item["sub_category"] = item.get("sub_category_name") or item.get("sub_category")
+        serialized_items.append(item)
 
     return {
-        "items": jsonable_encoder(items),
+        "items": jsonable_encoder(serialized_items),
         "total": total,
         "limit": resolved_limit,
         "has_more": has_more,
@@ -592,9 +746,78 @@ async def list_units(
 ):
     stmt = select(Unit)
     if search and search.strip():
-        stmt = stmt.where(Unit.unit_name.ilike(f"%{search.strip()}%"))
+        q = f"%{search.strip()}%"
+        stmt = stmt.where(or_(Unit.unit_name.ilike(q), Unit.unit_code.ilike(q)))
     stmt = stmt.order_by(Unit.unit_name.asc())
     return await _paginate(db, stmt, page, page_size)
+
+
+@router.get("/product-brands")
+async def list_product_brands(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(ProductBrand)
+    if search and search.strip():
+        stmt = stmt.where(ProductBrand.name.ilike(f"%{search.strip()}%"))
+    stmt = stmt.order_by(ProductBrand.name.asc())
+    return await _paginate(db, stmt, page, page_size)
+
+
+@router.get("/product-categories")
+async def list_product_categories(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(ProductCategory)
+    if search and search.strip():
+        stmt = stmt.where(ProductCategory.name.ilike(f"%{search.strip()}%"))
+    stmt = stmt.order_by(ProductCategory.name.asc())
+    return await _paginate(db, stmt, page, page_size)
+
+
+@router.get("/product-sub-categories")
+async def list_product_sub_categories(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    search: str | None = Query(None),
+    category_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(
+            ProductSubCategory.id.label("id"),
+            ProductSubCategory.name.label("name"),
+            ProductSubCategory.category_id.label("category_id"),
+            ProductSubCategory.is_active.label("is_active"),
+            ProductSubCategory.created_at.label("created_at"),
+            ProductCategory.name.label("category_name"),
+        )
+        .select_from(ProductSubCategory)
+        .outerjoin(ProductCategory, ProductCategory.id == ProductSubCategory.category_id)
+    )
+    if category_id:
+        stmt = stmt.where(ProductSubCategory.category_id == uuid.UUID(category_id))
+    if search and search.strip():
+        q = f"%{search.strip()}%"
+        stmt = stmt.where(or_(ProductSubCategory.name.ilike(q), ProductCategory.name.ilike(q)))
+    stmt = stmt.order_by(ProductSubCategory.name.asc())
+    total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+    total = (await db.execute(total_stmt)).scalar_one()
+    rows = (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))).mappings().all()
+    items = [dict(row) for row in rows]
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return {
+        "items": jsonable_encoder(items),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/roles")
@@ -887,7 +1110,36 @@ async def patch_product(product_id: str, payload: ProductUpdate, db: AsyncSessio
     import uuid
 
     obj = await _get_or_404(db, Product, uuid.UUID(product_id), "Product")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    patch_data = payload.model_dump(exclude_unset=True)
+    if any(
+        key in patch_data
+        for key in (
+            "name",
+            "brand_id",
+            "category_id",
+            "sub_category_id",
+            "primary_unit_id",
+            "secondary_unit_id",
+            "third_unit_id",
+            "secondary_unit_quantity",
+            "third_unit_quantity",
+        )
+    ):
+        merged = {
+            "name": patch_data.get("name", obj.name),
+            "brand_id": patch_data.get("brand_id", obj.brand_id),
+            "category_id": patch_data.get("category_id", obj.category_id),
+            "sub_category_id": patch_data.get("sub_category_id", obj.sub_category_id),
+            "primary_unit_id": patch_data.get("primary_unit_id", obj.primary_unit_id),
+            "secondary_unit_id": patch_data.get("secondary_unit_id", obj.secondary_unit_id),
+            "third_unit_id": patch_data.get("third_unit_id", obj.third_unit_id),
+            "secondary_unit_quantity": patch_data.get("secondary_unit_quantity", obj.conv_2_to_1),
+            "third_unit_quantity": patch_data.get("third_unit_quantity", obj.conv_3_to_2),
+        }
+        patch_data.update(await _apply_product_reference_fields(db, merged))
+        patch_data.pop("name", None)
+        patch_data["name"] = merged["name"]
+    for key, value in patch_data.items():
         setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
@@ -1075,6 +1327,43 @@ async def patch_hsn(hsn_id: str, payload: HSNMasterUpdate, db: AsyncSession = De
     return obj
 
 
+@router.patch("/product-brands/{brand_id}")
+async def patch_product_brand(brand_id: str, payload: ProductBrandUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, ProductBrand, uuid.UUID(brand_id), "ProductBrand")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/product-categories/{category_id}")
+async def patch_product_category(category_id: str, payload: ProductCategoryUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, ProductCategory, uuid.UUID(category_id), "ProductCategory")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/product-sub-categories/{sub_category_id}")
+async def patch_product_sub_category(
+    sub_category_id: str,
+    payload: ProductSubCategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    obj = await _get_or_404(db, ProductSubCategory, uuid.UUID(sub_category_id), "ProductSubCategory")
+    data = payload.model_dump(exclude_unset=True)
+    if "category_id" in data and data["category_id"] is not None:
+        await _require_active_lookup(db, ProductCategory, data["category_id"], "category_id")
+    for key, value in data.items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
 @router.patch("/pricing/{product_id}")
 async def patch_pricing(product_id: str, payload: PricingUpdate, db: AsyncSession = Depends(get_db)):
     product_uuid = uuid.UUID(product_id)
@@ -1107,6 +1396,30 @@ async def patch_pricing(product_id: str, payload: PricingUpdate, db: AsyncSessio
 @router.delete("/hsn/{hsn_id}")
 async def deactivate_hsn(hsn_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, HSNMaster, uuid.UUID(hsn_id), "HSN")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
+
+
+@router.delete("/product-brands/{brand_id}")
+async def deactivate_product_brand(brand_id: str, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, ProductBrand, uuid.UUID(brand_id), "ProductBrand")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
+
+
+@router.delete("/product-categories/{category_id}")
+async def deactivate_product_category(category_id: str, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, ProductCategory, uuid.UUID(category_id), "ProductCategory")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
+
+
+@router.delete("/product-sub-categories/{sub_category_id}")
+async def deactivate_product_sub_category(sub_category_id: str, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, ProductSubCategory, uuid.UUID(sub_category_id), "ProductSubCategory")
     obj.is_active = False
     await db.commit()
     return {"id": str(obj.id), "is_active": obj.is_active}

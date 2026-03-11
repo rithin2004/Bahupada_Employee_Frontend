@@ -1,13 +1,14 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { HsnAdminEditor } from "@/components/modules/hsn-admin-editor";
+import { ProductLookupsAdminEditor } from "@/components/modules/product-lookups-admin-editor";
 import { ProductsAdminEditor } from "@/components/modules/products-admin-editor";
 import { UnitsAdminEditor } from "@/components/modules/units-admin-editor";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type ProductsTab = "products" | "hsn" | "units";
+type ProductsTab = "products" | "brands" | "categories" | "sub-categories" | "hsn" | "units";
 
 function resolveTab(tab: string | undefined): ProductsTab {
-  if (tab === "hsn" || tab === "units" || tab === "products") {
+  if (tab === "hsn" || tab === "units" || tab === "products" || tab === "brands" || tab === "categories" || tab === "sub-categories") {
     return tab;
   }
   return "products";
@@ -32,11 +33,28 @@ export default async function AdminProductsPage({
         <Tabs defaultValue={selectedTab} className="w-full">
           <TabsList>
             <TabsTrigger value="products">Products</TabsTrigger>
+            <TabsTrigger value="brands">Brands</TabsTrigger>
+            <TabsTrigger value="categories">Categories</TabsTrigger>
+            <TabsTrigger value="sub-categories">Sub Categories</TabsTrigger>
             <TabsTrigger value="hsn">HSN</TabsTrigger>
             <TabsTrigger value="units">Units</TabsTrigger>
           </TabsList>
           <TabsContent value="products">
             <ProductsAdminEditor />
+          </TabsContent>
+          <TabsContent value="brands">
+            <ProductLookupsAdminEditor title="Brands" endpoint="/masters/product-brands" entityLabel="Brand" />
+          </TabsContent>
+          <TabsContent value="categories">
+            <ProductLookupsAdminEditor title="Categories" endpoint="/masters/product-categories" entityLabel="Category" />
+          </TabsContent>
+          <TabsContent value="sub-categories">
+            <ProductLookupsAdminEditor
+              title="Sub Categories"
+              endpoint="/masters/product-sub-categories"
+              entityLabel="Sub Category"
+              withCategory
+            />
           </TabsContent>
           <TabsContent value="hsn">
             <HsnAdminEditor />
