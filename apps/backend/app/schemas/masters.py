@@ -115,19 +115,16 @@ class EmployeeCreate(StrictModel):
 class ProductCreate(StrictModel):
     sku: str
     name: str
-    display_name: str | None = None
-    brand: str | None = None
-    category: str | None = None
-    sub_category: str | None = None
+    brand_id: uuid.UUID | None = None
+    category_id: uuid.UUID | None = None
+    sub_category_id: uuid.UUID | None = None
     description: str | None = None
-    unit: str
     hsn_id: uuid.UUID | None = None
-    primary_unit_id: uuid.UUID | None = None
+    primary_unit_id: uuid.UUID
     secondary_unit_id: uuid.UUID | None = None
     third_unit_id: uuid.UUID | None = None
-    conv_2_to_1: Decimal | None = None
-    conv_3_to_2: Decimal | None = None
-    conv_3_to_1: Decimal | None = None
+    secondary_unit_quantity: Decimal | None = None
+    third_unit_quantity: Decimal | None = None
     weight_in_grams: Decimal | None = None
     is_bundle: bool = False
     bundle_price_override: Decimal | None = None
@@ -181,19 +178,16 @@ class CustomerCreate(StrictModel):
 class ProductUpdate(BaseModel):
     sku: str | None = None
     name: str | None = None
-    display_name: str | None = None
-    brand: str | None = None
-    category: str | None = None
-    sub_category: str | None = None
+    brand_id: uuid.UUID | None = None
+    category_id: uuid.UUID | None = None
+    sub_category_id: uuid.UUID | None = None
     description: str | None = None
-    unit: str | None = None
     hsn_id: uuid.UUID | None = None
     primary_unit_id: uuid.UUID | None = None
     secondary_unit_id: uuid.UUID | None = None
     third_unit_id: uuid.UUID | None = None
-    conv_2_to_1: Decimal | None = None
-    conv_3_to_2: Decimal | None = None
-    conv_3_to_1: Decimal | None = None
+    secondary_unit_quantity: Decimal | None = None
+    third_unit_quantity: Decimal | None = None
     weight_in_grams: Decimal | None = None
     is_bundle: bool | None = None
     bundle_price_override: Decimal | None = None
@@ -203,10 +197,12 @@ class ProductUpdate(BaseModel):
 
 
 class UnitCreate(StrictModel):
+    unit_code: str
     unit_name: str
 
 
 class UnitUpdate(BaseModel):
+    unit_code: str | None = None
     unit_name: str | None = None
 
 
@@ -323,4 +319,36 @@ class CustomerCategoryUpdate(BaseModel):
     name: str | None = None
     customer_type: CustomerType | None = None
     price_class: str | None = Field(default=None, pattern="^[ABC]$")
+    is_active: bool | None = None
+
+
+class ProductBrandCreate(StrictModel):
+    name: str
+    is_active: bool = True
+
+
+class ProductBrandUpdate(BaseModel):
+    name: str | None = None
+    is_active: bool | None = None
+
+
+class ProductCategoryCreate(StrictModel):
+    name: str
+    is_active: bool = True
+
+
+class ProductCategoryUpdate(BaseModel):
+    name: str | None = None
+    is_active: bool | None = None
+
+
+class ProductSubCategoryCreate(StrictModel):
+    name: str
+    category_id: uuid.UUID | None = None
+    is_active: bool = True
+
+
+class ProductSubCategoryUpdate(BaseModel):
+    name: str | None = None
+    category_id: uuid.UUID | None = None
     is_active: bool | None = None

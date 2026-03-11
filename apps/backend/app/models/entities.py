@@ -354,6 +354,7 @@ class Unit(Base, TimestampMixin):
     __tablename__ = "units"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    unit_code: Mapped[str] = mapped_column(String(20), unique=True)
     unit_name: Mapped[str] = mapped_column(String(40), unique=True)
 
 
@@ -367,6 +368,32 @@ class HSNMaster(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class ProductBrand(Base, TimestampMixin):
+    __tablename__ = "product_brands"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ProductCategory(Base, TimestampMixin):
+    __tablename__ = "product_categories"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ProductSubCategory(Base, TimestampMixin):
+    __tablename__ = "product_sub_categories"
+    __table_args__ = (UniqueConstraint("category_id", "name", name="uq_product_sub_category_category_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("product_categories.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(120))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class Product(Base, TimestampMixin):
     __tablename__ = "products"
 
@@ -377,6 +404,9 @@ class Product(Base, TimestampMixin):
     brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
     category: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sub_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("product_brands.id"), nullable=True)
+    category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("product_categories.id"), nullable=True)
+    sub_category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("product_sub_categories.id"), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     hsn_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("hsn_master.id"), nullable=True)
     primary_unit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("units.id"), nullable=True)

@@ -75,17 +75,23 @@ export default async function AdminMastersPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Name</TableHead>
                     <TableHead>SKU</TableHead>
+                    <TableHead>Name</TableHead>
                     <TableHead>Brand</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Unit</TableHead>
+                    <TableHead>Tax %</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.products.map((row) => (
                     <TableRow key={String(row.id)}>
-                      <TableCell>{String(row.name ?? "-")}</TableCell>
                       <TableCell>{String(row.sku ?? "-")}</TableCell>
+                      <TableCell>{String(row.name ?? "-")}</TableCell>
                       <TableCell>{String(row.brand ?? "-")}</TableCell>
+                      <TableCell>{String(row.category ?? "-")}</TableCell>
+                      <TableCell>{String(row.unit ?? "-")}</TableCell>
+                      <TableCell>{String(row.tax_percent ?? "-")}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

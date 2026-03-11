@@ -1,41 +1,66 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { PaginationFooter } from "@/components/ui/pagination-footer";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-type HSNRow = { id: string; hsn_code: string; description: string; gst_percent: string; is_active: boolean };
+type HsnRow = { id: string; hsn_code: string; description: string; gst_percent: string };
 
 const DEFAULT_PAGE_SIZE = 50;
 
+function mapRow(row: Record<string, unknown>): HsnRow {
+  return {
+    id: String(row.id ?? ""),
+    hsn_code: String(row.hsn_code ?? ""),
+    description: String(row.description ?? ""),
+    gst_percent: String(row.gst_percent ?? "0"),
+  };
+}
+
 export function HsnAdminEditor() {
-  const [rows, setRows] = useState<HSNRow[]>([]);
+  const [rows, setRows] = useState<HsnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage(
-    "hsn-admin",
-    1,
-    DEFAULT_PAGE_SIZE
-  );
+  const [openCreateDialog, setOpenCreateDialog] = useState(false);
+  const [createCode, setCreateCode] = useState("");
+  const [createDescription, setCreateDescription] = useState("");
+  const [createGst, setCreateGst] = useState("0");
+  const [creating, setCreating] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [editCode, setEditCode] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editGst, setEditGst] = useState("0");
+  const [saving, setSaving] = useState(false);
+  const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage("hsn-admin", 1, DEFAULT_PAGE_SIZE);
   const [totalPages, setTotalPages] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const [newCode, setNewCode] = useState("");
-  const [newGst, setNewGst] = useState("0");
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
+  const isDirty = selected
+    ? editCode.trim() !== selected.hsn_code || editDescription !== selected.description || editGst.trim() !== selected.gst_percent
+    : false;
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
     setLoading(true);
-    setRows([]);
     setFeedback("");
     try {
       const params = new URLSearchParams();
@@ -45,24 +70,15 @@ export function HsnAdminEditor() {
         params.set("search", searchText.trim());
       }
       const res = asObject(await fetchBackend(`/masters/hsn?${params.toString()}`));
-      setRows(
-        asArray(res.items).map((item) => ({
-          id: String(item.id ?? ""),
-          hsn_code: String(item.hsn_code ?? ""),
-          description: String(item.description ?? ""),
-          gst_percent: String(item.gst_percent ?? "0"),
-          is_active: Boolean(item.is_active ?? true),
-        }))
-      );
+      setRows(asArray(res.items).map(mapRow));
       setCurrentPage(Number(res.page ?? page));
       setTotalPages(Number(res.total_pages ?? 0));
       setTotalCount(Number(res.total ?? 0));
-      setSelectedIds([]);
     } catch (error) {
       setRows([]);
-      resetPage();
       setTotalPages(0);
       setTotalCount(0);
+      resetPage();
       setFeedback(`Load failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
       setLoading(false);
@@ -70,94 +86,101 @@ export function HsnAdminEditor() {
   }
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void load(currentPage, search, pageSize);
-    }, 0);
-    return () => clearTimeout(timer);
+    void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, search, pageSize]);
 
+  useEffect(() => {
+    if (!selected) {
+      setEditCode("");
+      setEditDescription("");
+      setEditGst("0");
+      return;
+    }
+    setEditCode(selected.hsn_code);
+    setEditDescription(selected.description);
+    setEditGst(selected.gst_percent);
+  }, [selected]);
+
   async function createHsn() {
-    if (!newCode.trim()) {
+    if (!createCode.trim()) {
       return;
     }
+    setCreating(true);
     setFeedback("");
     try {
-      await postBackend("/masters/hsn", { hsn_code: newCode.trim(), gst_percent: Number(newGst || "0") });
-      setNewCode("");
-      setNewGst("0");
-      await load(currentPage, search, pageSize);
-      setFeedback("HSN created.");
-    } catch (error) {
-      setFeedback(`Create failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
-  }
-
-  async function saveHsn(row: HSNRow) {
-    setFeedback("");
-    try {
-      await patchBackend(`/masters/hsn/${row.id}`, {
-        hsn_code: row.hsn_code,
-        description: row.description || null,
-        gst_percent: Number(row.gst_percent || "0"),
-        is_active: row.is_active,
+      await postBackend("/masters/hsn", {
+        hsn_code: createCode.trim(),
+        description: createDescription.trim() || null,
+        gst_percent: Number(createGst || "0"),
       });
-      setFeedback("HSN updated.");
-      toast.success("HSN updated.", { duration: 5000 });
+      setCreateCode("");
+      setCreateDescription("");
+      setCreateGst("0");
+      setOpenCreateDialog(false);
+      resetPage();
+      await load(1, search, pageSize);
+      toast.success("HSN created.", { duration: 4000 });
     } catch (error) {
-      setFeedback(`Update failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-      toast.error(`Update failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+      const message = `Create failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      setFeedback(message);
+      toast.error(message, { duration: 5000 });
+    } finally {
+      setCreating(false);
     }
   }
 
-  const allSelected = rows.length > 0 && selectedIds.length === rows.length;
-
-  function toggleSelectAll(checked: boolean) {
-    setSelectedIds(checked ? rows.map((row) => row.id) : []);
-  }
-
-  function toggleSelectOne(id: string, checked: boolean) {
-    setSelectedIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((item) => item !== id)));
-  }
-
-  async function deleteSelected() {
-    if (!selectedIds.length || loading) {
+  async function saveHsn() {
+    if (!selected || !isDirty) {
       return;
     }
-    if (!window.confirm(`Delete ${selectedIds.length} selected HSN record(s)?`)) {
-      return;
-    }
+    setSaving(true);
     setFeedback("");
     try {
-      await Promise.all(selectedIds.map((id) => deleteBackend(`/masters/hsn/${id}`)));
-      setFeedback(`Deleted ${selectedIds.length} HSN record(s).`);
-      toast.success(`Deleted ${selectedIds.length} HSN record(s).`, { duration: 5000 });
+      await patchBackend(`/masters/hsn/${selected.id}`, {
+        hsn_code: editCode.trim(),
+        description: editDescription.trim() || null,
+        gst_percent: Number(editGst || "0"),
+      });
+      setOpenId(null);
       await load(currentPage, search, pageSize);
+      toast.success("HSN updated.", { duration: 4000 });
     } catch (error) {
-      setFeedback(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-      toast.error(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+      const message = `Update failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      setFeedback(message);
+      toast.error(message, { duration: 5000 });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteHsn(id: string) {
+    setFeedback("");
+    try {
+      await deleteBackend(`/masters/hsn/${id}`);
+      await load(currentPage, search, pageSize);
+      toast.success("HSN deleted.", { duration: 4000 });
+    } catch (error) {
+      const message = `Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      setFeedback(message);
+      toast.error(message, { duration: 5000 });
     }
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>HSN (Editable)</CardTitle>
+        <CardTitle>HSN</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid gap-2 md:grid-cols-3">
-          <Input placeholder="HSN code" value={newCode} onChange={(e) => setNewCode(e.target.value)} />
-          <Input placeholder="GST %" value={newGst} onChange={(e) => setNewGst(e.target.value)} />
-          <Button onClick={createHsn}>Add</Button>
-        </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
-            placeholder="Search HSN"
+            placeholder="Search HSN or description"
             value={searchInput}
             onChange={(e) => {
               const value = e.target.value;
               setSearchInput(value);
-              if (value.trim() === "" && search !== "") {
+              if (!value.trim() && search) {
                 setSearch("");
                 resetPage();
               }
@@ -188,91 +211,96 @@ export function HsnAdminEditor() {
           >
             Reset
           </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
+          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
+            <DialogTrigger asChild>
+              <Button>Add HSN</Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Add HSN</DialogTitle>
+                <DialogDescription>Create a HSN record with code, description, and GST %.</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label>HSN Number</Label>
+                  <Input value={createCode} onChange={(e) => setCreateCode(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Description</Label>
+                  <Input value={createDescription} onChange={(e) => setCreateDescription(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>GST %</Label>
+                  <Input value={createGst} onChange={(e) => setCreateGst(e.target.value)} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button onClick={createHsn} disabled={creating || !createCode.trim()}>
+                  {creating ? "Saving..." : "Create HSN"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
         {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
         <div className="overflow-x-auto rounded-lg border">
-          <Table className="min-w-[900px]">
+          <Table className="min-w-[840px]">
             <TableHeader>
-            <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">
-              <TableHead className="w-10">
-                <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
-              </TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">HSN</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Description</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">GST %</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Action</TableHead>
-            </TableRow>
+              <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">
+                <TableHead>HSN Number</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead>GST %</TableHead>
+                <TableHead>Action</TableHead>
+              </TableRow>
             </TableHeader>
             <TableBody>
-            {loading
-              ? Array.from({ length: 12 }).map((_, index) => (
-                  <TableRow key={`skeleton-${index}`} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
-                    <TableCell><Skeleton className="h-5 w-5 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-32 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-56 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-16 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-10 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-8 w-14" /></TableCell>
-                  </TableRow>
-                ))
-              : null}
-            {!loading && rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
-                  No HSN records found.
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {!loading &&
-              rows.map((row, index) => (
-                <TableRow key={row.id} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(row.id)}
-                      onChange={(e) => toggleSelectOne(row.id, e.target.checked)}
-                    />
+              {!loading && rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    No HSN records found.
                   </TableCell>
-                  <TableCell>
-                    <Input
-                      value={row.hsn_code}
-                      onChange={(e) =>
-                        setRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, hsn_code: e.target.value } : item)))
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      value={row.description}
-                      onChange={(e) =>
-                        setRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, description: e.target.value } : item)))
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      value={row.gst_percent}
-                      onChange={(e) =>
-                        setRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, gst_percent: e.target.value } : item)))
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      checked={row.is_active}
-                      onChange={(e) =>
-                        setRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, is_active: e.target.checked } : item)))
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Button size="sm" variant="outline" onClick={() => saveHsn(row)}>
-                      Save
+                </TableRow>
+              ) : null}
+              {rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>{row.hsn_code || "-"}</TableCell>
+                  <TableCell>{row.description || "-"}</TableCell>
+                  <TableCell>{row.gst_percent || "0"}</TableCell>
+                  <TableCell className="flex gap-2">
+                    <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" variant="outline">
+                          Edit
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Edit HSN</DialogTitle>
+                          <DialogDescription>Without changes, Save stays disabled.</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <Label>HSN Number</Label>
+                            <Input value={editCode} onChange={(e) => setEditCode(e.target.value)} />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Description</Label>
+                            <Input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>GST %</Label>
+                            <Input value={editGst} onChange={(e) => setEditGst(e.target.value)} />
+                          </div>
+                        </div>
+                        <DialogFooter>
+                          <Button onClick={saveHsn} disabled={saving || !editCode.trim() || !isDirty}>
+                            {saving ? "Saving..." : "Save"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                    <Button size="sm" variant="destructive" onClick={() => void deleteHsn(row.id)}>
+                      Delete
                     </Button>
                   </TableCell>
                 </TableRow>

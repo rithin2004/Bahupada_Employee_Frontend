@@ -86,22 +86,17 @@ export function MastersCreatePanel() {
   const [productForm, setProductForm] = useState({
     sku: "",
     name: "",
-    display_name: "",
-    brand: "",
-    category: "",
-    sub_category: "",
+    brand_id: "",
+    category_id: "",
+    sub_category_id: "",
     description: "",
-    unit: "PCS",
     hsn_id: "",
     primary_unit_id: "",
     secondary_unit_id: "",
     third_unit_id: "",
-    conv_2_to_1: "",
-    conv_3_to_2: "",
-    conv_3_to_1: "",
+    secondary_unit_quantity: "",
+    third_unit_quantity: "",
     weight_in_grams: "",
-    is_bundle: false,
-    bundle_price_override: "",
     base_price: "0",
     tax_percent: "0",
   });
@@ -222,22 +217,17 @@ export function MastersCreatePanel() {
       const payload = cleanPayload({
         sku: productForm.sku,
         name: productForm.name,
-        display_name: productForm.display_name,
-        brand: productForm.brand,
-        category: productForm.category,
-        sub_category: productForm.sub_category,
+        brand_id: productForm.brand_id,
+        category_id: productForm.category_id,
+        sub_category_id: productForm.sub_category_id,
         description: productForm.description,
-        unit: productForm.unit,
         hsn_id: productForm.hsn_id,
         primary_unit_id: productForm.primary_unit_id,
         secondary_unit_id: productForm.secondary_unit_id,
         third_unit_id: productForm.third_unit_id,
-        conv_2_to_1: toNumber(productForm.conv_2_to_1),
-        conv_3_to_2: toNumber(productForm.conv_3_to_2),
-        conv_3_to_1: toNumber(productForm.conv_3_to_1),
+        secondary_unit_quantity: toNumber(productForm.secondary_unit_quantity),
+        third_unit_quantity: toNumber(productForm.third_unit_quantity),
         weight_in_grams: toNumber(productForm.weight_in_grams),
-        is_bundle: productForm.is_bundle,
-        bundle_price_override: toNumber(productForm.bundle_price_override),
         base_price: toNumber(productForm.base_price),
         tax_percent: toNumber(productForm.tax_percent),
       });
@@ -245,22 +235,17 @@ export function MastersCreatePanel() {
       setProductForm({
         sku: "",
         name: "",
-        display_name: "",
-        brand: "",
-        category: "",
-        sub_category: "",
+        brand_id: "",
+        category_id: "",
+        sub_category_id: "",
         description: "",
-        unit: "PCS",
         hsn_id: "",
         primary_unit_id: "",
         secondary_unit_id: "",
         third_unit_id: "",
-        conv_2_to_1: "",
-        conv_3_to_2: "",
-        conv_3_to_1: "",
+        secondary_unit_quantity: "",
+        third_unit_quantity: "",
         weight_in_grams: "",
-        is_bundle: false,
-        bundle_price_override: "",
         base_price: "0",
         tax_percent: "0",
       });
@@ -477,28 +462,20 @@ export function MastersCreatePanel() {
                   <Input value={productForm.name} onChange={(e) => setProductForm((p) => ({ ...p, name: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
-                  <Label>Display Name</Label>
-                  <Input value={productForm.display_name} onChange={(e) => setProductForm((p) => ({ ...p, display_name: e.target.value }))} />
+                  <Label>Brand ID</Label>
+                  <Input value={productForm.brand_id} onChange={(e) => setProductForm((p) => ({ ...p, brand_id: e.target.value }))} placeholder="UUID" />
                 </div>
                 <div className="space-y-1">
-                  <Label>Brand</Label>
-                  <Input value={productForm.brand} onChange={(e) => setProductForm((p) => ({ ...p, brand: e.target.value }))} />
+                  <Label>Category ID</Label>
+                  <Input value={productForm.category_id} onChange={(e) => setProductForm((p) => ({ ...p, category_id: e.target.value }))} placeholder="UUID" />
                 </div>
                 <div className="space-y-1">
-                  <Label>Category</Label>
-                  <Input value={productForm.category} onChange={(e) => setProductForm((p) => ({ ...p, category: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Sub Category</Label>
-                  <Input value={productForm.sub_category} onChange={(e) => setProductForm((p) => ({ ...p, sub_category: e.target.value }))} />
+                  <Label>Sub Category ID</Label>
+                  <Input value={productForm.sub_category_id} onChange={(e) => setProductForm((p) => ({ ...p, sub_category_id: e.target.value }))} placeholder="UUID" />
                 </div>
                 <div className="space-y-1 md:col-span-2">
                   <Label>Description</Label>
                   <Textarea value={productForm.description} onChange={(e) => setProductForm((p) => ({ ...p, description: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Unit *</Label>
-                  <Input value={productForm.unit} onChange={(e) => setProductForm((p) => ({ ...p, unit: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <Label>HSN ID</Label>
@@ -517,24 +494,19 @@ export function MastersCreatePanel() {
                   <Input value={productForm.third_unit_id} onChange={(e) => setProductForm((p) => ({ ...p, third_unit_id: e.target.value }))} placeholder="UUID" />
                 </div>
                 <div className="space-y-1">
-                  <Label>Conv 2 to 1</Label>
-                  <Input value={productForm.conv_2_to_1} onChange={(e) => setProductForm((p) => ({ ...p, conv_2_to_1: e.target.value }))} />
+                  <Label>How many primary units in second unit</Label>
+                  <Input
+                    value={productForm.secondary_unit_quantity}
+                    onChange={(e) => setProductForm((p) => ({ ...p, secondary_unit_quantity: e.target.value }))}
+                  />
                 </div>
                 <div className="space-y-1">
-                  <Label>Conv 3 to 2</Label>
-                  <Input value={productForm.conv_3_to_2} onChange={(e) => setProductForm((p) => ({ ...p, conv_3_to_2: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Conv 3 to 1</Label>
-                  <Input value={productForm.conv_3_to_1} onChange={(e) => setProductForm((p) => ({ ...p, conv_3_to_1: e.target.value }))} />
+                  <Label>How many second units in third unit</Label>
+                  <Input value={productForm.third_unit_quantity} onChange={(e) => setProductForm((p) => ({ ...p, third_unit_quantity: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <Label>Weight (grams)</Label>
                   <Input value={productForm.weight_in_grams} onChange={(e) => setProductForm((p) => ({ ...p, weight_in_grams: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Bundle Price Override</Label>
-                  <Input value={productForm.bundle_price_override} onChange={(e) => setProductForm((p) => ({ ...p, bundle_price_override: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <Label>Base Price *</Label>
@@ -544,19 +516,11 @@ export function MastersCreatePanel() {
                   <Label>Tax Percent *</Label>
                   <Input value={productForm.tax_percent} onChange={(e) => setProductForm((p) => ({ ...p, tax_percent: e.target.value }))} />
                 </div>
-                <div className="flex items-center gap-2 pt-2">
-                  <Checkbox
-                    id="is_bundle"
-                    checked={productForm.is_bundle}
-                    onCheckedChange={(value) => setProductForm((p) => ({ ...p, is_bundle: value === true }))}
-                  />
-                  <Label htmlFor="is_bundle">Is Bundle</Label>
-                </div>
               </div>
               <DialogFooter>
                 <Button
                   onClick={createProduct}
-                  disabled={!productForm.sku || !productForm.name || !productForm.unit || submitting === "product"}
+                  disabled={!productForm.sku || !productForm.name || !productForm.primary_unit_id || submitting === "product"}
                 >
                   {submitting === "product" ? "Creating..." : "Create Product"}
                 </Button>
