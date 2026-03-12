@@ -6,6 +6,15 @@ import { toast } from "sonner";
 import { asArray, asObject, fetchBackend, postBackend } from "@/lib/backend-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +28,8 @@ type AccountRow = {
   party_type: string;
   party_id: string;
   party_name: string;
+  account_category_id: string;
+  account_category_name: string;
   total_debit: string;
   total_credit: string;
   balance: string;
@@ -86,6 +97,11 @@ export function PartyLedgerAdminEditor() {
   const [referenceNo, setReferenceNo] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
   const [postingPayment, setPostingPayment] = useState(false);
+  const [openCategoryDialog, setOpenCategoryDialog] = useState(false);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [newCategoryCode, setNewCategoryCode] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryDescription, setNewCategoryDescription] = useState("");
 
   async function loadAccounts(kind: PartyKind, term: string) {
     setAccountsLoading(true);
@@ -104,6 +120,8 @@ export function PartyLedgerAdminEditor() {
         party_type: String(row.party_type ?? kind),
         party_id: String(row.party_id ?? ""),
         party_name: String(row.party_name ?? "-"),
+        account_category_id: String(row.account_category_id ?? ""),
+        account_category_name: String(row.account_category_name ?? ""),
         total_debit: String(row.total_debit ?? "0"),
         total_credit: String(row.total_credit ?? "0"),
         balance: String(row.balance ?? "0"),
@@ -216,6 +234,34 @@ export function PartyLedgerAdminEditor() {
     }
   }
 
+  async function createAccountCategory() {
+    if (!newCategoryCode.trim() || !newCategoryName.trim()) {
+      toast.error("Category code and name are required.");
+      return;
+    }
+    setCreatingCategory(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/account-categories", {
+          code: newCategoryCode.trim(),
+          name: newCategoryName.trim(),
+          party_type: tab,
+          description: newCategoryDescription.trim() || null,
+          is_active: true,
+        })
+      );
+      setOpenCategoryDialog(false);
+      setNewCategoryCode("");
+      setNewCategoryName("");
+      setNewCategoryDescription("");
+      toast.success(`Account category added: ${String(created.name ?? newCategoryName.trim())}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Account category create failed");
+    } finally {
+      setCreatingCategory(false);
+    }
+  }
+
   return (
     <Tabs value={tab} onValueChange={(value) => setTab(value as PartyKind)} className="space-y-4">
       <TabsList>
@@ -227,7 +273,46 @@ export function PartyLedgerAdminEditor() {
         <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
           <Card>
             <CardHeader>
-              <CardTitle>{tab === "VENDOR" ? "Vendor Ledger Accounts" : "Customer Ledger Accounts"}</CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle>{tab === "VENDOR" ? "Vendor Ledger Accounts" : "Customer Ledger Accounts"}</CardTitle>
+                <Dialog open={openCategoryDialog} onOpenChange={setOpenCategoryDialog}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline">+ Add Account Category</Button>
+                  </DialogTrigger>
+                  <DialogContent className="w-[92vw] max-w-[520px]">
+                    <DialogHeader>
+                      <DialogTitle>Add {tab === "VENDOR" ? "Vendor" : "Customer"} Account Category</DialogTitle>
+                      <DialogDescription>Create a ledger account category for this party type.</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-3">
+                      <div className="space-y-1">
+                        <Label>Code *</Label>
+                        <Input value={newCategoryCode} onChange={(e) => setNewCategoryCode(e.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Name *</Label>
+                        <Input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Description</Label>
+                        <Input value={newCategoryDescription} onChange={(e) => setNewCategoryDescription(e.target.value)} />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button type="button" variant="outline" onClick={() => setOpenCategoryDialog(false)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => void createAccountCategory()}
+                        disabled={creatingCategory || !newCategoryCode.trim() || !newCategoryName.trim()}
+                      >
+                        {creatingCategory ? "Adding..." : "Add Account Category"}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex gap-2">
@@ -272,6 +357,9 @@ export function PartyLedgerAdminEditor() {
                       onClick={() => setSelectedAccount(account)}
                     >
                       <p className="font-medium">{account.party_name}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Account Category {account.account_category_name || "-"}
+                      </p>
                       <p className="mt-1 text-xs text-muted-foreground">
                         Admin Dr {formatAmount(account.total_debit)} | Admin Cr {formatAmount(account.total_credit)}
                       </p>

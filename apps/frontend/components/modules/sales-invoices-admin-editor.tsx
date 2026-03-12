@@ -148,7 +148,7 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function formatDate(value: string): string {
+function formatDate(value: string | null | undefined): string {
   if (!value) {
     return "-";
   }
@@ -649,6 +649,8 @@ export function SalesInvoicesAdminEditor() {
     }
   }, [allocationDate, allocationDialogOpen, loadVehicleOptions]);
 
+  const selectedRun = deliveryRuns.find((run) => run.run_id === selectedRunId) ?? deliveryRuns[0] ?? null;
+
   useEffect(() => {
     if (!selectedRun) {
       return;
@@ -676,7 +678,6 @@ export function SalesInvoicesAdminEditor() {
   const allInvoicesSelected =
     filteredInvoiceRows.length > 0 && filteredInvoiceRows.every((row) => selectedInvoiceIds.includes(row.id));
   const selectedBatch = workflowBatches.find((batch) => batch.batch_id === selectedBatchId) ?? workflowBatches[0] ?? null;
-  const selectedRun = deliveryRuns.find((run) => run.run_id === selectedRunId) ?? deliveryRuns[0] ?? null;
 
   function formatWorkflowWeight(grams: number): string {
     if (grams >= 1000) {

@@ -34,14 +34,20 @@ async def post_purchase_bill(session: AsyncSession, purchase_bill_id):
     if bill.posted:
         return bill
 
-    challan = await session.get(PurchaseChallan, bill.purchase_challan_id)
-    if challan is None:
-        raise ValueError("Purchase challan not found")
+    challan = None
+    if bill.purchase_challan_id is not None:
+        challan = await session.get(PurchaseChallan, bill.purchase_challan_id)
+        if challan is None:
+            raise ValueError("Purchase challan not found")
+    warehouse_id = bill.warehouse_id if bill.warehouse_id is not None else challan.warehouse_id if challan is not None else None
+    if warehouse_id is None:
+        raise ValueError("Purchase bill warehouse not found")
 
     bill.status = normalize_status(bill.status)
-    challan.status = normalize_status(challan.status)
     bill.status = assert_voucher_transition(bill.status, VoucherStatus.POSTED.value, "purchase_bill")
-    challan.status = assert_voucher_transition(challan.status, VoucherStatus.POSTED.value, "purchase_challan")
+    if challan is not None:
+        challan.status = normalize_status(challan.status)
+        challan.status = assert_voucher_transition(challan.status, VoucherStatus.POSTED.value, "purchase_challan")
 
     items_res = await session.execute(select(PurchaseBillItem).where(PurchaseBillItem.purchase_bill_id == bill.id))
     items = items_res.scalars().all()
@@ -49,7 +55,7 @@ async def post_purchase_bill(session: AsyncSession, purchase_bill_id):
     for item in items:
         batch_res = await session.execute(
             select(InventoryBatch).where(
-                InventoryBatch.warehouse_id == challan.warehouse_id,
+                InventoryBatch.warehouse_id == warehouse_id,
                 InventoryBatch.product_id == item.product_id,
                 InventoryBatch.batch_no == item.batch_no,
             )
@@ -57,7 +63,7 @@ async def post_purchase_bill(session: AsyncSession, purchase_bill_id):
         batch = batch_res.scalar_one_or_none()
         if batch is None:
             batch = InventoryBatch(
-                warehouse_id=challan.warehouse_id,
+                warehouse_id=warehouse_id,
                 product_id=item.product_id,
                 batch_no=item.batch_no,
                 expiry_date=item.expiry_date,
@@ -70,7 +76,7 @@ async def post_purchase_bill(session: AsyncSession, purchase_bill_id):
         batch.available_quantity = Decimal(batch.available_quantity) + Decimal(item.quantity)
 
         movement = StockMovement(
-            warehouse_id=challan.warehouse_id,
+            warehouse_id=warehouse_id,
             product_id=item.product_id,
             batch_no=item.batch_no,
             move_type=StockMoveType.IN,

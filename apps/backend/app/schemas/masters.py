@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.entities import CustomerClass, CustomerType, EmployeeRole, Gender, PortalScope
+from app.models.entities import CustomerClass, CustomerType, EmployeeRole, Gender, PartyType, PortalScope
 
 
 class StrictModel(BaseModel):
@@ -147,6 +147,7 @@ class VendorCreate(StrictModel):
     pincode: str | None = None
     bank_account_number: str | None = None
     ifsc_code: str | None = None
+    account_category_id: uuid.UUID | None = None
 
 
 class CustomerCreate(StrictModel):
@@ -156,6 +157,7 @@ class CustomerCreate(StrictModel):
     outlet_name: str | None = None
     customer_type: CustomerType | None = None
     customer_category_id: uuid.UUID | None = None
+    account_category_id: uuid.UUID | None = None
     customer_class: CustomerClass | None = None
     route_id: uuid.UUID | None = None
     route_name: str | None = None
@@ -236,6 +238,7 @@ class CustomerUpdate(BaseModel):
     outlet_name: str | None = None
     customer_type: CustomerType | None = None
     customer_category_id: uuid.UUID | None = None
+    account_category_id: uuid.UUID | None = None
     customer_class: CustomerClass | None = None
     route_id: uuid.UUID | None = None
     route_name: str | None = None
@@ -283,6 +286,7 @@ class VendorUpdate(BaseModel):
     pincode: str | None = None
     bank_account_number: str | None = None
     ifsc_code: str | None = None
+    account_category_id: uuid.UUID | None = None
     is_active: bool | None = None
 
 
@@ -319,6 +323,22 @@ class CustomerCategoryUpdate(BaseModel):
     name: str | None = None
     customer_type: CustomerType | None = None
     price_class: str | None = Field(default=None, pattern="^[ABC]$")
+    is_active: bool | None = None
+
+
+class AccountCategoryCreate(StrictModel):
+    code: str
+    name: str
+    party_type: PartyType
+    description: str | None = None
+    is_active: bool = True
+
+
+class AccountCategoryUpdate(BaseModel):
+    code: str | None = None
+    name: str | None = None
+    party_type: PartyType | None = None
+    description: str | None = None
     is_active: bool | None = None
 
 

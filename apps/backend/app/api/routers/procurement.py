@@ -139,11 +139,6 @@ async def create_purchase_challan(
             )
         )
 
-    try:
-        await post_vendor_purchase_bill_payable(db, bill)
-    except ValueError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(challan)
     response = jsonable_encoder(challan)
@@ -208,8 +203,9 @@ async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
     ).scalars().all()
     response: list[dict] = []
     for bill in bills:
-        challan = await db.get(PurchaseChallan, bill.purchase_challan_id)
+        challan = await db.get(PurchaseChallan, bill.purchase_challan_id) if bill.purchase_challan_id else None
         vendor = await db.get(Vendor, bill.vendor_id) if bill.vendor_id else None
+        warehouse = await db.get(Warehouse, bill.warehouse_id) if bill.warehouse_id else None
         item_count = (
             await db.execute(select(PurchaseBillItem).where(PurchaseBillItem.purchase_bill_id == bill.id))
         ).scalars().all()
@@ -220,9 +216,11 @@ async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
                 "bill_date": str(bill.bill_date),
                 "status": bill.status,
                 "posted": bill.posted,
-                "challan_id": str(bill.purchase_challan_id),
+                "challan_id": str(bill.purchase_challan_id) if bill.purchase_challan_id else None,
                 "challan_reference_no": challan.reference_no if challan else "",
                 "vendor_name": vendor.name if vendor else "",
+                "warehouse_name": warehouse.name if warehouse else "",
+                "entry_mode": "challan" if challan else "direct",
                 "item_count": len(item_count),
             }
         )
@@ -364,31 +362,55 @@ async def create_purchase_bill(
     if replay_body is not None:
         return replay_body
 
-    challan = await db.get(PurchaseChallan, payload.challan_id)
-    if challan is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
+    challan = None
+    vendor_id = payload.vendor_id
+    warehouse_id = payload.warehouse_id
+    rack_id = payload.rack_id
 
-    challan_items = (
-        await db.execute(select(PurchaseChallanItem).where(PurchaseChallanItem.purchase_challan_id == challan.id))
-    ).scalars().all()
+    challan_items: list[PurchaseChallanItem] = []
     challan_qty_by_product: dict[uuid.UUID, Decimal] = {}
     challan_batch_by_product: dict[uuid.UUID, str] = {}
-    for item in challan_items:
-        challan_qty_by_product[item.product_id] = challan_qty_by_product.get(item.product_id, Decimal("0")) + Decimal(item.quantity)
-        if item.product_id not in challan_batch_by_product and item.batch_number:
-            challan_batch_by_product[item.product_id] = item.batch_number
+    if payload.challan_id is not None:
+        challan = await db.get(PurchaseChallan, payload.challan_id)
+        if challan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
+        vendor_id = challan.vendor_id
+        warehouse_id = challan.warehouse_id
+        rack_id = challan.rack_id
+        challan_items = (
+            await db.execute(select(PurchaseChallanItem).where(PurchaseChallanItem.purchase_challan_id == challan.id))
+        ).scalars().all()
+        for item in challan_items:
+            challan_qty_by_product[item.product_id] = challan_qty_by_product.get(item.product_id, Decimal("0")) + Decimal(item.quantity)
+            if item.product_id not in challan_batch_by_product and item.batch_number:
+                challan_batch_by_product[item.product_id] = item.batch_number
+    else:
+        if vendor_id is None or warehouse_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="vendor_id and warehouse_id are required when challan_id is not provided",
+            )
+        if await db.get(Vendor, vendor_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+        if await db.get(Warehouse, warehouse_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Warehouse not found")
     remaining_challan_qty = dict(challan_qty_by_product)
 
     bill = PurchaseBill(
         purchase_challan_id=payload.challan_id,
-        vendor_id=challan.vendor_id,
+        vendor_id=vendor_id,
+        warehouse_id=warehouse_id,
+        rack_id=rack_id,
         bill_number=payload.bill_number,
         bill_date=payload.bill_date,
+        subtotal=Decimal("0"),
+        total_amount=Decimal("0"),
         status=VoucherStatus.POSTED.value,
         posted=True,
     )
     db.add(bill)
     await db.flush()
+    total_amount = Decimal("0")
 
     for item in payload.items:
         if item.damaged_quantity < 0:
@@ -397,6 +419,7 @@ async def create_purchase_bill(
         damaged_qty = Decimal(item.damaged_quantity)
         if damaged_qty > received_qty:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="damaged_quantity cannot exceed quantity")
+        total_amount += received_qty * Decimal(item.unit_price)
 
         db.add(
             PurchaseBillItem(
@@ -410,16 +433,18 @@ async def create_purchase_bill(
             )
         )
 
-        baseline = remaining_challan_qty.get(item.product_id, Decimal("0"))
-        allocated_baseline = baseline if baseline <= received_qty else received_qty
-        remaining_challan_qty[item.product_id] = baseline - allocated_baseline
-
         final_available = received_qty - damaged_qty
-        delta_available = final_available - allocated_baseline
+        if challan is not None:
+            baseline = remaining_challan_qty.get(item.product_id, Decimal("0"))
+            allocated_baseline = baseline if baseline <= received_qty else received_qty
+            remaining_challan_qty[item.product_id] = baseline - allocated_baseline
+            delta_available = final_available - allocated_baseline
+        else:
+            delta_available = final_available
 
         batch_res = await db.execute(
             select(InventoryBatch).where(
-                InventoryBatch.warehouse_id == challan.warehouse_id,
+                InventoryBatch.warehouse_id == warehouse_id,
                 InventoryBatch.product_id == item.product_id,
                 InventoryBatch.batch_no == item.batch_no,
             )
@@ -427,7 +452,7 @@ async def create_purchase_bill(
         batch = batch_res.scalar_one_or_none()
         if batch is None:
             batch = InventoryBatch(
-                warehouse_id=challan.warehouse_id,
+                warehouse_id=warehouse_id,
                 product_id=item.product_id,
                 batch_no=item.batch_no,
                 expiry_date=item.expiry_date,
@@ -445,7 +470,7 @@ async def create_purchase_bill(
         if delta_available > 0:
             db.add(
                 StockMovement(
-                    warehouse_id=challan.warehouse_id,
+                    warehouse_id=warehouse_id,
                     product_id=item.product_id,
                     batch_no=item.batch_no,
                     move_type=StockMoveType.IN,
@@ -458,7 +483,7 @@ async def create_purchase_bill(
         elif delta_available < 0:
             db.add(
                 StockMovement(
-                    warehouse_id=challan.warehouse_id,
+                    warehouse_id=warehouse_id,
                     product_id=item.product_id,
                     batch_no=item.batch_no,
                     move_type=StockMoveType.OUT,
@@ -472,7 +497,7 @@ async def create_purchase_bill(
         if damaged_qty > 0:
             db.add(
                 StockMovement(
-                    warehouse_id=challan.warehouse_id,
+                    warehouse_id=warehouse_id,
                     product_id=item.product_id,
                     batch_no=item.batch_no,
                     move_type=StockMoveType.ADJUST,
@@ -483,32 +508,42 @@ async def create_purchase_bill(
                 )
             )
 
-    for product_id, missing_qty in remaining_challan_qty.items():
-        if missing_qty <= 0:
-            continue
-        batch_no = challan_batch_by_product.get(product_id, _challan_batch_no(challan.id, 1))
-        batch_res = await db.execute(
-            select(InventoryBatch).where(
-                InventoryBatch.warehouse_id == challan.warehouse_id,
-                InventoryBatch.product_id == product_id,
-                InventoryBatch.batch_no == batch_no,
+    if challan is not None:
+        for product_id, missing_qty in remaining_challan_qty.items():
+            if missing_qty <= 0:
+                continue
+            batch_no = challan_batch_by_product.get(product_id, _challan_batch_no(challan.id, 1))
+            batch_res = await db.execute(
+                select(InventoryBatch).where(
+                    InventoryBatch.warehouse_id == warehouse_id,
+                    InventoryBatch.product_id == product_id,
+                    InventoryBatch.batch_no == batch_no,
+                )
             )
-        )
-        batch = batch_res.scalar_one_or_none()
-        if batch is not None:
-            batch.available_quantity = Decimal(batch.available_quantity) - missing_qty
-        db.add(
-            StockMovement(
-                warehouse_id=challan.warehouse_id,
-                product_id=product_id,
-                batch_no=batch_no,
-                move_type=StockMoveType.OUT,
-                quantity=missing_qty,
-                reference_type="purchase_bill_shortage",
-                reference_id=bill.id,
-                created_at=datetime.now(timezone.utc),
+            batch = batch_res.scalar_one_or_none()
+            if batch is not None:
+                batch.available_quantity = Decimal(batch.available_quantity) - missing_qty
+            db.add(
+                StockMovement(
+                    warehouse_id=warehouse_id,
+                    product_id=product_id,
+                    batch_no=batch_no,
+                    move_type=StockMoveType.OUT,
+                    quantity=missing_qty,
+                    reference_type="purchase_bill_shortage",
+                    reference_id=bill.id,
+                    created_at=datetime.now(timezone.utc),
+                )
             )
-        )
+
+    bill.subtotal = total_amount
+    bill.total_amount = total_amount
+    await db.flush()
+    try:
+        await post_vendor_purchase_bill_payable(db, bill)
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     await db.commit()
     await db.refresh(bill)

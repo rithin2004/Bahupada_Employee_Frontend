@@ -489,6 +489,17 @@ class CustomerCategory(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class AccountCategory(Base, TimestampMixin):
+    __tablename__ = "account_categories"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(40), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    party_type: Mapped[PartyType] = mapped_column(SQLEnum(PartyType, name="party_type"), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class Vendor(Base, TimestampMixin):
     __tablename__ = "vendors"
 
@@ -507,6 +518,7 @@ class Vendor(Base, TimestampMixin):
     pincode: Mapped[str | None] = mapped_column(String(12), nullable=True)
     bank_account_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     ifsc_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    account_category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("account_categories.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -526,6 +538,7 @@ class Customer(Base, TimestampMixin):
         SQLEnum(CustomerType, name="customer_type"), default=CustomerType.B2B, nullable=False
     )
     customer_category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("customer_categories.id"), nullable=True)
+    account_category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("account_categories.id"), nullable=True)
     gstin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     owner_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -638,8 +651,10 @@ class PurchaseBill(Base, TimestampMixin):
     __tablename__ = "purchase_bills"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    purchase_challan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_challans.id"), nullable=False)
+    purchase_challan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("purchase_challans.id"), nullable=True)
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("vendors.id"), nullable=True)
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    rack_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("racks.id"), nullable=True)
     bill_number: Mapped[str] = mapped_column(String(100), unique=True)
     bill_date: Mapped[date] = mapped_column(Date)
     subtotal: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)

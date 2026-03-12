@@ -27,10 +27,26 @@ type VendorRow = {
   name: string;
   firm_name: string;
   gstin: string;
+  pan: string;
+  owner_name: string;
   phone: string;
+  alternate_phone: string;
+  email: string;
+  street: string;
   city: string;
   state: string;
+  pincode: string;
+  bank_account_number: string;
+  ifsc_code: string;
+  account_category_id: string;
+  account_category_name: string;
   is_active: boolean;
+};
+
+type AccountCategoryRow = {
+  id: string;
+  code: string;
+  name: string;
 };
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -50,6 +66,13 @@ const EMPTY_CREATE_FORM = {
   pincode: "",
   bank_account_number: "",
   ifsc_code: "",
+  account_category_id: "",
+};
+
+const EMPTY_CATEGORY_FORM = {
+  code: "",
+  name: "",
+  description: "",
 };
 
 function mapRow(row: Record<string, unknown>): VendorRow {
@@ -58,9 +81,19 @@ function mapRow(row: Record<string, unknown>): VendorRow {
     name: String(row.name ?? ""),
     firm_name: String(row.firm_name ?? ""),
     gstin: String(row.gstin ?? ""),
+    pan: String(row.pan ?? ""),
+    owner_name: String(row.owner_name ?? ""),
     phone: String(row.phone ?? ""),
+    alternate_phone: String(row.alternate_phone ?? ""),
+    email: String(row.email ?? ""),
+    street: String(row.street ?? ""),
     city: String(row.city ?? ""),
     state: String(row.state ?? ""),
+    pincode: String(row.pincode ?? ""),
+    bank_account_number: String(row.bank_account_number ?? ""),
+    ifsc_code: String(row.ifsc_code ?? ""),
+    account_category_id: String(row.account_category_id ?? ""),
+    account_category_name: String(row.account_category_name ?? ""),
     is_active: Boolean(row.is_active ?? true),
   };
 }
@@ -72,6 +105,10 @@ export function VendorsAdminEditor() {
   const [openCreateDialog, setOpenCreateDialog] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
+  const [accountCategories, setAccountCategories] = useState<AccountCategoryRow[]>([]);
+  const [openCategoryDialog, setOpenCategoryDialog] = useState(false);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [categoryForm, setCategoryForm] = useState({ ...EMPTY_CATEGORY_FORM });
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage(
@@ -86,6 +123,21 @@ export function VendorsAdminEditor() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
+
+  async function loadAccountCategories() {
+    try {
+      const response = asObject(await fetchBackend("/masters/account-categories?party_type=VENDOR&page=1&page_size=100"));
+      setAccountCategories(
+        asArray(response.items).map((row) => ({
+          id: String(row.id ?? ""),
+          code: String(row.code ?? ""),
+          name: String(row.name ?? ""),
+        }))
+      );
+    } catch {
+      setAccountCategories([]);
+    }
+  }
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
     setLoading(true);
@@ -116,6 +168,10 @@ export function VendorsAdminEditor() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    void loadAccountCategories();
+  }, []);
 
   useEffect(() => {
     void load(currentPage, search, pageSize);
@@ -150,9 +206,18 @@ export function VendorsAdminEditor() {
         name: selected.name,
         firm_name: selected.firm_name || null,
         gstin: selected.gstin || null,
+        pan: selected.pan || null,
+        owner_name: selected.owner_name || null,
         phone: selected.phone || null,
+        alternate_phone: selected.alternate_phone || null,
+        email: selected.email || null,
+        street: selected.street || null,
         city: selected.city || null,
         state: selected.state || null,
+        pincode: selected.pincode || null,
+        bank_account_number: selected.bank_account_number || null,
+        ifsc_code: selected.ifsc_code || null,
+        account_category_id: selected.account_category_id || null,
         is_active: selected.is_active,
       });
       toast.success(`Vendor updated: ${selected.name}`, { duration: 5000 });
@@ -189,6 +254,7 @@ export function VendorsAdminEditor() {
         pincode: createForm.pincode.trim() || null,
         bank_account_number: createForm.bank_account_number.trim() || null,
         ifsc_code: createForm.ifsc_code.trim() || null,
+        account_category_id: createForm.account_category_id || null,
       });
       const createdName = createForm.name.trim();
       setCreateForm({ ...EMPTY_CREATE_FORM });
@@ -203,6 +269,34 @@ export function VendorsAdminEditor() {
       toast.error(message, { duration: 5000 });
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function createInlineCategory() {
+    if (!categoryForm.code.trim() || !categoryForm.name.trim()) {
+      toast.error("Category code and name are required.", { duration: 5000 });
+      return;
+    }
+    setCreatingCategory(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/account-categories", {
+          code: categoryForm.code.trim(),
+          name: categoryForm.name.trim(),
+          party_type: "VENDOR",
+          description: categoryForm.description.trim() || null,
+          is_active: true,
+        })
+      );
+      await loadAccountCategories();
+      setCreateForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
+      setCategoryForm({ ...EMPTY_CATEGORY_FORM });
+      setOpenCategoryDialog(false);
+      toast.success(`Account category created: ${String(created.name ?? categoryForm.name.trim())}`, { duration: 5000 });
+    } catch (error) {
+      toast.error(`Category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingCategory(false);
     }
   }
 
@@ -360,6 +454,69 @@ export function VendorsAdminEditor() {
                     onChange={(e) => setCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))}
                   />
                 </div>
+                <div className="space-y-1 md:col-span-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Account Category</Label>
+                    <Dialog open={openCategoryDialog} onOpenChange={setOpenCategoryDialog}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" type="button" variant="outline">+ Add Account Category</Button>
+                      </DialogTrigger>
+                      <DialogContent className="w-[92vw] max-w-[520px]">
+                        <DialogHeader>
+                          <DialogTitle>Add Vendor Account Category</DialogTitle>
+                          <DialogDescription>Create a vendor account category without leaving vendor creation.</DialogDescription>
+                        </DialogHeader>
+                        <div className="grid gap-3">
+                          <div className="space-y-1">
+                            <Label>Code *</Label>
+                            <Input
+                              value={categoryForm.code}
+                              onChange={(e) => setCategoryForm((prev) => ({ ...prev, code: e.target.value }))}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Name *</Label>
+                            <Input
+                              value={categoryForm.name}
+                              onChange={(e) => setCategoryForm((prev) => ({ ...prev, name: e.target.value }))}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Description</Label>
+                            <Input
+                              value={categoryForm.description}
+                              onChange={(e) => setCategoryForm((prev) => ({ ...prev, description: e.target.value }))}
+                            />
+                          </div>
+                        </div>
+                        <DialogFooter>
+                          <Button type="button" variant="outline" onClick={() => setOpenCategoryDialog(false)}>
+                            Cancel
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={createInlineCategory}
+                            disabled={creatingCategory || !categoryForm.code.trim() || !categoryForm.name.trim()}
+                          >
+                            {creatingCategory ? "Adding..." : "Add Account Category"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                  <select
+                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                    value={createForm.account_category_id}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
+                  >
+                    <option value="">Select account category</option>
+                    {accountCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name} ({category.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <DialogFooter>
                 <Button onClick={createVendor} disabled={creating || !createForm.name.trim()}>
@@ -383,6 +540,7 @@ export function VendorsAdminEditor() {
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Firm Name</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">GSTIN</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Phone</TableHead>
+              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Account Category</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">City</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">State</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
@@ -398,6 +556,7 @@ export function VendorsAdminEditor() {
                     <TableCell><Skeleton className="h-5 w-44 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-10 dark:h-5" /></TableCell>
@@ -407,7 +566,7 @@ export function VendorsAdminEditor() {
               : null}
             {!loading && rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center text-muted-foreground">
+                <TableCell colSpan={10} className="text-center text-muted-foreground">
                   No vendors found.
                 </TableCell>
               </TableRow>
@@ -426,6 +585,7 @@ export function VendorsAdminEditor() {
                   <TableCell>{row.firm_name || "-"}</TableCell>
                   <TableCell>{row.gstin || "-"}</TableCell>
                   <TableCell>{row.phone || "-"}</TableCell>
+                  <TableCell>{row.account_category_name || "-"}</TableCell>
                   <TableCell>{row.city || "-"}</TableCell>
                   <TableCell>{row.state || "-"}</TableCell>
                   <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
@@ -456,8 +616,31 @@ export function VendorsAdminEditor() {
                               <Input value={selected.gstin} onChange={(e) => updateSelected("gstin", e.target.value)} />
                             </div>
                             <div className="space-y-1">
+                              <Label>PAN</Label>
+                              <Input value={selected.pan} onChange={(e) => updateSelected("pan", e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Owner Name</Label>
+                              <Input value={selected.owner_name} onChange={(e) => updateSelected("owner_name", e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
                               <Label>Phone</Label>
                               <Input value={selected.phone} onChange={(e) => updateSelected("phone", e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Alternate Phone</Label>
+                              <Input
+                                value={selected.alternate_phone}
+                                onChange={(e) => updateSelected("alternate_phone", e.target.value)}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Email</Label>
+                              <Input value={selected.email} onChange={(e) => updateSelected("email", e.target.value)} />
+                            </div>
+                            <div className="space-y-1 md:col-span-2">
+                              <Label>Street</Label>
+                              <Input value={selected.street} onChange={(e) => updateSelected("street", e.target.value)} />
                             </div>
                             <div className="space-y-1">
                               <Label>City</Label>
@@ -466,6 +649,50 @@ export function VendorsAdminEditor() {
                             <div className="space-y-1">
                               <Label>State</Label>
                               <Input value={selected.state} onChange={(e) => updateSelected("state", e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Pincode</Label>
+                              <Input value={selected.pincode} onChange={(e) => updateSelected("pincode", e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Bank Account Number</Label>
+                              <Input
+                                value={selected.bank_account_number}
+                                onChange={(e) => updateSelected("bank_account_number", e.target.value)}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>IFSC Code</Label>
+                              <Input value={selected.ifsc_code} onChange={(e) => updateSelected("ifsc_code", e.target.value)} />
+                            </div>
+                            <div className="space-y-1 md:col-span-2">
+                              <Label>Account Category</Label>
+                              <select
+                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                value={selected.account_category_id}
+                                onChange={(e) => {
+                                  const nextId = e.target.value;
+                                  const nextCategory = accountCategories.find((item) => item.id === nextId);
+                                  setRows((prev) =>
+                                    prev.map((row) =>
+                                      row.id === selected.id
+                                        ? {
+                                            ...row,
+                                            account_category_id: nextId,
+                                            account_category_name: nextCategory?.name ?? "",
+                                          }
+                                        : row
+                                    )
+                                  );
+                                }}
+                              >
+                                <option value="">Select account category</option>
+                                {accountCategories.map((category) => (
+                                  <option key={category.id} value={category.id}>
+                                    {category.name} ({category.code})
+                                  </option>
+                                ))}
+                              </select>
                             </div>
                             <label className="flex items-center gap-2 text-sm">
                               <input
