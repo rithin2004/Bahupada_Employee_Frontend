@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Bell, LogOut, Menu, Search, X } from "lucide-react";
 
-import { asArray, asObject, clearPortalSession, fetchBackend, fetchWithPortalAuth, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, clearPortalSession, fetchBackend, fetchPortalMe, fetchWithPortalAuth, postBackend } from "@/lib/backend-api";
 import type { AppRole, EmployeeRole } from "@/lib/navigation";
 import { defaultRouteForEmployee, modulesForRole } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
@@ -47,7 +47,7 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
     let active = true;
     async function loadAuthInfo() {
       try {
-        const payload = asObject(await fetchBackend("/auth/me"));
+        const payload = await fetchPortalMe();
         if (!active) {
           return;
         }
