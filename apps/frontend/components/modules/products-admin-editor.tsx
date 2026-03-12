@@ -1,5 +1,6 @@
 "use client";
 
+import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -19,86 +20,65 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PaginationFooter } from "@/components/ui/pagination-footer";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-type ProductRow = {
-  id: string;
+type LookupOption = { id: string; name: string };
+type SubCategoryOption = LookupOption & { category_id?: string };
+type UnitOption = { id: string; unit_code: string; unit_name: string };
+type HsnOption = { id: string; hsn_code: string; gst_percent: string };
+
+type ProductForm = {
   sku: string;
   name: string;
-  brand: string;
-  category: string;
-  sub_category: string;
-  unit: string;
-  base_price: string;
-  tax_percent: string;
+  brand_id: string;
+  category_id: string;
+  sub_category_id: string;
+  description: string;
   hsn_id: string;
   primary_unit_id: string;
   secondary_unit_id: string;
   third_unit_id: string;
-  conv_2_to_1: string;
-  conv_3_to_2: string;
-  conv_3_to_1: string;
+  secondary_unit_quantity: string;
+  third_unit_quantity: string;
   weight_in_grams: string;
-  is_bundle: boolean;
-  bundle_price_override: string;
-  is_active: boolean;
+  base_price: string;
+  tax_percent: string;
 };
 
-type UnitOption = { id: string; unit_name: string };
-type HSNOption = { id: string; hsn_code: string; gst_percent: string };
+type ProductRow = ProductForm & {
+  id: string;
+  brand: string;
+  category: string;
+  sub_category: string;
+  unit: string;
+};
 
 const DEFAULT_PAGE_SIZE = 50;
 
-const EMPTY_CREATE_FORM = {
+const EMPTY_FORM: ProductForm = {
   sku: "",
   name: "",
-  display_name: "",
-  brand: "",
-  category: "",
-  sub_category: "",
+  brand_id: "",
+  category_id: "",
+  sub_category_id: "",
   description: "",
-  unit: "PCS",
   hsn_id: "",
   primary_unit_id: "",
   secondary_unit_id: "",
   third_unit_id: "",
-  conv_2_to_1: "",
-  conv_3_to_2: "",
-  conv_3_to_1: "",
+  secondary_unit_quantity: "",
+  third_unit_quantity: "",
   weight_in_grams: "",
-  is_bundle: false,
-  bundle_price_override: "",
   base_price: "",
   tax_percent: "",
 };
 
-function mapRow(row: Record<string, unknown>): ProductRow {
-  return {
-    id: String(row.id ?? ""),
-    sku: String(row.sku ?? ""),
-    name: String(row.name ?? ""),
-    brand: String(row.brand ?? ""),
-    category: String(row.category ?? ""),
-    sub_category: String(row.sub_category ?? ""),
-    unit: String(row.unit ?? "PCS"),
-    base_price: String(row.base_price ?? "0"),
-    tax_percent: String(row.tax_percent ?? "0"),
-    hsn_id: String(row.hsn_id ?? ""),
-    primary_unit_id: String(row.primary_unit_id ?? ""),
-    secondary_unit_id: String(row.secondary_unit_id ?? ""),
-    third_unit_id: String(row.third_unit_id ?? ""),
-    conv_2_to_1: String(row.conv_2_to_1 ?? ""),
-    conv_3_to_2: String(row.conv_3_to_2 ?? ""),
-    conv_3_to_1: String(row.conv_3_to_1 ?? ""),
-    weight_in_grams: String(row.weight_in_grams ?? ""),
-    is_bundle: Boolean(row.is_bundle ?? false),
-    bundle_price_override: String(row.bundle_price_override ?? ""),
-    is_active: Boolean(row.is_active ?? true),
-  };
+function asText(value: unknown) {
+  return String(value ?? "");
 }
 
-function toNullableNumber(value: string): number | null {
+function toNullableNumber(value: string) {
   const trimmed = value.trim();
   if (!trimmed) {
     return null;
@@ -107,42 +87,290 @@ function toNullableNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function mapRow(row: Record<string, unknown>): ProductRow {
+  return {
+    id: asText(row.id),
+    sku: asText(row.sku),
+    name: asText(row.name),
+    brand_id: asText(row.brand_id),
+    category_id: asText(row.category_id),
+    sub_category_id: asText(row.sub_category_id),
+    description: asText(row.description),
+    hsn_id: asText(row.hsn_id),
+    primary_unit_id: asText(row.primary_unit_id),
+    secondary_unit_id: asText(row.secondary_unit_id),
+    third_unit_id: asText(row.third_unit_id),
+    secondary_unit_quantity: asText(row.secondary_unit_quantity),
+    third_unit_quantity: asText(row.third_unit_quantity),
+    weight_in_grams: asText(row.weight_in_grams),
+    base_price: asText(row.base_price),
+    tax_percent: asText(row.tax_percent),
+    brand: asText(row.brand),
+    category: asText(row.category),
+    sub_category: asText(row.sub_category),
+    unit: asText(row.unit),
+  };
+}
+
+function buildPayload(form: ProductForm) {
+  return {
+    sku: form.sku.trim(),
+    name: form.name.trim(),
+    brand_id: form.brand_id || null,
+    category_id: form.category_id || null,
+    sub_category_id: form.sub_category_id || null,
+    description: form.description.trim() || null,
+    hsn_id: form.hsn_id || null,
+    primary_unit_id: form.primary_unit_id || null,
+    secondary_unit_id: form.secondary_unit_id || null,
+    third_unit_id: form.third_unit_id || null,
+    secondary_unit_quantity: form.secondary_unit_id ? toNullableNumber(form.secondary_unit_quantity) : null,
+    third_unit_quantity: form.third_unit_id ? toNullableNumber(form.third_unit_quantity) : null,
+    weight_in_grams: toNullableNumber(form.weight_in_grams),
+    base_price: Number(form.base_price || "0"),
+    tax_percent: Number(form.tax_percent || "0"),
+  };
+}
+
+function productRowToForm(row: ProductRow): ProductForm {
+  return {
+    sku: row.sku,
+    name: row.name,
+    brand_id: row.brand_id,
+    category_id: row.category_id,
+    sub_category_id: row.sub_category_id,
+    description: row.description,
+    hsn_id: row.hsn_id,
+    primary_unit_id: row.primary_unit_id,
+    secondary_unit_id: row.secondary_unit_id,
+    third_unit_id: row.third_unit_id,
+    secondary_unit_quantity: row.secondary_unit_quantity,
+    third_unit_quantity: row.third_unit_quantity,
+    weight_in_grams: row.weight_in_grams,
+    base_price: row.base_price,
+    tax_percent: row.tax_percent,
+  };
+}
+
+function SelectField({
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: { id: string; label: string }[];
+  placeholder: string;
+}) {
+  return (
+    <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">{placeholder}</option>
+      {options.map((option) => (
+        <option key={option.id} value={option.id}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ProductFormFields({
+  form,
+  setForm,
+  brands,
+  categories,
+  subCategories,
+  units,
+  hsnOptions,
+  onQuickCreate,
+}: {
+  form: ProductForm;
+  setForm: Dispatch<SetStateAction<ProductForm>>;
+  brands: LookupOption[];
+  categories: LookupOption[];
+  subCategories: SubCategoryOption[];
+  units: UnitOption[];
+  hsnOptions: HsnOption[];
+  onQuickCreate: (type: "brand" | "category" | "subCategory" | "unit" | "hsn") => void;
+}) {
+  const filteredSubCategories = form.category_id ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id) : subCategories;
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      <div className="space-y-1">
+        <Label>SKU *</Label>
+        <Input value={form.sku} onChange={(e) => setForm((prev) => ({ ...prev, sku: e.target.value }))} />
+      </div>
+      <div className="space-y-1">
+        <Label>Name *</Label>
+        <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label>Brand</Label>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("brand")}>
+            + Add Brand
+          </Button>
+        </div>
+        <SelectField
+          value={form.brand_id}
+          onChange={(value) => setForm((prev) => ({ ...prev, brand_id: value }))}
+          options={brands.map((item) => ({ id: item.id, label: item.name }))}
+          placeholder="Select brand"
+        />
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label>Category</Label>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("category")}>
+            + Add Category
+          </Button>
+        </div>
+        <SelectField
+          value={form.category_id}
+          onChange={(value) => setForm((prev) => ({ ...prev, category_id: value, sub_category_id: "" }))}
+          options={categories.map((item) => ({ id: item.id, label: item.name }))}
+          placeholder="Select category"
+        />
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label>Sub Category</Label>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("subCategory")}>
+            + Add Sub Category
+          </Button>
+        </div>
+        <SelectField
+          value={form.sub_category_id}
+          onChange={(value) => setForm((prev) => ({ ...prev, sub_category_id: value }))}
+          options={filteredSubCategories.map((item) => ({ id: item.id, label: item.name }))}
+          placeholder="Select sub category"
+        />
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label>HSN</Label>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("hsn")}>
+            + Add HSN
+          </Button>
+        </div>
+        <SelectField
+          value={form.hsn_id}
+          onChange={(value) => setForm((prev) => ({ ...prev, hsn_id: value }))}
+          options={hsnOptions.map((item) => ({ id: item.id, label: `${item.hsn_code} (${item.gst_percent}%)` }))}
+          placeholder="Select HSN"
+        />
+      </div>
+      <div className="space-y-1 md:col-span-2">
+        <Label>Description</Label>
+        <Textarea value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} />
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label>Primary Unit *</Label>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("unit")}>
+            + Add Unit
+          </Button>
+        </div>
+        <SelectField
+          value={form.primary_unit_id}
+          onChange={(value) => setForm((prev) => ({ ...prev, primary_unit_id: value }))}
+          options={units.map((item) => ({ id: item.id, label: `${item.unit_code} - ${item.unit_name}` }))}
+          placeholder="Select primary unit"
+        />
+      </div>
+      <div className="space-y-1">
+        <Label>Secondary Unit</Label>
+        <SelectField
+          value={form.secondary_unit_id}
+          onChange={(value) =>
+            setForm((prev) => ({
+              ...prev,
+              secondary_unit_id: value,
+              secondary_unit_quantity: value ? prev.secondary_unit_quantity : "",
+              third_unit_id: value ? prev.third_unit_id : "",
+              third_unit_quantity: value ? prev.third_unit_quantity : "",
+            }))
+          }
+          options={units.map((item) => ({ id: item.id, label: `${item.unit_code} - ${item.unit_name}` }))}
+          placeholder="Optional"
+        />
+      </div>
+      {form.secondary_unit_id ? (
+        <div className="space-y-1">
+          <Label>How many primary units in second unit</Label>
+          <Input
+            value={form.secondary_unit_quantity}
+            onChange={(e) => setForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))}
+          />
+        </div>
+      ) : null}
+      <div className="space-y-1">
+        <Label>Third Unit</Label>
+        <SelectField
+          value={form.third_unit_id}
+          onChange={(value) => setForm((prev) => ({ ...prev, third_unit_id: value, third_unit_quantity: value ? prev.third_unit_quantity : "" }))}
+          options={units.map((item) => ({ id: item.id, label: `${item.unit_code} - ${item.unit_name}` }))}
+          placeholder={form.secondary_unit_id ? "Optional" : "Select secondary unit first"}
+        />
+      </div>
+      {form.third_unit_id ? (
+        <div className="space-y-1">
+          <Label>How many second units in third unit</Label>
+          <Input value={form.third_unit_quantity} onChange={(e) => setForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} />
+        </div>
+      ) : null}
+      <div className="space-y-1">
+        <Label>Weight in grams</Label>
+        <Input value={form.weight_in_grams} onChange={(e) => setForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} />
+      </div>
+      <div className="space-y-1">
+        <Label>Base Price *</Label>
+        <Input value={form.base_price} onChange={(e) => setForm((prev) => ({ ...prev, base_price: e.target.value }))} />
+      </div>
+      <div className="space-y-1">
+        <Label>GST / Tax % *</Label>
+        <Input value={form.tax_percent} onChange={(e) => setForm((prev) => ({ ...prev, tax_percent: e.target.value }))} />
+      </div>
+    </div>
+  );
+}
+
 export function ProductsAdminEditor() {
   const [products, setProducts] = useState<ProductRow[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
-  const [openCreateDialog, setOpenCreateDialog] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [savingId, setSavingId] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage(
-    "products-admin",
-    1,
-    DEFAULT_PAGE_SIZE
-  );
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [openCreateDialog, setOpenCreateDialog] = useState(false);
+  const [createForm, setCreateForm] = useState<ProductForm>({ ...EMPTY_FORM });
+  const [creating, setCreating] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<ProductForm>({ ...EMPTY_FORM });
+  const [saving, setSaving] = useState(false);
+  const [brands, setBrands] = useState<LookupOption[]>([]);
+  const [categories, setCategories] = useState<LookupOption[]>([]);
+  const [subCategories, setSubCategories] = useState<SubCategoryOption[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
-  const [hsnOptions, setHsnOptions] = useState<HSNOption[]>([]);
-  const [openUnitDialog, setOpenUnitDialog] = useState(false);
-  const [openHsnDialog, setOpenHsnDialog] = useState(false);
-  const [creatingUnit, setCreatingUnit] = useState(false);
-  const [creatingHsn, setCreatingHsn] = useState(false);
-  const [newUnitName, setNewUnitName] = useState("");
-  const [newHsnCode, setNewHsnCode] = useState("");
-  const [newHsnDescription, setNewHsnDescription] = useState("");
-  const [newHsnGstPercent, setNewHsnGstPercent] = useState("0");
+  const [hsnOptions, setHsnOptions] = useState<HsnOption[]>([]);
+  const [quickCreateType, setQuickCreateType] = useState<"" | "brand" | "category" | "subCategory" | "unit" | "hsn">("");
+  const [quickName, setQuickName] = useState("");
+  const [quickCode, setQuickCode] = useState("");
+  const [quickDescription, setQuickDescription] = useState("");
+  const [quickGst, setQuickGst] = useState("0");
+  const [quickCategoryId, setQuickCategoryId] = useState("");
+  const [quickCreating, setQuickCreating] = useState(false);
+  const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage("products-admin", 1, DEFAULT_PAGE_SIZE);
+  const [totalPages, setTotalPages] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
 
-  const selected = useMemo(() => products.find((row) => row.id === openId) ?? null, [openId, products]);
+  const selected = useMemo(() => products.find((item) => item.id === openId) ?? null, [products, openId]);
+  const editDirty = selected ? JSON.stringify(editForm) !== JSON.stringify(productRowToForm(selected)) : false;
 
-  async function loadPage(page: number, searchText: string, pageSizeValue = pageSize) {
+  async function load(page: number, searchText: string, pageSizeValue = pageSize) {
     setLoading(true);
     setFeedback("");
-    setProducts([]);
     try {
       const params = new URLSearchParams();
       params.set("page", String(page));
@@ -151,16 +379,14 @@ export function ProductsAdminEditor() {
         params.set("search", searchText.trim());
       }
       const response = asObject(await fetchBackend(`/masters/products?${params.toString()}`));
-      const rows = asArray(response.items).map(mapRow);
-      setProducts(rows);
-      setTotalCount(Number(response.total ?? rows.length));
-      setTotalPages(Number(response.total_pages ?? 0));
+      setProducts(asArray(response.items).map(mapRow));
       setCurrentPage(Number(response.page ?? page));
-      setSelectedIds([]);
+      setTotalPages(Number(response.total_pages ?? 0));
+      setTotalCount(Number(response.total ?? 0));
     } catch (error) {
       setProducts([]);
-      setTotalCount(0);
       setTotalPages(0);
+      setTotalCount(0);
       resetPage();
       setFeedback(`Load failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
@@ -168,130 +394,77 @@ export function ProductsAdminEditor() {
     }
   }
 
-  useEffect(() => {
-    void loadPage(currentPage, search, pageSize);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
-
   async function loadReferences() {
     try {
-      const [unitsRes, hsnRes] = await Promise.all([
-        fetchBackend("/masters/units?page=1&page_size=100"),
-        fetchBackend("/masters/hsn?page=1&page_size=100"),
+      const [brandsRes, categoriesRes, subCategoriesRes, unitsRes, hsnRes] = await Promise.all([
+        fetchBackend("/masters/product-brands?page=1&page_size=200"),
+        fetchBackend("/masters/product-categories?page=1&page_size=200"),
+        fetchBackend("/masters/product-sub-categories?page=1&page_size=200"),
+        fetchBackend("/masters/units?page=1&page_size=200"),
+        fetchBackend("/masters/hsn?page=1&page_size=200"),
       ]);
+      setBrands(asArray(asObject(brandsRes).items).map((item) => ({ id: asText(item.id), name: asText(item.name) })));
+      setCategories(asArray(asObject(categoriesRes).items).map((item) => ({ id: asText(item.id), name: asText(item.name) })));
+      setSubCategories(
+        asArray(asObject(subCategoriesRes).items).map((item) => ({
+          id: asText(item.id),
+          name: asText(item.name),
+          category_id: asText(item.category_id),
+        }))
+      );
       setUnits(
         asArray(asObject(unitsRes).items).map((item) => ({
-          id: String(item.id ?? ""),
-          unit_name: String(item.unit_name ?? ""),
+          id: asText(item.id),
+          unit_code: asText(item.unit_code),
+          unit_name: asText(item.unit_name),
         }))
       );
       setHsnOptions(
         asArray(asObject(hsnRes).items).map((item) => ({
-          id: String(item.id ?? ""),
-          hsn_code: String(item.hsn_code ?? ""),
-          gst_percent: String(item.gst_percent ?? "0"),
+          id: asText(item.id),
+          hsn_code: asText(item.hsn_code),
+          gst_percent: asText(item.gst_percent),
         }))
       );
     } catch {
+      setBrands([]);
+      setCategories([]);
+      setSubCategories([]);
       setUnits([]);
       setHsnOptions([]);
     }
   }
 
   useEffect(() => {
+    void load(currentPage, search, pageSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, search, pageSize]);
+
+  useEffect(() => {
     void loadReferences();
   }, []);
 
-  function updateSelected(field: keyof ProductRow, value: string | boolean) {
+  useEffect(() => {
     if (!selected) {
+      setEditForm({ ...EMPTY_FORM });
       return;
     }
-    setProducts((prev) => prev.map((row) => (row.id === selected.id ? { ...row, [field]: value } : row)));
-  }
-
-  async function saveSelected() {
-    if (!selected) {
-      return;
-    }
-    setSavingId(selected.id);
-    setFeedback("");
-    try {
-      await patchBackend(`/masters/products/${selected.id}`, {
-        sku: selected.sku,
-        name: selected.name,
-        brand: selected.brand || null,
-        category: selected.category || null,
-        sub_category: selected.sub_category || null,
-        unit: selected.unit,
-        base_price: Number(selected.base_price),
-        tax_percent: Number(selected.tax_percent),
-        hsn_id: selected.hsn_id || null,
-        primary_unit_id: selected.primary_unit_id || null,
-        secondary_unit_id: selected.secondary_unit_id || null,
-        third_unit_id: selected.third_unit_id || null,
-        conv_2_to_1: toNullableNumber(selected.conv_2_to_1),
-        conv_3_to_2: toNullableNumber(selected.conv_3_to_2),
-        conv_3_to_1: toNullableNumber(selected.conv_3_to_1),
-        weight_in_grams: toNullableNumber(selected.weight_in_grams),
-        is_bundle: selected.is_bundle,
-        bundle_price_override: toNullableNumber(selected.bundle_price_override),
-        is_active: selected.is_active,
-      });
-      setFeedback(`Updated ${selected.sku || selected.name}.`);
-      toast.success(`Updated ${selected.sku || selected.name}.`, { duration: 5000 });
-      setOpenId(null);
-    } catch (error) {
-      setFeedback(`Update failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-      toast.error(`Update failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
-    } finally {
-      setSavingId(null);
-    }
-  }
+    setEditForm(productRowToForm(selected));
+  }, [selected]);
 
   async function createProduct() {
-    if (!createForm.sku.trim() || !createForm.name.trim() || !createForm.unit.trim()) {
-      return;
-    }
-    const basePrice = Number(createForm.base_price);
-    const taxPercent = Number(createForm.tax_percent);
-    if (!Number.isFinite(basePrice) || !Number.isFinite(taxPercent)) {
-      const message = "Base price and tax percent are required numeric values.";
-      setFeedback(message);
-      toast.error(message, { duration: 5000 });
+    if (!createForm.sku.trim() || !createForm.name.trim() || !createForm.primary_unit_id || !createForm.base_price.trim() || !createForm.tax_percent.trim()) {
       return;
     }
     setCreating(true);
     setFeedback("");
     try {
-      await postBackend("/masters/products", {
-        sku: createForm.sku.trim(),
-        name: createForm.name.trim(),
-        display_name: createForm.display_name.trim() || null,
-        brand: createForm.brand.trim() || null,
-        category: createForm.category.trim() || null,
-        sub_category: createForm.sub_category.trim() || null,
-        description: createForm.description.trim() || null,
-        unit: createForm.unit.trim(),
-        hsn_id: createForm.hsn_id || null,
-        primary_unit_id: createForm.primary_unit_id || null,
-        secondary_unit_id: createForm.secondary_unit_id || null,
-        third_unit_id: createForm.third_unit_id || null,
-        conv_2_to_1: toNullableNumber(createForm.conv_2_to_1),
-        conv_3_to_2: toNullableNumber(createForm.conv_3_to_2),
-        conv_3_to_1: toNullableNumber(createForm.conv_3_to_1),
-        weight_in_grams: toNullableNumber(createForm.weight_in_grams),
-        is_bundle: createForm.is_bundle,
-        bundle_price_override: toNullableNumber(createForm.bundle_price_override),
-        base_price: basePrice,
-        tax_percent: taxPercent,
-      });
-      setCreateForm({ ...EMPTY_CREATE_FORM });
+      await postBackend("/masters/products", buildPayload(createForm));
+      setCreateForm({ ...EMPTY_FORM });
       setOpenCreateDialog(false);
       resetPage();
-      await loadPage(1, search, pageSize);
-      const message = `Created ${createForm.sku.trim()}.`;
-      setFeedback(message);
-      toast.success(message, { duration: 5000 });
+      await load(1, search, pageSize);
+      toast.success("Product created.", { duration: 4000 });
     } catch (error) {
       const message = `Create failed: ${error instanceof Error ? error.message : "Unknown error"}`;
       setFeedback(message);
@@ -301,409 +474,138 @@ export function ProductsAdminEditor() {
     }
   }
 
-  async function createInlineUnit() {
-    if (!newUnitName.trim()) {
+  async function saveProduct() {
+    if (!selected || !editDirty) {
       return;
     }
-    setCreatingUnit(true);
-    try {
-      const created = asObject(await postBackend("/masters/units", { unit_name: newUnitName.trim() }));
-      const unitName = String(created.unit_name ?? newUnitName.trim());
-      await loadReferences();
-      setCreateForm((prev) => ({
-        ...prev,
-        unit: unitName,
-        primary_unit_id: prev.primary_unit_id || String(created.id ?? ""),
-      }));
-      setNewUnitName("");
-      setOpenUnitDialog(false);
-      toast.success(`Added unit ${unitName}.`, { duration: 4000 });
-    } catch (error) {
-      toast.error(`Unit create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
-    } finally {
-      setCreatingUnit(false);
-    }
-  }
-
-  async function createInlineHsn() {
-    if (!newHsnCode.trim()) {
-      return;
-    }
-    const gstPercent = Number(newHsnGstPercent);
-    if (!Number.isFinite(gstPercent)) {
-      toast.error("GST percent must be numeric.", { duration: 5000 });
-      return;
-    }
-    setCreatingHsn(true);
-    try {
-      const created = asObject(
-        await postBackend("/masters/hsn", {
-          hsn_code: newHsnCode.trim(),
-          description: newHsnDescription.trim() || null,
-          gst_percent: gstPercent,
-          is_active: true,
-        })
-      );
-      await loadReferences();
-      setCreateForm((prev) => ({
-        ...prev,
-        hsn_id: String(created.id ?? ""),
-        tax_percent: String(created.gst_percent ?? gstPercent),
-      }));
-      setNewHsnCode("");
-      setNewHsnDescription("");
-      setNewHsnGstPercent("0");
-      setOpenHsnDialog(false);
-      toast.success(`Added HSN ${String(created.hsn_code ?? newHsnCode.trim())}.`, { duration: 4000 });
-    } catch (error) {
-      toast.error(`HSN create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
-    } finally {
-      setCreatingHsn(false);
-    }
-  }
-
-  async function onNext() {
-    if (loading || totalPages === 0 || currentPage >= totalPages) {
-      return;
-    }
-    setCurrentPage((p) => p + 1);
-  }
-
-  async function onPrev() {
-    if (loading || currentPage <= 1) {
-      return;
-    }
-    setCurrentPage((p) => p - 1);
-  }
-
-  async function onFirst() {
-    if (loading || currentPage <= 1) {
-      return;
-    }
-    setCurrentPage(1);
-  }
-
-  async function onLast() {
-    if (loading || totalPages === 0 || currentPage >= totalPages) {
-      return;
-    }
-    setCurrentPage(totalPages);
-  }
-
-  function onSearch() {
-    resetPage();
-    setSearch(searchInput.trim());
-  }
-
-  const allSelected = products.length > 0 && selectedIds.length === products.length;
-
-  function toggleSelectAll(checked: boolean) {
-    setSelectedIds(checked ? products.map((row) => row.id) : []);
-  }
-
-  function toggleSelectOne(id: string, checked: boolean) {
-    setSelectedIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((item) => item !== id)));
-  }
-
-  async function deleteSelected() {
-    if (!selectedIds.length || loading) {
-      return;
-    }
-    if (!window.confirm(`Delete ${selectedIds.length} selected product(s)?`)) {
-      return;
-    }
+    setSaving(true);
     setFeedback("");
     try {
-      await Promise.all(selectedIds.map((id) => deleteBackend(`/masters/products/${id}`)));
-      setFeedback(`Deleted ${selectedIds.length} product(s).`);
-      toast.success(`Deleted ${selectedIds.length} product(s).`, { duration: 5000 });
-      await loadPage(currentPage, search, pageSize);
+      await patchBackend(`/masters/products/${selected.id}`, buildPayload(editForm));
+      setOpenId(null);
+      await load(currentPage, search, pageSize);
+      toast.success("Product updated.", { duration: 4000 });
     } catch (error) {
-      setFeedback(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-      toast.error(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+      const message = `Update failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      setFeedback(message);
+      toast.error(message, { duration: 5000 });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteProduct(id: string) {
+    setFeedback("");
+    try {
+      await deleteBackend(`/masters/products/${id}`);
+      await load(currentPage, search, pageSize);
+      toast.success("Product deleted.", { duration: 4000 });
+    } catch (error) {
+      const message = `Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      setFeedback(message);
+      toast.error(message, { duration: 5000 });
+    }
+  }
+
+  async function quickCreate() {
+    if (!quickCreateType) {
+      return;
+    }
+    setQuickCreating(true);
+    try {
+      if (quickCreateType === "brand") {
+        await postBackend("/masters/product-brands", { name: quickName.trim() });
+      } else if (quickCreateType === "category") {
+        await postBackend("/masters/product-categories", { name: quickName.trim() });
+      } else if (quickCreateType === "subCategory") {
+        await postBackend("/masters/product-sub-categories", { name: quickName.trim(), category_id: quickCategoryId || null });
+      } else if (quickCreateType === "unit") {
+        await postBackend("/masters/units", { unit_code: quickCode.trim(), unit_name: quickName.trim() });
+      } else if (quickCreateType === "hsn") {
+        await postBackend("/masters/hsn", {
+          hsn_code: quickCode.trim(),
+          description: quickDescription.trim() || null,
+          gst_percent: Number(quickGst || "0"),
+        });
+      }
+      setQuickCreateType("");
+      setQuickName("");
+      setQuickCode("");
+      setQuickDescription("");
+      setQuickGst("0");
+      setQuickCategoryId("");
+      await loadReferences();
+      toast.success("Master created.", { duration: 4000 });
+    } catch (error) {
+      toast.error(`Create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setQuickCreating(false);
     }
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Products (Editable)</CardTitle>
+        <CardTitle>Products</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
-            placeholder="Search SKU, name, display name, brand"
+            placeholder="Search SKU, name, brand, category"
             value={searchInput}
             onChange={(e) => {
               const value = e.target.value;
               setSearchInput(value);
-              if (value.trim() === "" && search !== "") {
-                resetPage();
+              if (!value.trim() && search) {
                 setSearch("");
+                resetPage();
               }
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
-                onSearch();
+                setSearch(searchInput.trim());
+                resetPage();
               }
             }}
           />
-          <Button onClick={onSearch} disabled={loading}>
+          <Button
+            onClick={() => {
+              setSearch(searchInput.trim());
+              resetPage();
+            }}
+            disabled={loading}
+          >
             Search
           </Button>
           <Button
             variant="outline"
             onClick={() => {
               setSearchInput("");
-              resetPage();
               setSearch("");
+              resetPage();
             }}
-            disabled={loading && search === ""}
           >
             Reset
-          </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
           </Button>
           <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
             <DialogTrigger asChild>
               <Button>Add Product</Button>
             </DialogTrigger>
-            <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
+            <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
               <DialogHeader>
                 <DialogTitle>Add Product</DialogTitle>
-                <DialogDescription>Create a product using the `ProductCreate` schema.</DialogDescription>
+                <DialogDescription>Name is the display name. Units are driven from the selected primary, secondary, and third masters.</DialogDescription>
               </DialogHeader>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1">
-                  <Label>SKU *</Label>
-                  <Input value={createForm.sku} onChange={(e) => setCreateForm((prev) => ({ ...prev, sku: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Name *</Label>
-                  <Input value={createForm.name} onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Display Name</Label>
-                  <Input
-                    value={createForm.display_name}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, display_name: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Brand</Label>
-                  <Input value={createForm.brand} onChange={(e) => setCreateForm((prev) => ({ ...prev, brand: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Category</Label>
-                  <Input
-                    value={createForm.category}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, category: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Sub Category</Label>
-                  <Input
-                    value={createForm.sub_category}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, sub_category: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1 md:col-span-2">
-                  <Label>Description</Label>
-                  <Input
-                    value={createForm.description}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, description: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label>Unit *</Label>
-                    <Dialog open={openUnitDialog} onOpenChange={setOpenUnitDialog}>
-                      <DialogTrigger asChild>
-                        <Button type="button" variant="outline" size="sm">
-                          + Add Unit
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="sm:max-w-md">
-                        <DialogHeader>
-                          <DialogTitle>Add Unit</DialogTitle>
-                          <DialogDescription>Create the unit and return to the product form.</DialogDescription>
-                        </DialogHeader>
-                        <div className="space-y-3">
-                          <div className="space-y-1">
-                            <Label>Unit Name *</Label>
-                            <Input value={newUnitName} onChange={(e) => setNewUnitName(e.target.value)} />
-                          </div>
-                          <Button onClick={createInlineUnit} disabled={creatingUnit || !newUnitName.trim()}>
-                            {creatingUnit ? "Adding..." : "Add Unit"}
-                          </Button>
-                        </div>
-                      </DialogContent>
-                    </Dialog>
-                  </div>
-                  <select
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    value={createForm.unit}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, unit: e.target.value }))}
-                  >
-                    <option value="">{units.length ? "Select unit" : "No units found"}</option>
-                    {units.map((unit) => (
-                      <option key={unit.id} value={unit.unit_name}>
-                        {unit.unit_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label>HSN</Label>
-                    <Dialog open={openHsnDialog} onOpenChange={setOpenHsnDialog}>
-                      <DialogTrigger asChild>
-                        <Button type="button" variant="outline" size="sm">
-                          + Add HSN
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="sm:max-w-md">
-                        <DialogHeader>
-                          <DialogTitle>Add HSN</DialogTitle>
-                          <DialogDescription>Create the HSN and return to the product form.</DialogDescription>
-                        </DialogHeader>
-                        <div className="space-y-3">
-                          <div className="space-y-1">
-                            <Label>HSN Code *</Label>
-                            <Input value={newHsnCode} onChange={(e) => setNewHsnCode(e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Description</Label>
-                            <Input value={newHsnDescription} onChange={(e) => setNewHsnDescription(e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>GST Percent *</Label>
-                            <Input value={newHsnGstPercent} onChange={(e) => setNewHsnGstPercent(e.target.value)} />
-                          </div>
-                          <Button onClick={createInlineHsn} disabled={creatingHsn || !newHsnCode.trim()}>
-                            {creatingHsn ? "Adding..." : "Add HSN"}
-                          </Button>
-                        </div>
-                      </DialogContent>
-                    </Dialog>
-                  </div>
-                  <select
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    value={createForm.hsn_id}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, hsn_id: e.target.value }))}
-                  >
-                    <option value="">None</option>
-                    {hsnOptions.map((hsn) => (
-                      <option key={hsn.id} value={hsn.id}>
-                        {hsn.hsn_code} ({hsn.gst_percent}%)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label>Primary Unit</Label>
-                  <select
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    value={createForm.primary_unit_id}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))}
-                  >
-                    <option value="">None</option>
-                    {units.map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label>Secondary Unit</Label>
-                  <select
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    value={createForm.secondary_unit_id}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, secondary_unit_id: e.target.value }))}
-                  >
-                    <option value="">None</option>
-                    {units.map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label>Third Unit</Label>
-                  <select
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    value={createForm.third_unit_id}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, third_unit_id: e.target.value }))}
-                  >
-                    <option value="">None</option>
-                    {units.map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label>Conv 2 to 1</Label>
-                  <Input
-                    value={createForm.conv_2_to_1}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, conv_2_to_1: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Conv 3 to 2</Label>
-                  <Input
-                    value={createForm.conv_3_to_2}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, conv_3_to_2: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Conv 3 to 1</Label>
-                  <Input
-                    value={createForm.conv_3_to_1}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, conv_3_to_1: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Weight (grams)</Label>
-                  <Input
-                    value={createForm.weight_in_grams}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Base Price *</Label>
-                  <Input
-                    value={createForm.base_price}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, base_price: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Tax Percent *</Label>
-                  <Input
-                    value={createForm.tax_percent}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, tax_percent: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Bundle Price Override</Label>
-                  <Input
-                    value={createForm.bundle_price_override}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, bundle_price_override: e.target.value }))}
-                  />
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={createForm.is_bundle}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, is_bundle: e.target.checked }))}
-                  />
-                  Is Bundle
-                </label>
-              </div>
+              <ProductFormFields
+                form={createForm}
+                setForm={setCreateForm}
+                brands={brands}
+                categories={categories}
+                subCategories={subCategories}
+                units={units}
+                hsnOptions={hsnOptions}
+                onQuickCreate={(type) => setQuickCreateType(type)}
+              />
               <DialogFooter>
                 <Button
                   onClick={createProduct}
@@ -711,7 +613,7 @@ export function ProductsAdminEditor() {
                     creating ||
                     !createForm.sku.trim() ||
                     !createForm.name.trim() ||
-                    !createForm.unit.trim() ||
+                    !createForm.primary_unit_id ||
                     !createForm.base_price.trim() ||
                     !createForm.tax_percent.trim()
                   }
@@ -721,233 +623,154 @@ export function ProductsAdminEditor() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={quickCreateType !== ""} onOpenChange={(open) => !open && setQuickCreateType("")}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  {quickCreateType === "brand"
+                    ? "Add Brand"
+                    : quickCreateType === "category"
+                      ? "Add Category"
+                      : quickCreateType === "subCategory"
+                        ? "Add Sub Category"
+                        : quickCreateType === "unit"
+                          ? "Add Unit"
+                          : "Add HSN"}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                {quickCreateType === "unit" || quickCreateType === "hsn" ? (
+                  <div className="space-y-1">
+                    <Label>{quickCreateType === "unit" ? "Code" : "HSN Number"}</Label>
+                    <Input value={quickCode} onChange={(e) => setQuickCode(e.target.value.toUpperCase())} />
+                  </div>
+                ) : null}
+                {quickCreateType !== "hsn" ? (
+                  <div className="space-y-1">
+                    <Label>{quickCreateType === "unit" ? "Unit Name" : "Name"}</Label>
+                    <Input value={quickName} onChange={(e) => setQuickName(e.target.value)} />
+                  </div>
+                ) : null}
+                {quickCreateType === "subCategory" ? (
+                  <div className="space-y-1">
+                    <Label>Category</Label>
+                    <SelectField
+                      value={quickCategoryId}
+                      onChange={setQuickCategoryId}
+                      options={categories.map((item) => ({ id: item.id, label: item.name }))}
+                      placeholder="Optional"
+                    />
+                  </div>
+                ) : null}
+                {quickCreateType === "hsn" ? (
+                  <>
+                    <div className="space-y-1">
+                      <Label>Description</Label>
+                      <Input value={quickDescription} onChange={(e) => setQuickDescription(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>GST %</Label>
+                      <Input value={quickGst} onChange={(e) => setQuickGst(e.target.value)} />
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <DialogFooter>
+                <Button
+                  onClick={quickCreate}
+                  disabled={
+                    quickCreating ||
+                    ((quickCreateType === "brand" || quickCreateType === "category" || quickCreateType === "subCategory" || quickCreateType === "unit") &&
+                      !quickName.trim()) ||
+                    ((quickCreateType === "unit" || quickCreateType === "hsn") && !quickCode.trim())
+                  }
+                >
+                  {quickCreating ? "Saving..." : "Create"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
         {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
         <div className="overflow-x-auto rounded-lg border">
-          <Table className="min-w-[920px]">
+          <Table className="min-w-[1500px]">
             <TableHeader>
-            <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">
-              <TableHead className="w-10">
-                <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
-              </TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">SKU</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Name</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Brand</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Base Price</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Tax %</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Edit</TableHead>
-            </TableRow>
+              <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">
+                <TableHead>SKU</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Brand</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Sub Category</TableHead>
+                <TableHead>Primary Unit</TableHead>
+                <TableHead>Secondary</TableHead>
+                <TableHead>Third</TableHead>
+                <TableHead>Base Price</TableHead>
+                <TableHead>GST %</TableHead>
+                <TableHead>HSN</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead>Action</TableHead>
+              </TableRow>
             </TableHeader>
             <TableBody>
-            {loading ? (
-              Array.from({ length: 12 }).map((_, index) => (
-                <TableRow key={`skeleton-${index}`} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
-                  <TableCell>
-                    <Skeleton className="h-5 w-5 dark:h-5" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-40 dark:h-5" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-52 dark:h-5" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-28 dark:h-5" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-20 dark:h-5" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-14 dark:h-5" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-10 w-14 dark:h-8" />
+              {!loading && products.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={13} className="text-center text-muted-foreground">
+                    No products found.
                   </TableCell>
                 </TableRow>
-              ))
-            ) : null}
-            {!loading && products.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
-                  No products found.
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {!loading &&
-              products.map((row, index) => (
-              <TableRow key={row.id} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
-                <TableCell>
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(row.id)}
-                    onChange={(e) => toggleSelectOne(row.id, e.target.checked)}
-                  />
-                </TableCell>
-                <TableCell>{row.sku}</TableCell>
-                <TableCell>{row.name}</TableCell>
-                <TableCell>{row.brand || "-"}</TableCell>
-                <TableCell>{row.base_price}</TableCell>
-                <TableCell>{row.tax_percent}</TableCell>
-                <TableCell>
-                  <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                    <DialogTrigger asChild>
-                      <Button size="sm" variant="outline">
-                        Edit
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="max-h-[85vh] overflow-y-auto">
-                      <DialogHeader>
-                        <DialogTitle>Edit Product</DialogTitle>
-                        <DialogDescription>Update core fields and save.</DialogDescription>
-                      </DialogHeader>
-                      {selected ? (
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div className="space-y-1 md:col-span-2">
-                            <Label>SKU</Label>
-                            <Input value={selected.sku} onChange={(e) => updateSelected("sku", e.target.value)} />
-                          </div>
-                          <div className="space-y-1 md:col-span-2">
-                            <Label>Name</Label>
-                            <Input value={selected.name} onChange={(e) => updateSelected("name", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Brand</Label>
-                            <Input value={selected.brand} onChange={(e) => updateSelected("brand", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Category</Label>
-                            <Input value={selected.category} onChange={(e) => updateSelected("category", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Sub Category</Label>
-                            <Input value={selected.sub_category} onChange={(e) => updateSelected("sub_category", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Unit</Label>
-                            <Input value={selected.unit} onChange={(e) => updateSelected("unit", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>HSN</Label>
-                            <select
-                              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                              value={selected.hsn_id}
-                              onChange={(e) => updateSelected("hsn_id", e.target.value)}
-                            >
-                              <option value="">None</option>
-                              {hsnOptions.map((hsn) => (
-                                <option key={hsn.id} value={hsn.id}>
-                                  {hsn.hsn_code} ({hsn.gst_percent}%)
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Primary Unit</Label>
-                            <select
-                              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                              value={selected.primary_unit_id}
-                              onChange={(e) => updateSelected("primary_unit_id", e.target.value)}
-                            >
-                              <option value="">None</option>
-                              {units.map((unit) => (
-                                <option key={unit.id} value={unit.id}>
-                                  {unit.unit_name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Secondary Unit</Label>
-                            <select
-                              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                              value={selected.secondary_unit_id}
-                              onChange={(e) => updateSelected("secondary_unit_id", e.target.value)}
-                            >
-                              <option value="">None</option>
-                              {units.map((unit) => (
-                                <option key={unit.id} value={unit.id}>
-                                  {unit.unit_name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Third Unit</Label>
-                            <select
-                              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                              value={selected.third_unit_id}
-                              onChange={(e) => updateSelected("third_unit_id", e.target.value)}
-                            >
-                              <option value="">None</option>
-                              {units.map((unit) => (
-                                <option key={unit.id} value={unit.id}>
-                                  {unit.unit_name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Conv 2 to 1</Label>
-                            <Input value={selected.conv_2_to_1} onChange={(e) => updateSelected("conv_2_to_1", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Conv 3 to 2</Label>
-                            <Input value={selected.conv_3_to_2} onChange={(e) => updateSelected("conv_3_to_2", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Conv 3 to 1</Label>
-                            <Input value={selected.conv_3_to_1} onChange={(e) => updateSelected("conv_3_to_1", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Weight (grams)</Label>
-                            <Input
-                              value={selected.weight_in_grams}
-                              onChange={(e) => updateSelected("weight_in_grams", e.target.value)}
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Base Price</Label>
-                            <Input value={selected.base_price} onChange={(e) => updateSelected("base_price", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Tax Percent</Label>
-                            <Input value={selected.tax_percent} onChange={(e) => updateSelected("tax_percent", e.target.value)} />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Bundle Price Override</Label>
-                            <Input
-                              value={selected.bundle_price_override}
-                              onChange={(e) => updateSelected("bundle_price_override", e.target.value)}
-                            />
-                          </div>
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={selected.is_bundle}
-                              onChange={(e) => updateSelected("is_bundle", e.target.checked)}
-                            />
-                            Is Bundle
-                          </label>
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={selected.is_active}
-                              onChange={(e) => updateSelected("is_active", e.target.checked)}
-                            />
-                            Active
-                          </label>
-                        </div>
-                      ) : null}
-                      <DialogFooter>
-                        <Button onClick={saveSelected} disabled={!selected || savingId === selected.id}>
-                          {savingId === selected?.id ? "Saving..." : "Save"}
+              ) : null}
+              {products.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>{row.sku || "-"}</TableCell>
+                  <TableCell>{row.name || "-"}</TableCell>
+                  <TableCell>{row.brand || "-"}</TableCell>
+                  <TableCell>{row.category || "-"}</TableCell>
+                  <TableCell>{row.sub_category || "-"}</TableCell>
+                  <TableCell>{row.unit || "-"}</TableCell>
+                  <TableCell>{row.secondary_unit_quantity || "-"}</TableCell>
+                  <TableCell>{row.third_unit_quantity || "-"}</TableCell>
+                  <TableCell>{row.base_price || "0"}</TableCell>
+                  <TableCell>{row.tax_percent || "0"}</TableCell>
+                  <TableCell>{hsnOptions.find((item) => item.id === row.hsn_id)?.hsn_code || "-"}</TableCell>
+                  <TableCell className="max-w-[220px] truncate">{row.description || "-"}</TableCell>
+                  <TableCell className="flex gap-2">
+                    <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" variant="outline">
+                          Edit
                         </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
-                </TableCell>
-              </TableRow>
-            ))}
+                      </DialogTrigger>
+                      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
+                        <DialogHeader>
+                          <DialogTitle>Edit Product</DialogTitle>
+                          <DialogDescription>Without changes, Save stays disabled.</DialogDescription>
+                        </DialogHeader>
+                        <ProductFormFields
+                          form={editForm}
+                          setForm={setEditForm}
+                          brands={brands}
+                          categories={categories}
+                          subCategories={subCategories}
+                          units={units}
+                          hsnOptions={hsnOptions}
+                          onQuickCreate={(type) => setQuickCreateType(type)}
+                        />
+                        <DialogFooter>
+                          <Button
+                            onClick={saveProduct}
+                            disabled={saving || !editForm.sku.trim() || !editForm.name.trim() || !editForm.primary_unit_id || !editDirty}
+                          >
+                            {saving ? "Saving..." : "Save"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                    <Button size="sm" variant="destructive" onClick={() => void deleteProduct(row.id)}>
+                      Delete
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </div>
@@ -961,10 +784,10 @@ export function ProductsAdminEditor() {
             setPageSize(nextSize);
             setCurrentPage(1);
           }}
-          onFirst={onFirst}
-          onPrevious={onPrev}
-          onNext={onNext}
-          onLast={onLast}
+          onFirst={() => setCurrentPage(1)}
+          onPrevious={() => setCurrentPage((p) => p - 1)}
+          onNext={() => setCurrentPage((p) => p + 1)}
+          onLast={() => setCurrentPage(totalPages)}
         />
       </CardContent>
     </Card>

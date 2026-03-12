@@ -369,6 +369,11 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
     [activeBatch, activeInvoiceId]
   );
 
+  const activeRun = useMemo(
+    () => runs.find((run) => run.run_id === activeRunId) ?? runs[0] ?? null,
+    [activeRunId, runs]
+  );
+
   useEffect(() => {
     if (!activeRun) {
       setActiveStopId("");
@@ -376,11 +381,6 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
     }
     setActiveStopId((prev) => (activeRun.stops.some((stop) => stop.stop_id === prev) ? prev : activeRun.stops[0]?.stop_id || ""));
   }, [activeRun]);
-
-  const activeRun = useMemo(
-    () => runs.find((run) => run.run_id === activeRunId) ?? runs[0] ?? null,
-    [activeRunId, runs]
-  );
 
   const activeStop = useMemo(
     () => activeRun?.stops.find((stop) => stop.stop_id === activeStopId) ?? activeRun?.stops[0] ?? null,
@@ -833,15 +833,11 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
     <AppShell role="employee" activeKey={activeNavKey} userName={shellTitle}>
       <div className="space-y-6">
         <div className="space-y-2">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            {mode === "delivery" ? "Ready To Dispatch" : isSupervisor ? "Supervisor Verification" : "Packing Workflow"}
-          </h2>
+          <h2 className="text-2xl font-semibold tracking-tight">{isSupervisor ? "Supervisor Verification" : "Packing Workflow"}</h2>
           <p className="text-sm text-muted-foreground">
-            {mode === "delivery"
-              ? "Batches that are fully packed and waiting for vehicle allocation."
-              : isSupervisor
-                ? "Verify invoice shortfalls before the packers start packing."
-                : "Review assigned invoices, record actual quantities, and complete packing."}
+            {isSupervisor
+              ? "Verify invoice shortfalls before the packers start packing."
+              : "Review assigned invoices, record actual quantities, and complete packing."}
           </p>
         </div>
 
@@ -849,12 +845,12 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
           <Card><CardContent className="p-5"><p className="text-sm text-muted-foreground">Batches</p><p className="mt-2 text-3xl font-semibold">{loading ? "-" : batches.length}</p></CardContent></Card>
           <Card><CardContent className="p-5"><p className="text-sm text-muted-foreground">Invoices</p><p className="mt-2 text-3xl font-semibold">{loading ? "-" : totalInvoices}</p></CardContent></Card>
           <Card><CardContent className="p-5"><p className="text-sm text-muted-foreground">Total Weight</p><p className="mt-2 text-3xl font-semibold">{loading ? "-" : formatWeight(totalWeight)}</p></CardContent></Card>
-          <Card><CardContent className="p-5"><p className="text-sm text-muted-foreground">Active Role</p><p className="mt-2 text-xl font-semibold">{mode === "delivery" ? "Dispatch View" : me?.employee_role || "-"}</p></CardContent></Card>
+          <Card><CardContent className="p-5"><p className="text-sm text-muted-foreground">Active Role</p><p className="mt-2 text-xl font-semibold">{me?.employee_role || "-"}</p></CardContent></Card>
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[340px_1fr]">
           <Card>
-            <CardHeader><CardTitle>{mode === "delivery" ? "Dispatch Batches" : "Assigned Batches"}</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Assigned Batches</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               {loading ? (
                 Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)
@@ -889,7 +885,7 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
 
           <div className="space-y-4">
             <Card>
-              <CardHeader><CardTitle>{mode === "delivery" ? "Batch Invoices" : "Invoices In Batch"}</CardTitle></CardHeader>
+              <CardHeader><CardTitle>Invoices In Batch</CardTitle></CardHeader>
               <CardContent>
                 {!activeBatch ? (
                   <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Select a batch to inspect invoices.</div>
@@ -976,7 +972,7 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
                               <TableCell>{formatPrice(item.mrp)}</TableCell>
                               <TableCell>{item.quantity}</TableCell>
                               <TableCell>
-                                {isSupervisor || mode === "delivery" || activeInvoice.status !== "PACKERS_ASSIGNED" ? (
+                                {isSupervisor || activeInvoice.status !== "PACKERS_ASSIGNED" ? (
                                   <span>{actual}</span>
                                 ) : (
                                   <Input
@@ -998,7 +994,7 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
                               </TableCell>
                               <TableCell>{shortfall}</TableCell>
                               <TableCell>
-                                {isSupervisor || mode === "delivery" || activeInvoice.status !== "PACKERS_ASSIGNED" ? (
+                                {isSupervisor || activeInvoice.status !== "PACKERS_ASSIGNED" ? (
                                   <span>{draft.shortfall_reason || item.shortfall_reason || "-"}</span>
                                 ) : (
                                   <select
@@ -1028,14 +1024,14 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
                     </Table>
                   </div>
 
-                  {!isSupervisor && mode !== "delivery" && activeInvoice.status === "PACKERS_ASSIGNED" ? (
+                  {!isSupervisor && activeInvoice.status === "PACKERS_ASSIGNED" ? (
                     <div className="flex flex-wrap gap-3">
                       <Button onClick={() => void saveExecution()} disabled={submittingExecution}>Save Quantities</Button>
                       <Button variant="outline" onClick={() => void requestVerification()} disabled={submittingExecution}>Request Verification</Button>
                     </div>
                   ) : null}
 
-                  {!isSupervisor && mode !== "delivery" && activeInvoice.status === "PACKING_STARTED" ? (
+                  {!isSupervisor && activeInvoice.status === "PACKING_STARTED" ? (
                     <div className="space-y-4 rounded-xl border p-4">
                       <div className="grid gap-3 md:grid-cols-4">
                         <div className="space-y-1"><Label>Total Boxes/Bags</Label><Input type="number" min={0} value={packingDrafts[activeInvoice.batch_invoice_id]?.total_boxes_or_bags ?? "0"} onChange={(e) => setPackingDrafts((prev) => ({ ...prev, [activeInvoice.batch_invoice_id]: { ...(prev[activeInvoice.batch_invoice_id] ?? { total_boxes_or_bags: "0", loose_cases: "0", full_cases: "0", packing_note: "" }), total_boxes_or_bags: e.target.value } }))} /></div>

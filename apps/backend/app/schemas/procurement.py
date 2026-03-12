@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class PurchaseChallanItemIn(BaseModel):
@@ -29,10 +29,21 @@ class PurchaseBillItemIn(BaseModel):
 
 
 class PurchaseBillCreate(BaseModel):
-    challan_id: uuid.UUID
+    challan_id: uuid.UUID | None = None
+    vendor_id: uuid.UUID | None = None
+    warehouse_id: uuid.UUID | None = None
+    rack_id: uuid.UUID | None = None
     bill_number: str
     bill_date: date
     items: list[PurchaseBillItemIn]
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        if self.challan_id is not None:
+            return self
+        if self.vendor_id is None or self.warehouse_id is None:
+            raise ValueError("vendor_id and warehouse_id are required when challan_id is not provided")
+        return self
 
 
 class PurchaseReturnItemIn(BaseModel):

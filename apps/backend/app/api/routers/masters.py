@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.entities import (
+    AccountCategory,
     AccountType,
     AreaMaster,
     Company,
@@ -41,6 +42,8 @@ from app.models.entities import (
     Warehouse,
 )
 from app.schemas.masters import (
+    AccountCategoryCreate,
+    AccountCategoryUpdate,
     AreaCreate,
     AreaUpdate,
     CompanyCreate,
@@ -122,6 +125,21 @@ async def _require_active_lookup(db: AsyncSession, model, lookup_id: uuid.UUID |
         return None
     obj = await db.get(model, lookup_id)
     if obj is None or not getattr(obj, "is_active", True):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {label}")
+    return obj
+
+
+async def _require_account_category(
+    db: AsyncSession,
+    category_id: uuid.UUID | None,
+    *,
+    party_type: str,
+    label: str = "account_category_id",
+):
+    if category_id is None:
+        return None
+    obj = await db.get(AccountCategory, category_id)
+    if obj is None or not obj.is_active or obj.party_type.value != party_type:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {label}")
     return obj
 
@@ -258,6 +276,7 @@ async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_
 
 @router.post("/vendors")
 async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db)):
+    await _require_account_category(db, payload.account_category_id, party_type="VENDOR")
     obj = Vendor(**payload.model_dump())
     db.add(obj)
     await db.commit()
@@ -285,6 +304,7 @@ async def create_customer(payload: CustomerCreate, db: AsyncSession = Depends(ge
         data["alternate_number"] = data["alternate_phone"]
     if not data.get("gst_number") and data.get("gstin"):
         data["gst_number"] = data["gstin"]
+    await _require_account_category(db, data.get("account_category_id"), party_type="CUSTOMER")
 
     category_id = data.get("customer_category_id")
     if category_id:
@@ -560,6 +580,8 @@ async def list_customers(
             Customer.customer_type.label("customer_type"),
             Customer.customer_category_id.label("customer_category_id"),
             CustomerCategory.name.label("category_name"),
+            Customer.account_category_id.label("account_category_id"),
+            AccountCategory.name.label("account_category_name"),
             Customer.whatsapp_number.label("whatsapp_number"),
             Customer.alternate_number.label("alternate_number"),
             Customer.gst_number.label("gst_number"),
@@ -573,6 +595,7 @@ async def list_customers(
         )
         .select_from(Customer)
         .outerjoin(CustomerCategory, CustomerCategory.id == Customer.customer_category_id)
+        .outerjoin(AccountCategory, AccountCategory.id == Customer.account_category_id)
         .outerjoin(User, User.customer_id == Customer.id)
         .where(Customer.is_active.is_(True))
         .order_by(Customer.created_at.desc())
@@ -600,6 +623,15 @@ async def create_customer_category(payload: CustomerCategoryCreate, db: AsyncSes
     return obj
 
 
+@router.post("/account-categories")
+async def create_account_category(payload: AccountCategoryCreate, db: AsyncSession = Depends(get_db)):
+    obj = AccountCategory(**payload.model_dump())
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
 @router.post("/roles")
 async def create_role(payload: RoleCreate, db: AsyncSession = Depends(get_db)):
     obj = Role(**payload.model_dump())
@@ -616,6 +648,24 @@ async def list_customer_categories(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(CustomerCategory).where(CustomerCategory.is_active.is_(True)).order_by(CustomerCategory.name.asc())
+    return await _paginate(db, stmt, page, page_size)
+
+
+@router.get("/account-categories")
+async def list_account_categories(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
+    party_type: str | None = Query(None),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(AccountCategory).where(AccountCategory.is_active.is_(True))
+    if party_type in {"VENDOR", "CUSTOMER"}:
+        stmt = stmt.where(AccountCategory.party_type == party_type)
+    if search and search.strip():
+        q = f"%{search.strip()}%"
+        stmt = stmt.where(or_(AccountCategory.name.ilike(q), AccountCategory.code.ilike(q)))
+    stmt = stmt.order_by(AccountCategory.name.asc())
     return await _paginate(db, stmt, page, page_size)
 
 
@@ -656,7 +706,32 @@ async def list_vendors(
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Vendor).where(Vendor.is_active.is_(True))
+    stmt = (
+        select(
+            Vendor.id.label("id"),
+            Vendor.name.label("name"),
+            Vendor.firm_name.label("firm_name"),
+            Vendor.gstin.label("gstin"),
+            Vendor.pan.label("pan"),
+            Vendor.owner_name.label("owner_name"),
+            Vendor.phone.label("phone"),
+            Vendor.alternate_phone.label("alternate_phone"),
+            Vendor.email.label("email"),
+            Vendor.street.label("street"),
+            Vendor.city.label("city"),
+            Vendor.state.label("state"),
+            Vendor.pincode.label("pincode"),
+            Vendor.bank_account_number.label("bank_account_number"),
+            Vendor.ifsc_code.label("ifsc_code"),
+            Vendor.account_category_id.label("account_category_id"),
+            AccountCategory.name.label("account_category_name"),
+            Vendor.is_active.label("is_active"),
+            Vendor.created_at.label("created_at"),
+        )
+        .select_from(Vendor)
+        .outerjoin(AccountCategory, AccountCategory.id == Vendor.account_category_id)
+        .where(Vendor.is_active.is_(True))
+    )
     if search and search.strip():
         q = f"%{search.strip()}%"
         stmt = stmt.where(
@@ -669,7 +744,18 @@ async def list_vendors(
             )
         )
     stmt = stmt.order_by(Vendor.created_at.desc())
-    return await _paginate(db, stmt, page, page_size)
+    total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+    total = (await db.execute(total_stmt)).scalar_one()
+    result = await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))
+    items = [dict(row) for row in result.mappings().all()]
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return {
+        "items": jsonable_encoder(items),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/areas")
@@ -1175,6 +1261,8 @@ async def patch_customer(customer_id: str, payload: CustomerUpdate, db: AsyncSes
         patch_data["whatsapp_number"] = patch_data["phone"]
     if "gstin" in patch_data and "gst_number" not in patch_data:
         patch_data["gst_number"] = patch_data["gstin"]
+    if "account_category_id" in patch_data:
+        await _require_account_category(db, patch_data["account_category_id"], party_type="CUSTOMER")
     if "customer_category_id" in patch_data and patch_data["customer_category_id"]:
         category = await db.get(CustomerCategory, patch_data["customer_category_id"])
         if category is None or not category.is_active:
@@ -1290,11 +1378,36 @@ async def patch_vendor(vendor_id: str, payload: VendorUpdate, db: AsyncSession =
     import uuid
 
     obj = await _get_or_404(db, Vendor, uuid.UUID(vendor_id), "Vendor")
+    patch_data = payload.model_dump(exclude_unset=True)
+    if "account_category_id" in patch_data:
+        await _require_account_category(db, patch_data["account_category_id"], party_type="VENDOR")
+    for key, value in patch_data.items():
+        setattr(obj, key, value)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/account-categories/{category_id}")
+async def patch_account_category(category_id: str, payload: AccountCategoryUpdate, db: AsyncSession = Depends(get_db)):
+    import uuid
+
+    obj = await _get_or_404(db, AccountCategory, uuid.UUID(category_id), "AccountCategory")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
     return obj
+
+
+@router.delete("/account-categories/{category_id}")
+async def deactivate_account_category(category_id: str, db: AsyncSession = Depends(get_db)):
+    import uuid
+
+    obj = await _get_or_404(db, AccountCategory, uuid.UUID(category_id), "AccountCategory")
+    obj.is_active = False
+    await db.commit()
+    return {"id": str(obj.id), "is_active": obj.is_active}
 
 
 @router.delete("/vendors/{vendor_id}")

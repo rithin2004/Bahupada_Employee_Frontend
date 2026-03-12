@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
+    AccountCategory,
     CreditNote,
     Customer,
     DebitNote,
@@ -310,20 +311,32 @@ async def list_party_ledger_accounts(
     else:
         party_model = Vendor
 
+    category_id_column = party_model.account_category_id
     stmt = (
         select(
             PartyLedgerAccount.id.label("account_id"),
             PartyLedgerAccount.party_type.label("party_type"),
             PartyLedgerAccount.party_id.label("party_id"),
             func.coalesce(PartyLedgerAccount.party_name_snapshot, party_model.name).label("party_name"),
+            category_id_column.label("account_category_id"),
+            AccountCategory.name.label("account_category_name"),
             func.coalesce(func.sum(PartyLedgerEntry.admin_debit), Decimal("0")).label("total_debit"),
             func.coalesce(func.sum(PartyLedgerEntry.admin_credit), Decimal("0")).label("total_credit"),
         )
         .select_from(PartyLedgerAccount)
         .join(party_model, party_model.id == PartyLedgerAccount.party_id)
+        .outerjoin(AccountCategory, AccountCategory.id == category_id_column)
         .outerjoin(PartyLedgerEntry, PartyLedgerEntry.account_id == PartyLedgerAccount.id)
         .where(PartyLedgerAccount.party_type == party_type)
-        .group_by(PartyLedgerAccount.id, PartyLedgerAccount.party_type, PartyLedgerAccount.party_id, PartyLedgerAccount.party_name_snapshot, party_model.name)
+        .group_by(
+            PartyLedgerAccount.id,
+            PartyLedgerAccount.party_type,
+            PartyLedgerAccount.party_id,
+            PartyLedgerAccount.party_name_snapshot,
+            party_model.name,
+            category_id_column,
+            AccountCategory.name,
+        )
     )
     if search and search.strip():
         stmt = stmt.where(party_model.name.ilike(f"%{search.strip()}%"))
@@ -340,6 +353,8 @@ async def list_party_ledger_accounts(
                 "party_type": row["party_type"].value if hasattr(row["party_type"], "value") else str(row["party_type"]),
                 "party_id": row["party_id"],
                 "party_name": row["party_name"] or "-",
+                "account_category_id": row["account_category_id"],
+                "account_category_name": row["account_category_name"],
                 "total_debit": Decimal(row["total_debit"]),
                 "total_credit": Decimal(row["total_credit"]),
                 "balance": abs(balance),

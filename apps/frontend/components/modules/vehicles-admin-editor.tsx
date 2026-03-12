@@ -388,15 +388,19 @@ export function VehiclesAdminEditor() {
         </div>
 
         <PaginationFooter
-          currentPage={currentPage}
+          loading={loading}
+          page={currentPage}
           pageSize={pageSize}
           totalItems={totalCount}
           totalPages={totalPages}
-          onPageChange={setCurrentPage}
           onPageSizeChange={(nextPageSize) => {
             setPageSize(nextPageSize);
             resetPage();
           }}
+          onFirst={() => setCurrentPage(1)}
+          onPrevious={() => setCurrentPage((p) => p - 1)}
+          onNext={() => setCurrentPage((p) => p + 1)}
+          onLast={() => setCurrentPage(totalPages)}
         />
       </CardContent>
     </Card>

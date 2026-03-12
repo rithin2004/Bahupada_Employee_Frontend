@@ -33,6 +33,8 @@ type CustomerRow = {
   customer_type: CustomerType;
   customer_category_id: string;
   category_name: string;
+  account_category_id: string;
+  account_category_name: string;
   whatsapp_number: string;
   alternate_number: string;
   gst_number: string;
@@ -52,6 +54,12 @@ type CustomerCategory = {
   price_class: "A" | "B" | "C";
 };
 
+type AccountCategory = {
+  id: string;
+  code: string;
+  name: string;
+};
+
 const DEFAULT_PAGE_SIZE = 50;
 
 function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
@@ -65,6 +73,8 @@ function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
     customer_type: (String(row.customer_type ?? "B2C") === "B2B" ? "B2B" : "B2C") as CustomerType,
     customer_category_id: String(row.customer_category_id ?? ""),
     category_name: String(row.category_name ?? category.name ?? "-"),
+    account_category_id: String(row.account_category_id ?? ""),
+    account_category_name: String(row.account_category_name ?? ""),
     whatsapp_number: String(row.whatsapp_number ?? row.phone ?? ""),
     alternate_number: String(row.alternate_number ?? ""),
     gst_number: String(row.gst_number ?? row.gstin ?? ""),
@@ -101,12 +111,18 @@ export function CustomersAdminEditor() {
   const [openAddDialog, setOpenAddDialog] = useState(false);
   const [creating, setCreating] = useState(false);
   const [categories, setCategories] = useState<CustomerCategory[]>([]);
+  const [accountCategories, setAccountCategories] = useState<AccountCategory[]>([]);
   const [openCategoryDialog, setOpenCategoryDialog] = useState(false);
   const [creatingCategoryInline, setCreatingCategoryInline] = useState(false);
   const [newCategoryCode, setNewCategoryCode] = useState("");
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryType, setNewCategoryType] = useState<CustomerType>("B2B");
   const [newCategoryPriceClass, setNewCategoryPriceClass] = useState<"A" | "B" | "C">("A");
+  const [openAccountCategoryDialog, setOpenAccountCategoryDialog] = useState(false);
+  const [creatingAccountCategoryInline, setCreatingAccountCategoryInline] = useState(false);
+  const [newAccountCategoryCode, setNewAccountCategoryCode] = useState("");
+  const [newAccountCategoryName, setNewAccountCategoryName] = useState("");
+  const [newAccountCategoryDescription, setNewAccountCategoryDescription] = useState("");
   const [gstPdfFile, setGstPdfFile] = useState<File | null>(null);
   const [panPdfFile, setPanPdfFile] = useState<File | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -125,6 +141,7 @@ export function CustomersAdminEditor() {
     password: "",
     outlet_name: "",
     customer_category_id: "",
+    account_category_id: "",
     whatsapp_number: "",
     alternate_number: "",
     gst_number: "",
@@ -163,6 +180,21 @@ export function CustomersAdminEditor() {
     }
   }
 
+  async function loadAccountCategories() {
+    try {
+      const res = asObject(await fetchBackend("/masters/account-categories?party_type=CUSTOMER&page=1&page_size=100"));
+      setAccountCategories(
+        asArray(res.items).map((row) => ({
+          id: String(row.id ?? ""),
+          code: String(row.code ?? ""),
+          name: String(row.name ?? ""),
+        }))
+      );
+    } catch {
+      setAccountCategories([]);
+    }
+  }
+
   async function createInlineCategory() {
     if (!newCategoryCode.trim() || !newCategoryName.trim()) {
       toast.error("Category code and name are required.", { duration: 4000 });
@@ -195,6 +227,36 @@ export function CustomersAdminEditor() {
     }
   }
 
+  async function createInlineAccountCategory() {
+    if (!newAccountCategoryCode.trim() || !newAccountCategoryName.trim()) {
+      toast.error("Account category code and name are required.", { duration: 4000 });
+      return;
+    }
+    setCreatingAccountCategoryInline(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/account-categories", {
+          code: newAccountCategoryCode.trim(),
+          name: newAccountCategoryName.trim(),
+          party_type: "CUSTOMER",
+          description: newAccountCategoryDescription.trim() || null,
+          is_active: true,
+        })
+      );
+      await loadAccountCategories();
+      setForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
+      setOpenAccountCategoryDialog(false);
+      setNewAccountCategoryCode("");
+      setNewAccountCategoryName("");
+      setNewAccountCategoryDescription("");
+      toast.success(`Account category added: ${String(created.name ?? newAccountCategoryName.trim())}`, { duration: 4000 });
+    } catch (error) {
+      toast.error(`Account category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingAccountCategoryInline(false);
+    }
+  }
+
   async function loadCustomers(page: number, pageSizeValue = pageSize) {
     setLoading(true);
     setRows([]);
@@ -222,6 +284,7 @@ export function CustomersAdminEditor() {
 
   useEffect(() => {
     void loadCategories();
+    void loadAccountCategories();
   }, []);
 
   useEffect(() => {
@@ -264,6 +327,7 @@ export function CustomersAdminEditor() {
         password: selected.password.trim() || null,
         outlet_name: selected.outlet_name.trim() || null,
         customer_category_id: selected.customer_category_id || null,
+        account_category_id: selected.account_category_id || null,
         whatsapp_number: selected.whatsapp_number.trim() || null,
         alternate_number: selected.alternate_number.trim() || null,
         gst_number: selected.gst_number.trim() || null,
@@ -344,6 +408,7 @@ export function CustomersAdminEditor() {
         password: form.password.trim() || null,
         outlet_name: form.outlet_name.trim() || null,
         customer_category_id: form.customer_category_id || null,
+        account_category_id: form.account_category_id || null,
         whatsapp_number: form.whatsapp_number.trim() || null,
         alternate_number: form.alternate_number.trim() || null,
         gst_number: form.gst_number.trim() || null,
@@ -366,6 +431,7 @@ export function CustomersAdminEditor() {
         password: "",
         outlet_name: "",
         customer_category_id: "",
+        account_category_id: "",
         whatsapp_number: "",
         alternate_number: "",
         gst_number: "",
@@ -510,6 +576,65 @@ export function CustomersAdminEditor() {
                       {categoryOptions.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label>Account Category</Label>
+                      <Dialog open={openAccountCategoryDialog} onOpenChange={setOpenAccountCategoryDialog}>
+                        <DialogTrigger asChild>
+                          <Button size="sm" type="button" variant="outline">+ Add Account Category</Button>
+                        </DialogTrigger>
+                        <DialogContent className="w-[92vw] max-w-[520px]">
+                          <DialogHeader>
+                            <DialogTitle>Add Customer Account Category</DialogTitle>
+                            <DialogDescription>Create an account category without leaving customer creation.</DialogDescription>
+                          </DialogHeader>
+                          <div className="grid gap-3">
+                            <div className="space-y-1">
+                              <Label>Code *</Label>
+                              <Input value={newAccountCategoryCode} onChange={(e) => setNewAccountCategoryCode(e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Name *</Label>
+                              <Input value={newAccountCategoryName} onChange={(e) => setNewAccountCategoryName(e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Description</Label>
+                              <Input
+                                value={newAccountCategoryDescription}
+                                onChange={(e) => setNewAccountCategoryDescription(e.target.value)}
+                              />
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setOpenAccountCategoryDialog(false)}>
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={createInlineAccountCategory}
+                              disabled={
+                                creatingAccountCategoryInline || !newAccountCategoryCode.trim() || !newAccountCategoryName.trim()
+                              }
+                            >
+                              {creatingAccountCategoryInline ? "Adding..." : "Add Account Category"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    </div>
+                    <select
+                      className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                      value={form.account_category_id}
+                      onChange={(e) => setForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
+                    >
+                      <option value="">Select account category</option>
+                      {accountCategories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name} ({category.code})
                         </option>
                       ))}
                     </select>
@@ -676,6 +801,7 @@ export function CustomersAdminEditor() {
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Outlet</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Type</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Category</TableHead>
+                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Account Category</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">WhatsApp</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Credit Limit</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
@@ -692,6 +818,7 @@ export function CustomersAdminEditor() {
                       <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-48 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-32 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-14 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-8 w-16" /></TableCell>
@@ -701,7 +828,7 @@ export function CustomersAdminEditor() {
 
               {!loading && filteredRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="text-center text-muted-foreground">
                     No customers found.
                   </TableCell>
                 </TableRow>
@@ -721,6 +848,7 @@ export function CustomersAdminEditor() {
                       <TableCell>{row.outlet_name || "-"}</TableCell>
                       <TableCell>{row.customer_type}</TableCell>
                       <TableCell>{row.category_name || "-"}</TableCell>
+                      <TableCell>{row.account_category_name || "-"}</TableCell>
                       <TableCell>{row.whatsapp_number || "-"}</TableCell>
                       <TableCell>{row.credit_limit}</TableCell>
                       <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
@@ -779,6 +907,35 @@ export function CustomersAdminEditor() {
                                 <div className="space-y-1">
                                   <Label>WhatsApp Number</Label>
                                   <Input value={selected.whatsapp_number} onChange={(e) => updateSelected("whatsapp_number", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Account Category</Label>
+                                  <select
+                                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                    value={selected.account_category_id}
+                                    onChange={(e) => {
+                                      const nextId = e.target.value;
+                                      const nextCategory = accountCategories.find((item) => item.id === nextId);
+                                      setRows((prev) =>
+                                        prev.map((row) =>
+                                          row.id === selected.id
+                                            ? {
+                                                ...row,
+                                                account_category_id: nextId,
+                                                account_category_name: nextCategory?.name ?? "",
+                                              }
+                                            : row
+                                        )
+                                      );
+                                    }}
+                                  >
+                                    <option value="">Select account category</option>
+                                    {accountCategories.map((category) => (
+                                      <option key={category.id} value={category.id}>
+                                        {category.name} ({category.code})
+                                      </option>
+                                    ))}
+                                  </select>
                                 </div>
                                 <div className="space-y-1">
                                   <Label>Alternate Number</Label>

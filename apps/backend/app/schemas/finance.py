@@ -131,6 +131,8 @@ class PartyLedgerAccountSummary(BaseModel):
     party_type: str
     party_id: uuid.UUID
     party_name: str
+    account_category_id: uuid.UUID | None = None
+    account_category_name: str | None = None
     total_debit: Decimal
     total_credit: Decimal
     balance: Decimal

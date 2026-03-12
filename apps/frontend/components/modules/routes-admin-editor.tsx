@@ -421,15 +421,19 @@ export function RoutesAdminEditor() {
         </div>
 
         <PaginationFooter
-          currentPage={currentPage}
+          page={currentPage}
+          loading={loading}
           pageSize={pageSize}
           totalItems={totalCount}
           totalPages={totalPages}
-          onPageChange={setCurrentPage}
           onPageSizeChange={(nextPageSize) => {
             setPageSize(nextPageSize);
             resetPage();
           }}
+          onFirst={() => setCurrentPage(1)}
+          onPrevious={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+          onNext={() => setCurrentPage((prev) => Math.min(totalPages || 1, prev + 1))}
+          onLast={() => setCurrentPage(totalPages || 1)}
         />
       </CardContent>
     </Card>
