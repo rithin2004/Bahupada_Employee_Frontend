@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { asArray, asObject, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 
 type Mode = "packing" | "delivery";
 
@@ -306,7 +306,7 @@ export function EmployeeDeliveryWorkflow({ mode }: { mode: Mode }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const meResponse = asObject(await fetchBackend("/auth/me"));
+      const meResponse = asObject(await fetchPortalMe());
       const meData = {
         user_id: String(meResponse.user_id ?? ""),
         full_name: String(meResponse.full_name ?? "Employee User"),

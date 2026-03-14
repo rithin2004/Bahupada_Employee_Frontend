@@ -195,6 +195,7 @@ function ProductFormFields({
   onQuickCreate: (type: "brand" | "category" | "subCategory" | "unit" | "hsn") => void;
 }) {
   const filteredSubCategories = form.category_id ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id) : subCategories;
+  const selectedHsn = hsnOptions.find((item) => item.id === form.hsn_id) ?? null;
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -257,7 +258,10 @@ function ProductFormFields({
         </div>
         <SelectField
           value={form.hsn_id}
-          onChange={(value) => setForm((prev) => ({ ...prev, hsn_id: value }))}
+          onChange={(value) => {
+            const matched = hsnOptions.find((item) => item.id === value);
+            setForm((prev) => ({ ...prev, hsn_id: value, tax_percent: matched?.gst_percent ?? prev.tax_percent }));
+          }}
           options={hsnOptions.map((item) => ({ id: item.id, label: `${item.hsn_code} (${item.gst_percent}%)` }))}
           placeholder="Select HSN"
         />
@@ -332,6 +336,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <Label>GST / Tax % *</Label>
         <Input value={form.tax_percent} onChange={(e) => setForm((prev) => ({ ...prev, tax_percent: e.target.value }))} />
+        {selectedHsn ? <p className="text-xs text-muted-foreground">Auto-filled from HSN {selectedHsn.hsn_code}.</p> : null}
       </div>
     </div>
   );

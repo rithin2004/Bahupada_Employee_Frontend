@@ -133,8 +133,7 @@ class ProductCreate(StrictModel):
 
 
 class VendorCreate(StrictModel):
-    name: str
-    firm_name: str | None = None
+    firm_name: str
     gstin: str | None = None
     pan: str | None = None
     owner_name: str | None = None
@@ -171,6 +170,11 @@ class CustomerCreate(StrictModel):
     owner_name: str | None = None
     phone: str | None = None
     email: str | None = None
+    street_address_1: str | None = None
+    street_address_2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    pincode: str | None = None
     credit_limit: Decimal = Decimal("0")
     latitude: Decimal | None = None
     longitude: Decimal | None = None
@@ -252,6 +256,11 @@ class CustomerUpdate(BaseModel):
     owner_name: str | None = None
     phone: str | None = None
     email: str | None = None
+    street_address_1: str | None = None
+    street_address_2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    pincode: str | None = None
     credit_limit: Decimal | None = None
     latitude: Decimal | None = None
     longitude: Decimal | None = None
@@ -272,7 +281,6 @@ class WarehouseUpdate(BaseModel):
 
 
 class VendorUpdate(BaseModel):
-    name: str | None = None
     firm_name: str | None = None
     gstin: str | None = None
     pan: str | None = None

@@ -24,7 +24,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 type VendorRow = {
   id: string;
-  name: string;
   firm_name: string;
   gstin: string;
   pan: string;
@@ -52,7 +51,6 @@ type AccountCategoryRow = {
 const DEFAULT_PAGE_SIZE = 50;
 
 const EMPTY_CREATE_FORM = {
-  name: "",
   firm_name: "",
   gstin: "",
   pan: "",
@@ -78,7 +76,6 @@ const EMPTY_CATEGORY_FORM = {
 function mapRow(row: Record<string, unknown>): VendorRow {
   return {
     id: String(row.id ?? ""),
-    name: String(row.name ?? ""),
     firm_name: String(row.firm_name ?? ""),
     gstin: String(row.gstin ?? ""),
     pan: String(row.pan ?? ""),
@@ -203,7 +200,6 @@ export function VendorsAdminEditor() {
     setFeedback("");
     try {
       await patchBackend(`/masters/vendors/${selected.id}`, {
-        name: selected.name,
         firm_name: selected.firm_name || null,
         gstin: selected.gstin || null,
         pan: selected.pan || null,
@@ -220,8 +216,8 @@ export function VendorsAdminEditor() {
         account_category_id: selected.account_category_id || null,
         is_active: selected.is_active,
       });
-      toast.success(`Vendor updated: ${selected.name}`, { duration: 5000 });
-      setFeedback(`Vendor updated: ${selected.name}`);
+      toast.success(`Vendor updated: ${selected.firm_name}`, { duration: 5000 });
+      setFeedback(`Vendor updated: ${selected.firm_name}`);
       setOpenId(null);
     } catch (error) {
       const message = `Update failed: ${error instanceof Error ? error.message : "Unknown error"}`;
@@ -233,15 +229,14 @@ export function VendorsAdminEditor() {
   }
 
   async function createVendor() {
-    if (!createForm.name.trim()) {
+    if (!createForm.firm_name.trim()) {
       return;
     }
     setCreating(true);
     setFeedback("");
     try {
       await postBackend("/masters/vendors", {
-        name: createForm.name.trim(),
-        firm_name: createForm.firm_name.trim() || null,
+        firm_name: createForm.firm_name.trim(),
         gstin: createForm.gstin.trim() || null,
         pan: createForm.pan.trim() || null,
         owner_name: createForm.owner_name.trim() || null,
@@ -256,7 +251,7 @@ export function VendorsAdminEditor() {
         ifsc_code: createForm.ifsc_code.trim() || null,
         account_category_id: createForm.account_category_id || null,
       });
-      const createdName = createForm.name.trim();
+      const createdName = createForm.firm_name.trim();
       setCreateForm({ ...EMPTY_CREATE_FORM });
       setOpenCreateDialog(false);
       resetPage();
@@ -378,15 +373,8 @@ export function VendorsAdminEditor() {
               </DialogHeader>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1 md:col-span-2">
-                  <Label>Name *</Label>
-                  <Input value={createForm.name} onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))} />
-                </div>
-                <div className="space-y-1 md:col-span-2">
                   <Label>Firm Name</Label>
-                  <Input
-                    value={createForm.firm_name}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))}
-                  />
+                  <Input value={createForm.firm_name} onChange={(e) => setCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <Label>GSTIN</Label>
@@ -519,7 +507,7 @@ export function VendorsAdminEditor() {
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={createVendor} disabled={creating || !createForm.name.trim()}>
+                <Button onClick={createVendor} disabled={creating || !createForm.firm_name.trim()}>
                   {creating ? "Creating..." : "Create Vendor"}
                 </Button>
               </DialogFooter>
@@ -536,7 +524,6 @@ export function VendorsAdminEditor() {
               <TableHead className="w-10">
                 <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
               </TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Name</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Firm Name</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">GSTIN</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Phone</TableHead>
@@ -581,7 +568,6 @@ export function VendorsAdminEditor() {
                       onChange={(e) => toggleSelectOne(row.id, e.target.checked)}
                     />
                   </TableCell>
-                  <TableCell>{row.name}</TableCell>
                   <TableCell>{row.firm_name || "-"}</TableCell>
                   <TableCell>{row.gstin || "-"}</TableCell>
                   <TableCell>{row.phone || "-"}</TableCell>
@@ -603,10 +589,6 @@ export function VendorsAdminEditor() {
                         </DialogHeader>
                         {selected ? (
                           <div className="grid gap-3 md:grid-cols-2">
-                            <div className="space-y-1 md:col-span-2">
-                              <Label>Name</Label>
-                              <Input value={selected.name} onChange={(e) => updateSelected("name", e.target.value)} />
-                            </div>
                             <div className="space-y-1 md:col-span-2">
                               <Label>Firm Name</Label>
                               <Input value={selected.firm_name} onChange={(e) => updateSelected("firm_name", e.target.value)} />
