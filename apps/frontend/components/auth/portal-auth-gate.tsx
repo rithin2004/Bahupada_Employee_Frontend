@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
-import { clearPortalSession, fetchWithPortalAuth, readPortalSession, asObject } from "@/lib/backend-api";
+import { clearPortalSession, fetchPortalMe, readCachedPortalMe, readPortalSession } from "@/lib/backend-api";
 
 type PortalAuthGateProps = {
   portal: "ADMIN" | "EMPLOYEE" | "ANY";
@@ -13,8 +13,19 @@ type PortalAuthGateProps = {
 export function PortalAuthGate({ portal, children }: PortalAuthGateProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const [ready, setReady] = useState(false);
   const bypass = pathname.startsWith("/auth/");
+  const [ready, setReady] = useState(() => {
+    if (typeof window === "undefined" || bypass) {
+      return bypass;
+    }
+    const session = readPortalSession();
+    const cachedMe = readCachedPortalMe();
+    if (!session.accessToken || !session.portal || !cachedMe) {
+      return false;
+    }
+    const payloadPortal = String(cachedMe.portal ?? "");
+    return portal === "ANY" ? Boolean(payloadPortal) : payloadPortal === portal;
+  });
 
   useEffect(() => {
     let active = true;
@@ -29,13 +40,7 @@ export function PortalAuthGate({ portal, children }: PortalAuthGateProps) {
           router.replace(fallbackLoginHref);
           return;
         }
-        const response = await fetchWithPortalAuth("/auth/me", { method: "GET" });
-        if (!response.ok) {
-          clearPortalSession();
-          router.replace(fallbackLoginHref);
-          return;
-        }
-        const payload = asObject(await response.json().catch(() => ({})));
+        const payload = await fetchPortalMe();
         if (portal !== "ANY" && String(payload.portal ?? "") !== portal) {
           clearPortalSession();
           router.replace(fallbackLoginHref);

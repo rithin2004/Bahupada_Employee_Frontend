@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { asObject, fetchWithPortalAuth, readPortalSession } from "@/lib/backend-api";
+import { fetchPortalMe, readCachedPortalMe, readPortalSession } from "@/lib/backend-api";
 import { defaultRouteForEmployee, type EmployeeRole } from "@/lib/navigation";
 
 type EmployeeRoleGuardProps = {
@@ -13,7 +13,14 @@ type EmployeeRoleGuardProps = {
 
 export function EmployeeRoleGuard({ allow, children }: EmployeeRoleGuardProps) {
   const router = useRouter();
-  const [ready, setReady] = useState(false);
+  const [ready, setReady] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    const cachedMe = readCachedPortalMe();
+    const employeeRole = typeof cachedMe?.employee_role === "string" ? (cachedMe.employee_role as EmployeeRole) : null;
+    return Boolean(employeeRole && allow.includes(employeeRole));
+  });
 
   useEffect(() => {
     let active = true;
@@ -24,12 +31,7 @@ export function EmployeeRoleGuard({ allow, children }: EmployeeRoleGuardProps) {
           router.replace("/auth/employee-login");
           return;
         }
-        const response = await fetchWithPortalAuth("/auth/me", { method: "GET" });
-        if (!response.ok) {
-          router.replace("/auth/employee-login");
-          return;
-        }
-        const payload = asObject(await response.json().catch(() => ({})));
+        const payload = await fetchPortalMe();
         const employeeRole = typeof payload.employee_role === "string" ? (payload.employee_role as EmployeeRole) : null;
         if (!employeeRole || !allow.includes(employeeRole)) {
           router.replace(defaultRouteForEmployee(employeeRole));

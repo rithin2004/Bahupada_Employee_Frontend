@@ -10,13 +10,22 @@ const GET_CACHE_TTL_MS = 1000 * 60 * 5;
 const ENABLE_API_LATENCY_LOGS =
   process.env.NEXT_PUBLIC_API_LATENCY_LOGS === "true" || process.env.NODE_ENV !== "production";
 const PORTAL_AUTH_STORAGE_KEY = "bahu_portal_session";
+const PORTAL_ME_STORAGE_KEY = "bahu_portal_me";
+const PORTAL_ME_TTL_MS = 1000 * 60 * 5;
 let refreshInFlight: Promise<string> | null = null;
+let meInFlight: Promise<Record<string, unknown>> | null = null;
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 
 type PortalSession = {
   portal: string;
   accessToken: string;
   refreshToken: string;
+};
+
+type PortalMeCache = {
+  accessToken: string;
+  cachedAt: number;
+  payload: Record<string, unknown>;
 };
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -150,11 +159,71 @@ function writePortalSession(session: PortalSession) {
   window.localStorage.setItem(PORTAL_AUTH_STORAGE_KEY, JSON.stringify(session));
 }
 
+function readPortalMeCache(): PortalMeCache | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(PORTAL_ME_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = asObject(JSON.parse(raw));
+    const accessToken = typeof parsed.accessToken === "string" ? parsed.accessToken : "";
+    const cachedAt = typeof parsed.cachedAt === "number" ? parsed.cachedAt : Number(parsed.cachedAt);
+    const payload = asObject(parsed.payload);
+    if (!accessToken || !Number.isFinite(cachedAt)) {
+      return null;
+    }
+    return { accessToken, cachedAt, payload };
+  } catch {
+    return null;
+  }
+}
+
+function writePortalMeCache(payload: Record<string, unknown>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const accessToken = readAccessToken();
+  if (!accessToken) {
+    return;
+  }
+  window.localStorage.setItem(
+    PORTAL_ME_STORAGE_KEY,
+    JSON.stringify({
+      accessToken,
+      cachedAt: Date.now(),
+      payload,
+    } satisfies PortalMeCache)
+  );
+}
+
+function clearPortalMeCache() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(PORTAL_ME_STORAGE_KEY);
+}
+
+function readCachedPortalMe(): Record<string, unknown> | null {
+  const cache = readPortalMeCache();
+  const accessToken = readAccessToken();
+  if (!cache || !accessToken || cache.accessToken !== accessToken) {
+    return null;
+  }
+  if (Date.now() - cache.cachedAt > PORTAL_ME_TTL_MS) {
+    return null;
+  }
+  return cache.payload;
+}
+
 function clearPortalSession() {
   if (typeof window === "undefined") {
     return;
   }
   window.localStorage.removeItem(PORTAL_AUTH_STORAGE_KEY);
+  clearPortalMeCache();
 }
 
 async function refreshPortalSession(): Promise<string> {
@@ -200,6 +269,7 @@ async function refreshPortalSession(): Promise<string> {
       accessToken,
       refreshToken,
     });
+    clearPortalMeCache();
     return accessToken;
   })();
 
@@ -251,6 +321,36 @@ async function fetchWithPortalAuth(path: string, init?: RequestInit): Promise<Re
   }
 
   return response;
+}
+
+async function fetchPortalMe(options?: { force?: boolean }) {
+  const force = options?.force ?? false;
+  if (!force) {
+    const cached = readCachedPortalMe();
+    if (cached) {
+      return cached;
+    }
+  }
+
+  if (!force && meInFlight) {
+    return meInFlight;
+  }
+
+  meInFlight = (async () => {
+    const response = await fetchWithPortalAuth("/auth/me", { method: "GET" });
+    if (!response.ok) {
+      throw new Error("Failed to fetch session");
+    }
+    const payload = asObject(await response.json().catch(() => ({})));
+    writePortalMeCache(payload);
+    return payload;
+  })();
+
+  try {
+    return await meInFlight;
+  } finally {
+    meInFlight = null;
+  }
 }
 
 function resolveInvalidationPrefixes(path: string): string[] {
@@ -390,8 +490,10 @@ export {
   asObject,
   backendApiBaseUrl,
   clearPortalSession,
+  readCachedPortalMe,
   deleteBackend,
   fetchBackend,
+  fetchPortalMe,
   fetchWithPortalAuth,
   patchBackend,
   postBackend,

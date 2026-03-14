@@ -133,7 +133,6 @@ function challanBatchPreview(index: number) {
 const LIST_PAGE_SIZE = 50;
 
 const EMPTY_INLINE_VENDOR_FORM = {
-  name: "",
   firm_name: "",
   gstin: "",
   pan: "",
@@ -256,6 +255,7 @@ function ProductFormFields({
   const filteredSubCategories = form.category_id
     ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id)
     : subCategories;
+  const selectedHsn = hsnOptions.find((item) => item.id === form.hsn_id) ?? null;
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -318,7 +318,10 @@ function ProductFormFields({
         </div>
         <SelectField
           value={form.hsn_id}
-          onChange={(value) => setForm((prev) => ({ ...prev, hsn_id: value }))}
+          onChange={(value) => {
+            const matched = hsnOptions.find((item) => item.id === value);
+            setForm((prev) => ({ ...prev, hsn_id: value, tax_percent: matched?.gst_percent ?? prev.tax_percent }));
+          }}
           options={hsnOptions.map((item) => ({ id: item.id, label: `${item.hsn_code} (${item.gst_percent}%)` }))}
           placeholder="Select HSN"
         />
@@ -390,6 +393,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <Label>GST / Tax % *</Label>
         <Input value={form.tax_percent} onChange={(e) => setForm((prev) => ({ ...prev, tax_percent: e.target.value }))} />
+        {selectedHsn ? <p className="text-xs text-muted-foreground">Auto-filled from HSN {selectedHsn.hsn_code}.</p> : null}
       </div>
     </div>
   );
@@ -740,15 +744,14 @@ export function ProcurementCreateFlow() {
   }, [billWarehouseId, billRackId]);
 
   async function createInlineVendor() {
-    if (!newVendorForm.name.trim()) {
+    if (!newVendorForm.firm_name.trim()) {
       return;
     }
     setCreatingVendor(true);
     try {
       const created = asObject(
         await postBackend("/masters/vendors", {
-          name: newVendorForm.name.trim(),
-          firm_name: newVendorForm.firm_name.trim() || null,
+          firm_name: newVendorForm.firm_name.trim(),
           gstin: newVendorForm.gstin.trim() || null,
           pan: newVendorForm.pan.trim() || null,
           owner_name: newVendorForm.owner_name.trim() || null,
@@ -769,7 +772,9 @@ export function ProcurementCreateFlow() {
       setBillVendorId(createdId);
       setNewVendorForm({ ...EMPTY_INLINE_VENDOR_FORM });
       setShowVendorCreate(false);
-      toast.success(`Added vendor ${String(created.name ?? newVendorForm.name.trim())}.`, { duration: 4000 });
+      toast.success(`Added vendor ${String(created.firm_name ?? created.name ?? newVendorForm.firm_name.trim())}.`, {
+        duration: 4000,
+      });
     } catch (error) {
       toast.error(`Vendor create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
     } finally {
@@ -1250,14 +1255,7 @@ export function ProcurementCreateFlow() {
                                 </DialogHeader>
                                 <div className="grid gap-3 md:grid-cols-2">
                                   <div className="space-y-1">
-                                    <Label>Name *</Label>
-                                    <Input
-                                      value={newVendorForm.name}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, name: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Firm Name</Label>
+                                    <Label>Firm Name *</Label>
                                     <Input
                                       value={newVendorForm.firm_name}
                                       onChange={(e) => setNewVendorForm((prev) => ({ ...prev, firm_name: e.target.value }))}
@@ -1351,7 +1349,7 @@ export function ProcurementCreateFlow() {
                                   </div>
                                 </div>
                                 <div className="pt-2">
-                                  <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.name.trim()}>
+                                  <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.firm_name.trim()}>
                                     {creatingVendor ? "Adding..." : "Add Vendor"}
                                   </Button>
                                 </div>
@@ -1922,14 +1920,7 @@ export function ProcurementCreateFlow() {
                                   </DialogHeader>
                                   <div className="grid gap-3 md:grid-cols-2">
                                     <div className="space-y-1">
-                                      <Label>Name *</Label>
-                                      <Input
-                                        value={newVendorForm.name}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, name: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Firm Name</Label>
+                                      <Label>Firm Name *</Label>
                                       <Input
                                         value={newVendorForm.firm_name}
                                         onChange={(e) => setNewVendorForm((prev) => ({ ...prev, firm_name: e.target.value }))}
@@ -1997,7 +1988,7 @@ export function ProcurementCreateFlow() {
                                     </div>
                                   </div>
                                   <div className="pt-2">
-                                    <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.name.trim()}>
+                                    <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.firm_name.trim()}>
                                       {creatingVendor ? "Adding..." : "Add Vendor"}
                                     </Button>
                                   </div>

@@ -40,6 +40,11 @@ type CustomerRow = {
   gst_number: string;
   pan_number: string;
   email: string;
+  street_address_1: string;
+  street_address_2: string;
+  city: string;
+  state: string;
+  pincode: string;
   credit_limit: string;
   latitude: string;
   longitude: string;
@@ -80,6 +85,11 @@ function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
     gst_number: String(row.gst_number ?? row.gstin ?? ""),
     pan_number: String(row.pan_number ?? ""),
     email: String(row.email ?? ""),
+    street_address_1: String(row.street_address_1 ?? ""),
+    street_address_2: String(row.street_address_2 ?? ""),
+    city: String(row.city ?? ""),
+    state: String(row.state ?? ""),
+    pincode: String(row.pincode ?? ""),
     credit_limit: String(row.credit_limit ?? "0"),
     latitude: String(row.latitude ?? ""),
     longitude: String(row.longitude ?? ""),
@@ -148,6 +158,11 @@ export function CustomersAdminEditor() {
     pan_number: "",
     credit_limit: "0",
     email: "",
+    street_address_1: "",
+    street_address_2: "",
+    city: "",
+    state: "",
+    pincode: "",
     latitude: "",
     longitude: "",
     is_line_sale_outlet: false,
@@ -333,6 +348,11 @@ export function CustomersAdminEditor() {
         gst_number: selected.gst_number.trim() || null,
         pan_number: selected.pan_number.trim() || null,
         email: selected.email.trim() || null,
+        street_address_1: selected.street_address_1.trim() || null,
+        street_address_2: selected.street_address_2.trim() || null,
+        city: selected.city.trim() || null,
+        state: selected.state.trim() || null,
+        pincode: selected.pincode.trim() || null,
         credit_limit: Number(selected.credit_limit || "0"),
         latitude: selected.latitude.trim() ? Number(selected.latitude) : null,
         longitude: selected.longitude.trim() ? Number(selected.longitude) : null,
@@ -416,6 +436,11 @@ export function CustomersAdminEditor() {
         pan_number: form.pan_number.trim() || null,
         pan_doc: panDocPath || null,
         email: form.email.trim() || null,
+        street_address_1: form.street_address_1.trim() || null,
+        street_address_2: form.street_address_2.trim() || null,
+        city: form.city.trim() || null,
+        state: form.state.trim() || null,
+        pincode: form.pincode.trim() || null,
         credit_limit: Number(form.credit_limit || "0"),
         latitude: form.latitude.trim() ? Number(form.latitude) : null,
         longitude: form.longitude.trim() ? Number(form.longitude) : null,
@@ -438,6 +463,11 @@ export function CustomersAdminEditor() {
         pan_number: "",
         credit_limit: "0",
         email: "",
+        street_address_1: "",
+        street_address_2: "",
+        city: "",
+        state: "",
+        pincode: "",
         latitude: "",
         longitude: "",
         is_line_sale_outlet: false,
@@ -709,6 +739,32 @@ export function CustomersAdminEditor() {
                     <Label>Email</Label>
                     <Input value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} />
                   </div>
+                  <div className="space-y-1 md:col-span-2">
+                    <Label>Street Address 1</Label>
+                    <Input
+                      value={form.street_address_1}
+                      onChange={(e) => setForm((prev) => ({ ...prev, street_address_1: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1 md:col-span-2">
+                    <Label>Street Address 2</Label>
+                    <Input
+                      value={form.street_address_2}
+                      onChange={(e) => setForm((prev) => ({ ...prev, street_address_2: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>City</Label>
+                    <Input value={form.city} onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>State</Label>
+                    <Input value={form.state} onChange={(e) => setForm((prev) => ({ ...prev, state: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Pincode</Label>
+                    <Input value={form.pincode} onChange={(e) => setForm((prev) => ({ ...prev, pincode: e.target.value }))} />
+                  </div>
                   <div className="space-y-1">
                     <Label>Latitude</Label>
                     <Input
@@ -952,6 +1008,32 @@ export function CustomersAdminEditor() {
                                 <div className="space-y-1">
                                   <Label>Email</Label>
                                   <Input value={selected.email} onChange={(e) => updateSelected("email", e.target.value)} />
+                                </div>
+                                <div className="space-y-1 md:col-span-2">
+                                  <Label>Street Address 1</Label>
+                                  <Input
+                                    value={selected.street_address_1}
+                                    onChange={(e) => updateSelected("street_address_1", e.target.value)}
+                                  />
+                                </div>
+                                <div className="space-y-1 md:col-span-2">
+                                  <Label>Street Address 2</Label>
+                                  <Input
+                                    value={selected.street_address_2}
+                                    onChange={(e) => updateSelected("street_address_2", e.target.value)}
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>City</Label>
+                                  <Input value={selected.city} onChange={(e) => updateSelected("city", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>State</Label>
+                                  <Input value={selected.state} onChange={(e) => updateSelected("state", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Pincode</Label>
+                                  <Input value={selected.pincode} onChange={(e) => updateSelected("pincode", e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                   <Label>Latitude</Label>

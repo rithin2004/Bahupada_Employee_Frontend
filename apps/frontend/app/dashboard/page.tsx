@@ -5,18 +5,18 @@ import { useEffect, useState } from "react";
 import { PortalAuthGate } from "@/components/auth/portal-auth-gate";
 import { DashboardHome } from "@/components/dashboard/dashboard-home";
 import { AppShell } from "@/components/layout/app-shell";
-import { asObject, fetchBackend } from "@/lib/backend-api";
+import { fetchPortalMe, readCachedPortalMe } from "@/lib/backend-api";
 import type { AppRole } from "@/lib/navigation";
 
 export default function DashboardPage() {
-  const [role, setRole] = useState<AppRole>("employee");
-  const [userName, setUserName] = useState("User");
+  const [role, setRole] = useState<AppRole>(() => (String(readCachedPortalMe()?.portal ?? "") === "ADMIN" ? "admin" : "employee"));
+  const [userName, setUserName] = useState(() => String(readCachedPortalMe()?.full_name ?? readCachedPortalMe()?.display_name ?? "User"));
 
   useEffect(() => {
     let active = true;
     async function loadMe() {
       try {
-        const payload = asObject(await fetchBackend("/auth/me"));
+        const payload = await fetchPortalMe();
         if (!active) {
           return;
         }

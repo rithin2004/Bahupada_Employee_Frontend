@@ -277,7 +277,11 @@ async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_
 @router.post("/vendors")
 async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db)):
     await _require_account_category(db, payload.account_category_id, party_type="VENDOR")
-    obj = Vendor(**payload.model_dump())
+    data = payload.model_dump()
+    if not (data.get("firm_name") or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="firm_name is required")
+    data["name"] = data["firm_name"]
+    obj = Vendor(**data)
     db.add(obj)
     await db.commit()
     await db.refresh(obj)
@@ -587,6 +591,13 @@ async def list_customers(
             Customer.gst_number.label("gst_number"),
             Customer.pan_number.label("pan_number"),
             Customer.email.label("email"),
+            Customer.street_address_1.label("street_address_1"),
+            Customer.street_address_2.label("street_address_2"),
+            Customer.city.label("city"),
+            Customer.state.label("state"),
+            Customer.pincode.label("pincode"),
+            Customer.latitude.label("latitude"),
+            Customer.longitude.label("longitude"),
             Customer.credit_limit.label("credit_limit"),
             Customer.is_line_sale_outlet.label("is_line_sale_outlet"),
             Customer.is_active.label("is_active"),
@@ -1381,6 +1392,8 @@ async def patch_vendor(vendor_id: str, payload: VendorUpdate, db: AsyncSession =
     patch_data = payload.model_dump(exclude_unset=True)
     if "account_category_id" in patch_data:
         await _require_account_category(db, patch_data["account_category_id"], party_type="VENDOR")
+    if "firm_name" in patch_data and patch_data["firm_name"] is not None:
+        patch_data["name"] = patch_data["firm_name"]
     for key, value in patch_data.items():
         setattr(obj, key, value)
     await db.commit()
