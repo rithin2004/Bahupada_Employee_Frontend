@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -96,6 +96,9 @@ function mapRow(row: Record<string, unknown>): VendorRow {
 }
 
 export function VendorsAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadVendors, setCanReadVendors] = useState(false);
+  const [canWriteVendors, setCanWriteVendors] = useState(false);
   const [rows, setRows] = useState<VendorRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -122,6 +125,9 @@ export function VendorsAdminEditor() {
   const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
 
   async function loadAccountCategories() {
+    if (!canReadVendors) {
+      return;
+    }
     try {
       const response = asObject(await fetchBackend("/masters/account-categories?party_type=VENDOR&page=1&page_size=100"));
       setAccountCategories(
@@ -137,6 +143,11 @@ export function VendorsAdminEditor() {
   }
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
+    if (!canReadVendors) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setRows([]);
     setFeedback("");
@@ -167,13 +178,47 @@ export function VendorsAdminEditor() {
   }
 
   useEffect(() => {
-    void loadAccountCategories();
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).vendors);
+        if (!active) {
+          return;
+        }
+        setCanReadVendors(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteVendors(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadVendors(false);
+        setCanWriteVendors(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadVendors) {
+      return;
+    }
+    void loadAccountCategories();
+  }, [permissionsLoaded, canReadVendors]);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadVendors) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadVendors]);
 
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
@@ -193,6 +238,9 @@ export function VendorsAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteVendors) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -229,6 +277,9 @@ export function VendorsAdminEditor() {
   }
 
   async function createVendor() {
+    if (!canWriteVendors) {
+      return;
+    }
     if (!createForm.firm_name.trim()) {
       return;
     }
@@ -268,6 +319,9 @@ export function VendorsAdminEditor() {
   }
 
   async function createInlineCategory() {
+    if (!canWriteVendors) {
+      return;
+    }
     if (!categoryForm.code.trim() || !categoryForm.name.trim()) {
       toast.error("Category code and name are required.", { duration: 5000 });
       return;
@@ -296,6 +350,9 @@ export function VendorsAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteVendors) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -321,6 +378,16 @@ export function VendorsAdminEditor() {
         <CardTitle>Vendors (Editable)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadVendors ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no vendors module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadVendors && !canWriteVendors ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search vendor name, GSTIN, city, phone"
@@ -359,13 +426,17 @@ export function VendorsAdminEditor() {
           >
             Reset
           </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
-          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
-            <DialogTrigger asChild>
-              <Button>Add Vendor</Button>
-            </DialogTrigger>
+          {canWriteVendors ? (
+            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+              Delete Selected
+            </Button>
+          ) : null}
+          <Dialog open={openCreateDialog} onOpenChange={(open) => setOpenCreateDialog(canWriteVendors ? open : false)}>
+            {canWriteVendors ? (
+              <DialogTrigger asChild>
+                <Button>Add Vendor</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
               <DialogHeader>
                 <DialogTitle>Add Vendor</DialogTitle>
@@ -445,9 +516,9 @@ export function VendorsAdminEditor() {
                 <div className="space-y-1 md:col-span-2">
                   <div className="flex items-center justify-between gap-2">
                     <Label>Account Category</Label>
-                    <Dialog open={openCategoryDialog} onOpenChange={setOpenCategoryDialog}>
+                    <Dialog open={openCategoryDialog} onOpenChange={(open) => setOpenCategoryDialog(canWriteVendors ? open : false)}>
                       <DialogTrigger asChild>
-                        <Button size="sm" type="button" variant="outline">+ Add Account Category</Button>
+                        <Button size="sm" type="button" variant="outline" disabled={!canWriteVendors}>+ Add Account Category</Button>
                       </DialogTrigger>
                       <DialogContent className="w-[92vw] max-w-[520px]">
                         <DialogHeader>
@@ -507,7 +578,7 @@ export function VendorsAdminEditor() {
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={createVendor} disabled={creating || !createForm.firm_name.trim()}>
+                <Button onClick={createVendor} disabled={!canWriteVendors || creating || !createForm.firm_name.trim()}>
                   {creating ? "Creating..." : "Create Vendor"}
                 </Button>
               </DialogFooter>
@@ -576,12 +647,14 @@ export function VendorsAdminEditor() {
                   <TableCell>{row.state || "-"}</TableCell>
                   <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                   <TableCell>
-                    <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                      <DialogTrigger asChild>
-                        <Button size="sm" variant="outline">
-                          Edit
-                        </Button>
-                      </DialogTrigger>
+                    <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteVendors && open ? row.id : null)}>
+                      {canWriteVendors ? (
+                        <DialogTrigger asChild>
+                          <Button size="sm" variant="outline">
+                            Edit
+                          </Button>
+                        </DialogTrigger>
+                      ) : null}
                       <DialogContent className="max-h-[85vh] overflow-y-auto">
                         <DialogHeader>
                           <DialogTitle>Edit Vendor</DialogTitle>
@@ -687,7 +760,7 @@ export function VendorsAdminEditor() {
                           </div>
                         ) : null}
                         <DialogFooter>
-                          <Button onClick={saveSelected} disabled={!selected || savingId === selected.id}>
+                          <Button onClick={saveSelected} disabled={!canWriteVendors || !selected || savingId === selected.id}>
                             {savingId === selected?.id ? "Saving..." : "Save"}
                           </Button>
                         </DialogFooter>

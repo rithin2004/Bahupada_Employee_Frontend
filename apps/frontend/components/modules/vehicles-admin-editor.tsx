@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,6 +48,9 @@ function mapVehicle(row: Record<string, unknown>): VehicleRow {
 }
 
 export function VehiclesAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadVehicles, setCanReadVehicles] = useState(false);
+  const [canWriteVehicles, setCanWriteVehicles] = useState(false);
   const [rows, setRows] = useState<VehicleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -71,6 +74,11 @@ export function VehiclesAdminEditor() {
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
+    if (!canReadVehicles) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setRows([]);
     setFeedback("");
@@ -102,9 +110,40 @@ export function VehiclesAdminEditor() {
   }
 
   useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).vehicles);
+        if (!active) {
+          return;
+        }
+        setCanReadVehicles(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteVehicles(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadVehicles(false);
+        setCanWriteVehicles(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadVehicles) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadVehicles]);
 
   function toggleSelectAll(checked: boolean) {
     setSelectedIds(checked ? rows.map((row) => row.id) : []);
@@ -122,6 +161,9 @@ export function VehiclesAdminEditor() {
   }
 
   async function createVehicle() {
+    if (!canWriteVehicles) {
+      return;
+    }
     if (!createForm.registration_no.trim()) {
       return;
     }
@@ -150,6 +192,9 @@ export function VehiclesAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteVehicles) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -176,6 +221,9 @@ export function VehiclesAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteVehicles) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -201,6 +249,16 @@ export function VehiclesAdminEditor() {
         <CardTitle>Vehicles (Editable)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadVehicles ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no vehicles module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadVehicles && !canWriteVehicles ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search registration or vehicle name"
@@ -239,13 +297,17 @@ export function VehiclesAdminEditor() {
           >
             Reset
           </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
-          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
-            <DialogTrigger asChild>
-              <Button>Add Vehicle</Button>
-            </DialogTrigger>
+          {canWriteVehicles ? (
+            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+              Delete Selected
+            </Button>
+          ) : null}
+          <Dialog open={openCreateDialog} onOpenChange={(open) => setOpenCreateDialog(canWriteVehicles ? open : false)}>
+            {canWriteVehicles ? (
+              <DialogTrigger asChild>
+                <Button>Add Vehicle</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Add Vehicle</DialogTitle>
@@ -278,7 +340,7 @@ export function VehiclesAdminEditor() {
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={createVehicle} disabled={creating || !createForm.registration_no.trim()}>
+                <Button onClick={createVehicle} disabled={!canWriteVehicles || creating || !createForm.registration_no.trim()}>
                   {creating ? "Creating..." : "Create Vehicle"}
                 </Button>
               </DialogFooter>
@@ -337,12 +399,14 @@ export function VehiclesAdminEditor() {
                     <TableCell>{row.capacity_kg || "-"}</TableCell>
                     <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                     <TableCell>
-                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            Edit
-                          </Button>
-                        </DialogTrigger>
+                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteVehicles && open ? row.id : null)}>
+                        {canWriteVehicles ? (
+                          <DialogTrigger asChild>
+                            <Button size="sm" variant="outline">
+                              Edit
+                            </Button>
+                          </DialogTrigger>
+                        ) : null}
                         <DialogContent className="sm:max-w-2xl">
                           <DialogHeader>
                             <DialogTitle>Edit Vehicle</DialogTitle>
@@ -374,7 +438,7 @@ export function VehiclesAdminEditor() {
                             </div>
                           ) : null}
                           <DialogFooter>
-                            <Button onClick={saveSelected} disabled={!selected || savingId === selected.id}>
+                            <Button onClick={saveSelected} disabled={!canWriteVehicles || !selected || savingId === selected.id}>
                               {savingId === selected?.id ? "Saving..." : "Save"}
                             </Button>
                           </DialogFooter>

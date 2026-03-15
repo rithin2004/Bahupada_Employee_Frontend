@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
-import { clearPortalSession, fetchPortalMe, readCachedPortalMe, readPortalSession } from "@/lib/backend-api";
+import { clearPortalSession, fetchPortalMe, readPortalSession } from "@/lib/backend-api";
 
 type PortalAuthGateProps = {
   portal: "ADMIN" | "EMPLOYEE" | "ANY";
@@ -14,18 +14,7 @@ export function PortalAuthGate({ portal, children }: PortalAuthGateProps) {
   const router = useRouter();
   const pathname = usePathname();
   const bypass = pathname.startsWith("/auth/");
-  const [ready, setReady] = useState(() => {
-    if (typeof window === "undefined" || bypass) {
-      return bypass;
-    }
-    const session = readPortalSession();
-    const cachedMe = readCachedPortalMe();
-    if (!session.accessToken || !session.portal || !cachedMe) {
-      return false;
-    }
-    const payloadPortal = String(cachedMe.portal ?? "");
-    return portal === "ANY" ? Boolean(payloadPortal) : payloadPortal === portal;
-  });
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let active = true;

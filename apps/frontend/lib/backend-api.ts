@@ -431,6 +431,27 @@ async function fetchBackend(path: string) {
   return requestBackend(path, { method: "GET" });
 }
 
+async function fetchBackendFresh(path: string) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const response = await fetchWithPortalAuth(normalizedPath, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const body = asObject(await response.json());
+      detail = formatBackendDetail(body.detail);
+    } catch {
+      detail = "";
+    }
+    throw new Error(detail || `Backend request failed: ${response.status} ${normalizedPath}`);
+  }
+
+  return response.json();
+}
+
 async function postBackend(path: string, body: Record<string, unknown>) {
   return requestBackend(path, {
     method: "POST",
@@ -493,6 +514,7 @@ export {
   readCachedPortalMe,
   deleteBackend,
   fetchBackend,
+  fetchBackendFresh,
   fetchPortalMe,
   fetchWithPortalAuth,
   patchBackend,

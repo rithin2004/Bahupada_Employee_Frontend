@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +60,16 @@ type WarehouseOption = { id: string; name: string };
 type RoleOption = { id: string; role_name: string };
 
 const DEFAULT_PAGE_SIZE = 50;
+const STAFF_ROLE_OPTIONS: EmployeeRole[] = [
+  "SALESMAN",
+  "DELIVERY_EMPLOYEE",
+  "PACKER",
+  "SUPERVISOR",
+  "DRIVER",
+  "IN_VEHICLE_HELPER",
+  "BILL_MANAGER",
+  "LOADER",
+];
 
 const EMPTY_CREATE_FORM = {
   full_name: "",
@@ -104,6 +114,9 @@ function mapRow(row: Record<string, unknown>): EmployeeRow {
 }
 
 export function EmployeesAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadEmployees, setCanReadEmployees] = useState(false);
+  const [canWriteEmployees, setCanWriteEmployees] = useState(false);
   const [rows, setRows] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -136,7 +149,10 @@ export function EmployeesAdminEditor() {
   const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
-  async function loadReferenceData() {
+  const loadReferenceData = useCallback(async () => {
+    if (!canReadEmployees) {
+      return;
+    }
     try {
       const [whRes, roleRes] = await Promise.all([
         fetchBackend("/masters/warehouses?page=1&page_size=100"),
@@ -158,9 +174,14 @@ export function EmployeesAdminEditor() {
       setWarehouses([]);
       setRoles([]);
     }
-  }
+  }, [canReadEmployees]);
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
+    if (!canReadEmployees) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setRows([]);
     setFeedback("");
@@ -192,8 +213,38 @@ export function EmployeesAdminEditor() {
   }
 
   useEffect(() => {
-    void loadReferenceData();
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).employees);
+        if (!active) {
+          return;
+        }
+        setCanReadEmployees(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteEmployees(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadEmployees(false);
+        setCanWriteEmployees(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadEmployees) {
+      return;
+    }
+    void loadReferenceData();
+  }, [permissionsLoaded, canReadEmployees, loadReferenceData]);
 
   useEffect(() => {
     if (!createForm.warehouse_id && warehouses.length > 0) {
@@ -202,9 +253,13 @@ export function EmployeesAdminEditor() {
   }, [createForm.warehouse_id, warehouses]);
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadEmployees) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadEmployees]);
 
   function toggleSelectAll(checked: boolean) {
     setSelectedIds(checked ? rows.map((row) => row.id) : []);
@@ -222,6 +277,9 @@ export function EmployeesAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteEmployees) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -260,6 +318,13 @@ export function EmployeesAdminEditor() {
   }
 
   async function createEmployee() {
+    if (!canWriteEmployees) {
+      return;
+    }
+    if (createForm.role === "ADMIN") {
+      toast.error("Admin users must be created from Admin Access.");
+      return;
+    }
     if (!createForm.full_name.trim() || !createForm.phone.trim() || !createForm.warehouse_id) {
       return;
     }
@@ -303,6 +368,9 @@ export function EmployeesAdminEditor() {
   }
 
   async function createInlineWarehouse() {
+    if (!canWriteEmployees) {
+      return;
+    }
     if (!newWarehouseCode.trim() || !newWarehouseName.trim()) {
       return;
     }
@@ -328,6 +396,9 @@ export function EmployeesAdminEditor() {
   }
 
   async function createInlineRole() {
+    if (!canWriteEmployees) {
+      return;
+    }
     if (!newRoleName.trim()) {
       return;
     }
@@ -355,6 +426,9 @@ export function EmployeesAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteEmployees) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -380,6 +454,16 @@ export function EmployeesAdminEditor() {
         <CardTitle>Employees (Editable)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadEmployees ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no employees module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadEmployees && !canWriteEmployees ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search name, phone, role, warehouse"
@@ -418,13 +502,17 @@ export function EmployeesAdminEditor() {
           >
             Reset
           </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
-          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
-            <DialogTrigger asChild>
-              <Button>Add Employee</Button>
-            </DialogTrigger>
+          {canWriteEmployees ? (
+            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+              Delete Selected
+            </Button>
+          ) : null}
+          <Dialog open={openCreateDialog} onOpenChange={(open) => setOpenCreateDialog(canWriteEmployees ? open : false)}>
+            {canWriteEmployees ? (
+              <DialogTrigger asChild>
+                <Button>Add Employee</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
               <DialogHeader>
                 <DialogTitle>Add Employee</DialogTitle>
@@ -466,29 +554,22 @@ export function EmployeesAdminEditor() {
                     value={createForm.role}
                     onChange={(e) => setCreateForm((prev) => ({ ...prev, role: e.target.value as EmployeeRole }))}
                   >
-                    {[
-                      "ADMIN",
-                      "SALESMAN",
-                      "DELIVERY_EMPLOYEE",
-                      "PACKER",
-                      "SUPERVISOR",
-                      "DRIVER",
-                      "IN_VEHICLE_HELPER",
-                      "BILL_MANAGER",
-                      "LOADER",
-                    ].map((role) => (
+                    {STAFF_ROLE_OPTIONS.map((role) => (
                       <option key={role} value={role}>
                         {role}
                       </option>
                     ))}
                   </select>
+                  <p className="text-xs text-muted-foreground">
+                    Admin users are managed from <a href="/admin-access" className="underline underline-offset-2">Admin Access</a>.
+                  </p>
                 </div>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-2">
                     <Label>Sub Role (Optional)</Label>
-                    <Dialog open={openRoleDialog} onOpenChange={setOpenRoleDialog}>
+                    <Dialog open={openRoleDialog} onOpenChange={(open) => setOpenRoleDialog(canWriteEmployees ? open : false)}>
                       <DialogTrigger asChild>
-                        <Button type="button" variant="outline" size="sm">
+                        <Button type="button" variant="outline" size="sm" disabled={!canWriteEmployees}>
                           + Add Sub Role
                         </Button>
                       </DialogTrigger>
@@ -529,9 +610,9 @@ export function EmployeesAdminEditor() {
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-2">
                     <Label>Warehouse *</Label>
-                    <Dialog open={openWarehouseDialog} onOpenChange={setOpenWarehouseDialog}>
+                    <Dialog open={openWarehouseDialog} onOpenChange={(open) => setOpenWarehouseDialog(canWriteEmployees ? open : false)}>
                       <DialogTrigger asChild>
-                        <Button type="button" variant="outline" size="sm">
+                        <Button type="button" variant="outline" size="sm" disabled={!canWriteEmployees}>
                           + Add Warehouse
                         </Button>
                       </DialogTrigger>
@@ -634,7 +715,9 @@ export function EmployeesAdminEditor() {
                 <Button
                   onClick={createEmployee}
                   disabled={
+                    !canWriteEmployees ||
                     creating ||
+                    createForm.role === "ADMIN" ||
                     !createForm.full_name.trim() ||
                     !createForm.phone.trim() ||
                     !createForm.warehouse_id
@@ -707,12 +790,14 @@ export function EmployeesAdminEditor() {
                     <TableCell>{row.warehouse_name || "-"}</TableCell>
                     <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                     <TableCell>
-                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            Edit
-                          </Button>
-                        </DialogTrigger>
+                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteEmployees && open ? row.id : null)}>
+                        {canWriteEmployees ? (
+                          <DialogTrigger asChild>
+                            <Button size="sm" variant="outline">
+                              Edit
+                            </Button>
+                          </DialogTrigger>
+                        ) : null}
                         <DialogContent className="max-h-[85vh] overflow-y-auto">
                           <DialogHeader>
                             <DialogTitle>Edit Employee</DialogTitle>
@@ -720,18 +805,24 @@ export function EmployeesAdminEditor() {
                           </DialogHeader>
                           {selected ? (
                             <div className="grid gap-3 md:grid-cols-2">
+                              {selected.role === "ADMIN" ? (
+                                <div className="md:col-span-2 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+                                  Admin users are managed from <a href="/admin-access" className="underline underline-offset-2">Admin Access</a>. Use that screen to assign module read/write permissions.
+                                </div>
+                              ) : null}
                               <div className="space-y-1">
                                 <Label>Full Name</Label>
-                                <Input value={selected.full_name} onChange={(e) => updateSelected("full_name", e.target.value)} />
+                                <Input value={selected.full_name} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("full_name", e.target.value)} />
                               </div>
                               <div className="space-y-1">
                                 <Label>Phone</Label>
-                                <Input value={selected.phone} onChange={(e) => updateSelected("phone", e.target.value)} />
+                                <Input value={selected.phone} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("phone", e.target.value)} />
                               </div>
                               <div className="space-y-1">
                                 <Label>Username</Label>
                                 <Input
                                   value={selected.username}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("username", e.target.value)}
                                   placeholder="Auto-generated if empty"
                                 />
@@ -741,6 +832,7 @@ export function EmployeesAdminEditor() {
                                 <Input
                                   type="password"
                                   value={selected.password}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("password", e.target.value)}
                                   placeholder="Leave blank to keep current password"
                                 />
@@ -750,19 +842,10 @@ export function EmployeesAdminEditor() {
                                 <select
                                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                   value={selected.role}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("role", e.target.value as EmployeeRole)}
                                 >
-                                  {[
-                                    "ADMIN",
-                                    "SALESMAN",
-                                    "DELIVERY_EMPLOYEE",
-                                    "PACKER",
-                                    "SUPERVISOR",
-                                    "DRIVER",
-                                    "IN_VEHICLE_HELPER",
-                                    "BILL_MANAGER",
-                                    "LOADER",
-                                  ].map((role) => (
+                                  {(selected.role === "ADMIN" ? (["ADMIN", ...STAFF_ROLE_OPTIONS] as EmployeeRole[]) : STAFF_ROLE_OPTIONS).map((role) => (
                                     <option key={role} value={role}>
                                       {role}
                                     </option>
@@ -774,6 +857,7 @@ export function EmployeesAdminEditor() {
                                 <select
                                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                   value={selected.role_id}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("role_id", e.target.value)}
                                 >
                                   <option value="">None</option>
@@ -789,6 +873,7 @@ export function EmployeesAdminEditor() {
                                 <select
                                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                   value={selected.warehouse_id}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("warehouse_id", e.target.value)}
                                 >
                                   {warehouses.map((warehouse) => (
@@ -803,6 +888,7 @@ export function EmployeesAdminEditor() {
                                 <select
                                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                   value={selected.gender}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("gender", e.target.value as Gender)}
                                 >
                                   <option value="">Unset</option>
@@ -813,34 +899,37 @@ export function EmployeesAdminEditor() {
                               </div>
                               <div className="space-y-1">
                                 <Label>Date of Birth</Label>
-                                <Input type="date" value={selected.dob} onChange={(e) => updateSelected("dob", e.target.value)} />
+                                <Input type="date" value={selected.dob} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("dob", e.target.value)} />
                               </div>
                               <div className="space-y-1">
                                 <Label>Alternate Phone</Label>
                                 <Input
                                   value={selected.alternate_phone}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("alternate_phone", e.target.value)}
                                 />
                               </div>
                               <div className="space-y-1">
                                 <Label>Email</Label>
-                                <Input value={selected.email} onChange={(e) => updateSelected("email", e.target.value)} />
+                                <Input value={selected.email} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("email", e.target.value)} />
                               </div>
                               <div className="space-y-1">
                                 <Label>Aadhaar Hash</Label>
                                 <Input
                                   value={selected.aadhaar_hash}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("aadhaar_hash", e.target.value)}
                                 />
                               </div>
                               <div className="space-y-1">
                                 <Label>PAN Number</Label>
-                                <Input value={selected.pan_number} onChange={(e) => updateSelected("pan_number", e.target.value)} />
+                                <Input value={selected.pan_number} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("pan_number", e.target.value)} />
                               </div>
                               <div className="space-y-1">
                                 <Label>Driver License No</Label>
                                 <Input
                                   value={selected.driver_license_no}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("driver_license_no", e.target.value)}
                                 />
                               </div>
@@ -849,6 +938,7 @@ export function EmployeesAdminEditor() {
                                 <Input
                                   type="date"
                                   value={selected.driver_license_expiry}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("driver_license_expiry", e.target.value)}
                                 />
                               </div>
@@ -856,6 +946,7 @@ export function EmployeesAdminEditor() {
                                 <input
                                   type="checkbox"
                                   checked={selected.is_active}
+                                  disabled={selected.role === "ADMIN"}
                                   onChange={(e) => updateSelected("is_active", e.target.checked)}
                                 />
                                 Active
@@ -863,7 +954,7 @@ export function EmployeesAdminEditor() {
                             </div>
                           ) : null}
                           <DialogFooter>
-                            <Button onClick={saveSelected} disabled={!selected || savingId === selected.id}>
+                            <Button onClick={saveSelected} disabled={!canWriteEmployees || !selected || selected.role === "ADMIN" || savingId === selected.id}>
                               {savingId === selected?.id ? "Saving..." : "Save"}
                             </Button>
                           </DialogFooter>

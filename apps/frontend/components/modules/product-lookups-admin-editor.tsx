@@ -103,7 +103,7 @@ export function ProductLookupsAdminEditor({
       return;
     }
     try {
-      const response = asObject(await fetchBackend("/masters/product-categories?page=1&page_size=200"));
+      const response = asObject(await fetchBackend("/masters/product-categories?page=1&page_size=100"));
       setCategories(
         asArray(response.items).map((item) => ({
           id: String(item.id ?? ""),

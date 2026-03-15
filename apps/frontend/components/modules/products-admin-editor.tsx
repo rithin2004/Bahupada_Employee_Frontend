@@ -4,7 +4,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -184,6 +184,7 @@ function ProductFormFields({
   units,
   hsnOptions,
   onQuickCreate,
+  canQuickCreate = true,
 }: {
   form: ProductForm;
   setForm: Dispatch<SetStateAction<ProductForm>>;
@@ -193,6 +194,7 @@ function ProductFormFields({
   units: UnitOption[];
   hsnOptions: HsnOption[];
   onQuickCreate: (type: "brand" | "category" | "subCategory" | "unit" | "hsn") => void;
+  canQuickCreate?: boolean;
 }) {
   const filteredSubCategories = form.category_id ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id) : subCategories;
   const selectedHsn = hsnOptions.find((item) => item.id === form.hsn_id) ?? null;
@@ -210,7 +212,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Brand</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("brand")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("brand")} disabled={!canQuickCreate}>
             + Add Brand
           </Button>
         </div>
@@ -224,7 +226,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Category</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("category")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("category")} disabled={!canQuickCreate}>
             + Add Category
           </Button>
         </div>
@@ -238,7 +240,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Sub Category</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("subCategory")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("subCategory")} disabled={!canQuickCreate}>
             + Add Sub Category
           </Button>
         </div>
@@ -252,7 +254,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>HSN</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("hsn")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("hsn")} disabled={!canQuickCreate}>
             + Add HSN
           </Button>
         </div>
@@ -273,7 +275,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Primary Unit *</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("unit")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("unit")} disabled={!canQuickCreate}>
             + Add Unit
           </Button>
         </div>
@@ -343,6 +345,9 @@ function ProductFormFields({
 }
 
 export function ProductsAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadProducts, setCanReadProducts] = useState(false);
+  const [canWriteProducts, setCanWriteProducts] = useState(false);
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -400,54 +405,95 @@ export function ProductsAdminEditor() {
   }
 
   async function loadReferences() {
-    try {
-      const [brandsRes, categoriesRes, subCategoriesRes, unitsRes, hsnRes] = await Promise.all([
-        fetchBackend("/masters/product-brands?page=1&page_size=200"),
-        fetchBackend("/masters/product-categories?page=1&page_size=200"),
-        fetchBackend("/masters/product-sub-categories?page=1&page_size=200"),
-        fetchBackend("/masters/units?page=1&page_size=200"),
-        fetchBackend("/masters/hsn?page=1&page_size=200"),
-      ]);
-      setBrands(asArray(asObject(brandsRes).items).map((item) => ({ id: asText(item.id), name: asText(item.name) })));
-      setCategories(asArray(asObject(categoriesRes).items).map((item) => ({ id: asText(item.id), name: asText(item.name) })));
-      setSubCategories(
-        asArray(asObject(subCategoriesRes).items).map((item) => ({
-          id: asText(item.id),
-          name: asText(item.name),
-          category_id: asText(item.category_id),
-        }))
-      );
-      setUnits(
-        asArray(asObject(unitsRes).items).map((item) => ({
-          id: asText(item.id),
-          unit_code: asText(item.unit_code),
-          unit_name: asText(item.unit_name),
-        }))
-      );
-      setHsnOptions(
-        asArray(asObject(hsnRes).items).map((item) => ({
-          id: asText(item.id),
-          hsn_code: asText(item.hsn_code),
-          gst_percent: asText(item.gst_percent),
-        }))
-      );
-    } catch {
-      setBrands([]);
-      setCategories([]);
-      setSubCategories([]);
-      setUnits([]);
-      setHsnOptions([]);
-    }
+    const [brandsRes, categoriesRes, subCategoriesRes, unitsRes, hsnRes] = await Promise.allSettled([
+      fetchBackendFresh("/masters/product-brands?page=1&page_size=100"),
+      fetchBackendFresh("/masters/product-categories?page=1&page_size=100"),
+      fetchBackendFresh("/masters/product-sub-categories?page=1&page_size=100"),
+      fetchBackendFresh("/masters/units?page=1&page_size=100"),
+      fetchBackendFresh("/masters/hsn?page=1&page_size=100"),
+    ]);
+
+    setBrands(
+      brandsRes.status === "fulfilled"
+        ? asArray(asObject(brandsRes.value).items).map((item) => ({ id: asText(item.id), name: asText(item.name) }))
+        : []
+    );
+    setCategories(
+      categoriesRes.status === "fulfilled"
+        ? asArray(asObject(categoriesRes.value).items).map((item) => ({ id: asText(item.id), name: asText(item.name) }))
+        : []
+    );
+    setSubCategories(
+      subCategoriesRes.status === "fulfilled"
+        ? asArray(asObject(subCategoriesRes.value).items).map((item) => ({
+            id: asText(item.id),
+            name: asText(item.name),
+            category_id: asText(item.category_id),
+          }))
+        : []
+    );
+    setUnits(
+      unitsRes.status === "fulfilled"
+        ? asArray(asObject(unitsRes.value).items).map((item) => ({
+            id: asText(item.id),
+            unit_code: asText(item.unit_code),
+            unit_name: asText(item.unit_name),
+          }))
+        : []
+    );
+    setHsnOptions(
+      hsnRes.status === "fulfilled"
+        ? asArray(asObject(hsnRes.value).items).map((item) => ({
+            id: asText(item.id),
+            hsn_code: asText(item.hsn_code),
+            gst_percent: asText(item.gst_percent),
+          }))
+        : []
+    );
   }
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadProducts) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadProducts]);
 
   useEffect(() => {
-    void loadReferences();
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).products);
+        if (!active) {
+          return;
+        }
+        setCanReadProducts(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteProducts(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadProducts(false);
+        setCanWriteProducts(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadProducts) {
+      return;
+    }
+    void loadReferences();
+  }, [permissionsLoaded, canReadProducts]);
 
   useEffect(() => {
     if (!selected) {
@@ -458,6 +504,9 @@ export function ProductsAdminEditor() {
   }, [selected]);
 
   async function createProduct() {
+    if (!canWriteProducts) {
+      return;
+    }
     if (!createForm.sku.trim() || !createForm.name.trim() || !createForm.primary_unit_id || !createForm.base_price.trim() || !createForm.tax_percent.trim()) {
       return;
     }
@@ -480,6 +529,9 @@ export function ProductsAdminEditor() {
   }
 
   async function saveProduct() {
+    if (!canWriteProducts) {
+      return;
+    }
     if (!selected || !editDirty) {
       return;
     }
@@ -500,6 +552,9 @@ export function ProductsAdminEditor() {
   }
 
   async function deleteProduct(id: string) {
+    if (!canWriteProducts) {
+      return;
+    }
     setFeedback("");
     try {
       await deleteBackend(`/masters/products/${id}`);
@@ -513,6 +568,9 @@ export function ProductsAdminEditor() {
   }
 
   async function quickCreate() {
+    if (!canWriteProducts) {
+      return;
+    }
     if (!quickCreateType) {
       return;
     }
@@ -554,6 +612,16 @@ export function ProductsAdminEditor() {
         <CardTitle>Products</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadProducts ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no products module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadProducts && !canWriteProducts ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search SKU, name, brand, category"
@@ -592,10 +660,12 @@ export function ProductsAdminEditor() {
           >
             Reset
           </Button>
-          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
-            <DialogTrigger asChild>
-              <Button>Add Product</Button>
-            </DialogTrigger>
+          <Dialog open={openCreateDialog} onOpenChange={(open) => setOpenCreateDialog(canWriteProducts ? open : false)}>
+            {canWriteProducts ? (
+              <DialogTrigger asChild>
+                <Button>Add Product</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
               <DialogHeader>
                 <DialogTitle>Add Product</DialogTitle>
@@ -610,11 +680,13 @@ export function ProductsAdminEditor() {
                 units={units}
                 hsnOptions={hsnOptions}
                 onQuickCreate={(type) => setQuickCreateType(type)}
+                canQuickCreate={canWriteProducts}
               />
               <DialogFooter>
                 <Button
                   onClick={createProduct}
                   disabled={
+                    !canWriteProducts ||
                     creating ||
                     !createForm.sku.trim() ||
                     !createForm.name.trim() ||
@@ -684,6 +756,7 @@ export function ProductsAdminEditor() {
                 <Button
                   onClick={quickCreate}
                   disabled={
+                    !canWriteProducts ||
                     quickCreating ||
                     ((quickCreateType === "brand" || quickCreateType === "category" || quickCreateType === "subCategory" || quickCreateType === "unit") &&
                       !quickName.trim()) ||
@@ -739,12 +812,14 @@ export function ProductsAdminEditor() {
                   <TableCell>{hsnOptions.find((item) => item.id === row.hsn_id)?.hsn_code || "-"}</TableCell>
                   <TableCell className="max-w-[220px] truncate">{row.description || "-"}</TableCell>
                   <TableCell className="flex gap-2">
-                    <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                      <DialogTrigger asChild>
-                        <Button size="sm" variant="outline">
-                          Edit
-                        </Button>
-                      </DialogTrigger>
+                    <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteProducts && open ? row.id : null)}>
+                      {canWriteProducts ? (
+                        <DialogTrigger asChild>
+                          <Button size="sm" variant="outline">
+                            Edit
+                          </Button>
+                        </DialogTrigger>
+                      ) : null}
                       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
                         <DialogHeader>
                           <DialogTitle>Edit Product</DialogTitle>
@@ -759,20 +834,23 @@ export function ProductsAdminEditor() {
                           units={units}
                           hsnOptions={hsnOptions}
                           onQuickCreate={(type) => setQuickCreateType(type)}
+                          canQuickCreate={canWriteProducts}
                         />
                         <DialogFooter>
                           <Button
                             onClick={saveProduct}
-                            disabled={saving || !editForm.sku.trim() || !editForm.name.trim() || !editForm.primary_unit_id || !editDirty}
+                            disabled={!canWriteProducts || saving || !editForm.sku.trim() || !editForm.name.trim() || !editForm.primary_unit_id || !editDirty}
                           >
                             {saving ? "Saving..." : "Save"}
                           </Button>
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
-                    <Button size="sm" variant="destructive" onClick={() => void deleteProduct(row.id)}>
-                      Delete
-                    </Button>
+                    {canWriteProducts ? (
+                      <Button size="sm" variant="destructive" onClick={() => void deleteProduct(row.id)}>
+                        Delete
+                      </Button>
+                    ) : null}
                   </TableCell>
                 </TableRow>
               ))}

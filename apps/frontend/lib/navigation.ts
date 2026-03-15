@@ -35,27 +35,30 @@ export type NavModule = {
   label: string;
   href: string;
   icon: LucideIcon;
+  permissionKey?: string;
+  superAdminOnly?: boolean;
   employeeRoles?: EmployeeRole[];
 };
 
 const adminModules: NavModule[] = [
-  { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { key: "purchase", label: "Purchase Module", href: "/purchase", icon: ShoppingCart },
-  { key: "stock", label: "Stock Module", href: "/stock", icon: Package },
-  { key: "products", label: "Products", href: "/products?tab=products", icon: Boxes },
-  { key: "warehouses", label: "Warehouse Module", href: "/warehouses", icon: Warehouse },
-  { key: "sales", label: "Sales Module", href: "/sales", icon: FileText },
-  { key: "sales-invoices", label: "Sales Invoices", href: "/sales-invoices", icon: FileText },
-  { key: "planning", label: "Planner Module", href: "/planning", icon: CalendarDays },
-  { key: "areas", label: "Areas Module", href: "/areas", icon: MapPinned },
-  { key: "routes", label: "Routes Module", href: "/routes", icon: Route },
-  { key: "vehicles", label: "Vehicles Module", href: "/vehicles", icon: Truck },
-  { key: "schemes", label: "Schemes Module", href: "/schemes", icon: BadgePercent },
-  { key: "price", label: "Price Module", href: "/price", icon: BadgePercent },
-  { key: "credit-debit-notes", label: "Credit Debit Notes", href: "/credit-debit-notes", icon: ReceiptText },
-  { key: "customers", label: "Customers Module", href: "/customers", icon: CircleUserRound },
-  { key: "employees", label: "Employees Module", href: "/employees", icon: Users2 },
-  { key: "vendors", label: "Vendor Module", href: "/vendors", icon: ContactRound },
+  { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, permissionKey: "dashboard" },
+  { key: "purchase", label: "Purchase Module", href: "/purchase", icon: ShoppingCart, permissionKey: "purchase" },
+  { key: "stock", label: "Stock Module", href: "/stock", icon: Package, permissionKey: "stock" },
+  { key: "products", label: "Products", href: "/products?tab=products", icon: Boxes, permissionKey: "products" },
+  { key: "warehouses", label: "Warehouse Module", href: "/warehouses", icon: Warehouse, permissionKey: "warehouses" },
+  { key: "sales", label: "Sales Module", href: "/sales", icon: FileText, permissionKey: "sales" },
+  { key: "sales-invoices", label: "Sales Invoices", href: "/sales-invoices", icon: FileText, permissionKey: "sales-invoices" },
+  { key: "planning", label: "Planner Module", href: "/planning", icon: CalendarDays, permissionKey: "planning" },
+  { key: "areas", label: "Areas Module", href: "/areas", icon: MapPinned, permissionKey: "areas" },
+  { key: "routes", label: "Routes Module", href: "/routes", icon: Route, permissionKey: "routes" },
+  { key: "vehicles", label: "Vehicles Module", href: "/vehicles", icon: Truck, permissionKey: "vehicles" },
+  { key: "schemes", label: "Schemes Module", href: "/schemes", icon: BadgePercent, permissionKey: "schemes" },
+  { key: "price", label: "Price Module", href: "/price", icon: BadgePercent, permissionKey: "price" },
+  { key: "credit-debit-notes", label: "Credit Debit Notes", href: "/credit-debit-notes", icon: ReceiptText, permissionKey: "credit-debit-notes" },
+  { key: "customers", label: "Customers Module", href: "/customers", icon: CircleUserRound, permissionKey: "customers" },
+  { key: "employees", label: "Employees Module", href: "/employees", icon: Users2, permissionKey: "employees" },
+  { key: "vendors", label: "Vendor Module", href: "/vendors", icon: ContactRound, permissionKey: "vendors" },
+  { key: "admin-access", label: "Admin Access", href: "/admin-access", icon: Users2, permissionKey: "admin-access", superAdminOnly: true },
 ];
 
 const employeeModules: NavModule[] = [
@@ -74,9 +77,26 @@ const employeeModules: NavModule[] = [
   { key: "calendar", label: "Duty Calendar", href: "/calendar", icon: CalendarDays, employeeRoles: ["SALESMAN", "PACKER", "SUPERVISOR", "DELIVERY_EMPLOYEE", "DRIVER", "IN_VEHICLE_HELPER", "BILL_MANAGER", "LOADER"] },
 ];
 
-export function modulesForRole(role: AppRole, employeeRole?: EmployeeRole | null): NavModule[] {
+export function modulesForRole(
+  role: AppRole,
+  employeeRole?: EmployeeRole | null,
+  adminPermissions?: Record<string, { read?: boolean; write?: boolean }>,
+  isSuperAdmin = false
+): NavModule[] {
   if (role === "admin") {
-    return adminModules;
+    if (isSuperAdmin) {
+      return adminModules;
+    }
+    return adminModules.filter((module) => {
+      if (module.superAdminOnly) {
+        return false;
+      }
+      if (!module.permissionKey) {
+        return true;
+      }
+      const access = adminPermissions?.[module.permissionKey];
+      return Boolean(access?.read || access?.write);
+    });
   }
   if (!employeeRole) {
     return employeeModules.filter((module) => !module.employeeRoles || module.employeeRoles.length === 0);
@@ -84,8 +104,12 @@ export function modulesForRole(role: AppRole, employeeRole?: EmployeeRole | null
   return employeeModules.filter((module) => !module.employeeRoles || module.employeeRoles.includes(employeeRole));
 }
 
-export function defaultRouteForAdmin(): string {
-  return "/dashboard";
+export function defaultRouteForAdmin(
+  adminPermissions?: Record<string, { read?: boolean; write?: boolean }>,
+  isSuperAdmin = false
+): string {
+  const visibleModules = modulesForRole("admin", null, adminPermissions, isSuperAdmin);
+  return visibleModules[0]?.href ?? "/dashboard";
 }
 
 export function defaultRouteForEmployee(employeeRole?: EmployeeRole | null): string {

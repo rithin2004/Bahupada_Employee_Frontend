@@ -7,7 +7,7 @@ import { Bell, LogOut, Menu, Search, X } from "lucide-react";
 
 import { asArray, asObject, clearPortalSession, fetchBackend, fetchPortalMe, fetchWithPortalAuth, postBackend } from "@/lib/backend-api";
 import type { AppRole, EmployeeRole } from "@/lib/navigation";
-import { defaultRouteForEmployee, modulesForRole } from "@/lib/navigation";
+import { defaultRouteForAdmin, defaultRouteForEmployee, modulesForRole } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,10 @@ type AppShellProps = {
 
 export function AppShell({ role, activeKey, userName, children }: AppShellProps) {
   const router = useRouter();
+  const [authResolved, setAuthResolved] = useState(false);
   const [employeeRole, setEmployeeRole] = useState<EmployeeRole | null>(null);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [adminPermissions, setAdminPermissions] = useState<Record<string, { read?: boolean; write?: boolean }>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
@@ -53,9 +56,15 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
         }
         const nextRole = typeof payload.employee_role === "string" ? (payload.employee_role as EmployeeRole) : null;
         setEmployeeRole(nextRole);
+        setIsSuperAdmin(Boolean(payload.is_super_admin));
+        setAdminPermissions(asObject(payload.admin_permissions) as Record<string, { read?: boolean; write?: boolean }>);
+        setAuthResolved(true);
       } catch {
         if (active) {
           setEmployeeRole(null);
+          setIsSuperAdmin(false);
+          setAdminPermissions({});
+          setAuthResolved(true);
         }
       }
     }
@@ -76,7 +85,20 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
     };
   }, [sidebarOpen]);
 
-  const modules = modulesForRole(role, employeeRole);
+  const modules = modulesForRole(role, employeeRole, adminPermissions, isSuperAdmin);
+
+  useEffect(() => {
+    if (role !== "admin") {
+      return;
+    }
+    if (!authResolved) {
+      return;
+    }
+    const allowed = modules.some((module) => module.key === activeKey);
+    if (!allowed) {
+      router.replace(defaultRouteForAdmin(adminPermissions, isSuperAdmin));
+    }
+  }, [activeKey, adminPermissions, authResolved, isSuperAdmin, modules, role, router]);
 
   async function loadNotifications() {
     setNotificationsLoading(true);

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,6 +44,10 @@ function toNumber(value: string): number {
 }
 
 export function PriceAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadPrice, setCanReadPrice] = useState(false);
+  const [canWritePrice, setCanWritePrice] = useState(false);
+  const [canDeleteProducts, setCanDeleteProducts] = useState(false);
   const [rows, setRows] = useState<PriceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -58,6 +62,37 @@ export function PriceAdminEditor() {
   const [totalCount, setTotalCount] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permissions = asObject(payload.admin_permissions);
+        const pricePermission = asObject(permissions.price);
+        const productPermission = asObject(permissions.products);
+        if (!active) {
+          return;
+        }
+        setCanReadPrice(isSuperAdmin || Boolean(pricePermission.read) || Boolean(pricePermission.write));
+        setCanWritePrice(isSuperAdmin || Boolean(pricePermission.write));
+        setCanDeleteProducts(isSuperAdmin || Boolean(productPermission.delete) || Boolean(productPermission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadPrice(false);
+        setCanWritePrice(false);
+        setCanDeleteProducts(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
     setLoading(true);
@@ -88,9 +123,13 @@ export function PriceAdminEditor() {
   }
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadPrice) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadPrice]);
 
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
@@ -107,6 +146,9 @@ export function PriceAdminEditor() {
   }
 
   async function saveRow(row: PriceRow) {
+    if (!canWritePrice) {
+      return;
+    }
     setSavingId(row.product_id);
     setFeedback("");
     try {
@@ -129,7 +171,7 @@ export function PriceAdminEditor() {
   }
 
   async function deleteSelected() {
-    if (!selectedIds.length || loading) {
+    if (!canDeleteProducts || !selectedIds.length || loading) {
       return;
     }
     if (!window.confirm(`Delete ${selectedIds.length} selected product(s)?`)) {
@@ -153,153 +195,171 @@ export function PriceAdminEditor() {
         <CardTitle>Price Sheet</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <Input
-            placeholder="Search SKU"
-            value={searchInput}
-            onChange={(e) => {
-              const value = e.target.value;
-              setSearchInput(value);
-              if (value.trim() === "" && search !== "") {
-                setSearch("");
-                resetPage();
-              }
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                setSearch(searchInput.trim());
-                resetPage();
-              }
-            }}
-          />
-          <Button
-            className="bg-black text-white hover:bg-black/90 dark:bg-black dark:text-white dark:hover:bg-black/90"
-            onClick={() => {
-              setSearch(searchInput.trim());
-              resetPage();
-            }}
-            disabled={loading}
-          >
-            Search
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setSearchInput("");
-              setSearch("");
-              resetPage();
-            }}
-          >
-            Reset
-          </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
-        </div>
-        {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
-        <div className="overflow-x-auto rounded-lg border">
-          <Table className="min-w-[1100px]">
-            <TableHeader>
-            <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">
-              <TableHead className="w-10">
-                <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
-              </TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">SKU</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">MRP</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Cost</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">A Class</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">B Class</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">C Class</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Action</TableHead>
-            </TableRow>
-            </TableHeader>
-            <TableBody>
-            {loading
-              ? Array.from({ length: 12 }).map((_, index) => (
-                  <TableRow key={`skeleton-${index}`} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
-                    <TableCell><Skeleton className="h-5 w-5 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-40 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-5 w-10 dark:h-5" /></TableCell>
-                    <TableCell><Skeleton className="h-8 w-16" /></TableCell>
+        {permissionsLoaded && !canReadPrice ? (
+          <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+            You do not have access to the Price module.
+          </div>
+        ) : null}
+        {permissionsLoaded && canReadPrice && !canWritePrice ? (
+          <div className="rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            Read-only access. Pricing updates are disabled for your admin role.
+          </div>
+        ) : null}
+        {permissionsLoaded && canReadPrice ? (
+          <>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center">
+              <Input
+                placeholder="Search SKU"
+                value={searchInput}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setSearchInput(value);
+                  if (value.trim() === "" && search !== "") {
+                    setSearch("");
+                    resetPage();
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setSearch(searchInput.trim());
+                    resetPage();
+                  }
+                }}
+              />
+              <Button
+                className="bg-black text-white hover:bg-black/90 dark:bg-black dark:text-white dark:hover:bg-black/90"
+                onClick={() => {
+                  setSearch(searchInput.trim());
+                  resetPage();
+                }}
+                disabled={loading}
+              >
+                Search
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setSearchInput("");
+                  setSearch("");
+                  resetPage();
+                }}
+              >
+                Reset
+              </Button>
+              <Button variant="destructive" onClick={deleteSelected} disabled={!canDeleteProducts || loading || selectedIds.length === 0}>
+                Delete Selected
+              </Button>
+            </div>
+            {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
+            <div className="overflow-x-auto rounded-lg border">
+              <Table className="min-w-[1100px]">
+                <TableHeader>
+                  <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">
+                    <TableHead className="w-10">
+                      <input type="checkbox" checked={allSelected} disabled={!canDeleteProducts} onChange={(e) => toggleSelectAll(e.target.checked)} />
+                    </TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">SKU</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">MRP</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Cost</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">A Class</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">B Class</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">C Class</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
+                    <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Action</TableHead>
                   </TableRow>
-                ))
-              : null}
-            {!loading && rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={9} className="text-center text-muted-foreground">
-                  No pricing records found.
-                </TableCell>
-              </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading
+                    ? Array.from({ length: 12 }).map((_, index) => (
+                        <TableRow key={`skeleton-${index}`} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
+                          <TableCell><Skeleton className="h-5 w-5 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-40 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-5 w-10 dark:h-5" /></TableCell>
+                          <TableCell><Skeleton className="h-8 w-16" /></TableCell>
+                        </TableRow>
+                      ))
+                    : null}
+                  {!loading && rows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="text-center text-muted-foreground">
+                        No pricing records found.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                  {!loading &&
+                    rows.map((row, index) => (
+                      <TableRow key={row.product_id} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(row.product_id)}
+                            disabled={!canDeleteProducts}
+                            onChange={(e) => toggleSelectOne(row.product_id, e.target.checked)}
+                          />
+                        </TableCell>
+                        <TableCell>{row.sku}</TableCell>
+                        <TableCell>
+                          <Input value={row.mrp} disabled={!canWritePrice} onChange={(e) => updateRow(row.product_id, "mrp", e.target.value)} />
+                        </TableCell>
+                        <TableCell>
+                          <Input value={row.cost_price} disabled={!canWritePrice} onChange={(e) => updateRow(row.product_id, "cost_price", e.target.value)} />
+                        </TableCell>
+                        <TableCell>
+                          <Input value={row.a_class_price} disabled={!canWritePrice} onChange={(e) => updateRow(row.product_id, "a_class_price", e.target.value)} />
+                        </TableCell>
+                        <TableCell>
+                          <Input value={row.b_class_price} disabled={!canWritePrice} onChange={(e) => updateRow(row.product_id, "b_class_price", e.target.value)} />
+                        </TableCell>
+                        <TableCell>
+                          <Input value={row.c_class_price} disabled={!canWritePrice} onChange={(e) => updateRow(row.product_id, "c_class_price", e.target.value)} />
+                        </TableCell>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={row.is_active}
+                            disabled={!canWritePrice}
+                            onChange={(e) => updateRow(row.product_id, "is_active", e.target.checked)}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            size="sm"
+                            className="bg-black text-white hover:bg-black/90 dark:bg-black dark:text-white dark:hover:bg-black/90"
+                            onClick={() => saveRow(row)}
+                            disabled={!canWritePrice || savingId === row.product_id}
+                          >
+                            {savingId === row.product_id ? "Saving..." : "Save"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </div>
+            {totalCount > DEFAULT_PAGE_SIZE ? (
+              <PaginationFooter
+                loading={loading}
+                page={currentPage}
+                totalPages={totalPages}
+                totalItems={totalCount}
+                pageSize={pageSize}
+                onPageSizeChange={(nextSize) => {
+                  setPageSize(nextSize);
+                  setCurrentPage(1);
+                }}
+                onFirst={() => setCurrentPage(1)}
+                onPrevious={() => setCurrentPage((page) => page - 1)}
+                onNext={() => setCurrentPage((page) => page + 1)}
+                onLast={() => setCurrentPage(totalPages)}
+              />
             ) : null}
-            {!loading &&
-              rows.map((row, index) => (
-                <TableRow key={row.product_id} className={index % 2 === 0 ? "bg-slate-50/70 dark:bg-slate-900/30" : ""}>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(row.product_id)}
-                      onChange={(e) => toggleSelectOne(row.product_id, e.target.checked)}
-                    />
-                  </TableCell>
-                  <TableCell>{row.sku}</TableCell>
-                  <TableCell>
-                    <Input value={row.mrp} onChange={(e) => updateRow(row.product_id, "mrp", e.target.value)} />
-                  </TableCell>
-                  <TableCell>
-                    <Input value={row.cost_price} onChange={(e) => updateRow(row.product_id, "cost_price", e.target.value)} />
-                  </TableCell>
-                  <TableCell>
-                    <Input value={row.a_class_price} onChange={(e) => updateRow(row.product_id, "a_class_price", e.target.value)} />
-                  </TableCell>
-                  <TableCell>
-                    <Input value={row.b_class_price} onChange={(e) => updateRow(row.product_id, "b_class_price", e.target.value)} />
-                  </TableCell>
-                  <TableCell>
-                    <Input value={row.c_class_price} onChange={(e) => updateRow(row.product_id, "c_class_price", e.target.value)} />
-                  </TableCell>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      checked={row.is_active}
-                      onChange={(e) => updateRow(row.product_id, "is_active", e.target.checked)}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      className="bg-black text-white hover:bg-black/90 dark:bg-black dark:text-white dark:hover:bg-black/90"
-                      onClick={() => saveRow(row)}
-                      disabled={savingId === row.product_id}
-                    >
-                      {savingId === row.product_id ? "Saving..." : "Save"}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        <PaginationFooter
-          loading={loading}
-          page={currentPage}
-          totalPages={totalPages}
-          totalItems={totalCount}
-          pageSize={pageSize}
-          onPageSizeChange={(nextSize) => {
-            setPageSize(nextSize);
-            setCurrentPage(1);
-          }}
-          onFirst={() => setCurrentPage(1)}
-          onPrevious={() => setCurrentPage((p) => p - 1)}
-          onNext={() => setCurrentPage((p) => p + 1)}
-          onLast={() => setCurrentPage(totalPages)}
-        />
+          </>
+        ) : null}
       </CardContent>
     </Card>
   );

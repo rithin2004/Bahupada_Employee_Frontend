@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, postBackend, readPortalSession } from "@/lib/backend-api";
+import { asArray, asObject, fetchBackend, fetchBackendFresh, fetchPortalMe, postBackend, readPortalSession } from "@/lib/backend-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -242,6 +242,7 @@ function ProductFormFields({
   units,
   hsnOptions,
   onQuickCreate,
+  canQuickCreate = true,
 }: {
   form: ProductForm;
   setForm: React.Dispatch<React.SetStateAction<ProductForm>>;
@@ -251,6 +252,7 @@ function ProductFormFields({
   units: UnitOption[];
   hsnOptions: HsnOption[];
   onQuickCreate: (type: "brand" | "category" | "subCategory" | "unit" | "hsn") => void;
+  canQuickCreate?: boolean;
 }) {
   const filteredSubCategories = form.category_id
     ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id)
@@ -270,7 +272,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Brand</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("brand")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("brand")} disabled={!canQuickCreate}>
             + Add Brand
           </Button>
         </div>
@@ -284,7 +286,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Category</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("category")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("category")} disabled={!canQuickCreate}>
             + Add Category
           </Button>
         </div>
@@ -298,7 +300,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Sub Category</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("subCategory")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("subCategory")} disabled={!canQuickCreate}>
             + Add Sub Category
           </Button>
         </div>
@@ -312,7 +314,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>HSN</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("hsn")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("hsn")} disabled={!canQuickCreate}>
             + Add HSN
           </Button>
         </div>
@@ -333,7 +335,7 @@ function ProductFormFields({
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <Label>Primary Unit *</Label>
-          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("unit")}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onQuickCreate("unit")} disabled={!canQuickCreate}>
             + Add Unit
           </Button>
         </div>
@@ -411,6 +413,9 @@ function isMissingBearerTokenError(error: unknown) {
 }
 
 export function ProcurementCreateFlow() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadPurchase, setCanReadPurchase] = useState(false);
+  const [canWritePurchase, setCanWritePurchase] = useState(false);
   const [vendors, setVendors] = useState<Option[]>([]);
   const [warehouses, setWarehouses] = useState<Option[]>([]);
   const [racks, setRacks] = useState<Option[]>([]);
@@ -479,7 +484,7 @@ export function ProcurementCreateFlow() {
   const [quickCreating, setQuickCreating] = useState(false);
 
   async function loadMasters() {
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       return;
     }
     try {
@@ -514,47 +519,53 @@ export function ProcurementCreateFlow() {
   }
 
   async function loadProductReferences() {
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       return;
     }
-    try {
-      const [brandsRes, categoriesRes, subCategoriesRes, unitsRes, hsnRes] = await Promise.all([
-        fetchBackend("/masters/product-brands?page=1&page_size=200"),
-        fetchBackend("/masters/product-categories?page=1&page_size=200"),
-        fetchBackend("/masters/product-sub-categories?page=1&page_size=200"),
-        fetchBackend("/masters/units?page=1&page_size=200"),
-        fetchBackend("/masters/hsn?page=1&page_size=200"),
-      ]);
-      setBrands(asArray(asObject(brandsRes).items).map((item) => ({ id: asText(item.id), name: asText(item.name) })));
-      setCategories(asArray(asObject(categoriesRes).items).map((item) => ({ id: asText(item.id), name: asText(item.name) })));
-      setSubCategories(
-        asArray(asObject(subCategoriesRes).items).map((item) => ({
-          id: asText(item.id),
-          name: asText(item.name),
-          category_id: asText(item.category_id),
-        }))
-      );
-      setUnits(
-        asArray(asObject(unitsRes).items).map((item) => ({
-          id: asText(item.id),
-          unit_code: asText(item.unit_code),
-          unit_name: asText(item.unit_name),
-        }))
-      );
-      setHsnOptions(
-        asArray(asObject(hsnRes).items).map((item) => ({
-          id: asText(item.id),
-          hsn_code: asText(item.hsn_code),
-          gst_percent: asText(item.gst_percent),
-        }))
-      );
-    } catch {
-      setBrands([]);
-      setCategories([]);
-      setSubCategories([]);
-      setUnits([]);
-      setHsnOptions([]);
-    }
+    const [brandsRes, categoriesRes, subCategoriesRes, unitsRes, hsnRes] = await Promise.allSettled([
+      fetchBackendFresh("/masters/product-brands?page=1&page_size=100"),
+      fetchBackendFresh("/masters/product-categories?page=1&page_size=100"),
+      fetchBackendFresh("/masters/product-sub-categories?page=1&page_size=100"),
+      fetchBackendFresh("/masters/units?page=1&page_size=100"),
+      fetchBackendFresh("/masters/hsn?page=1&page_size=100"),
+    ]);
+    setBrands(
+      brandsRes.status === "fulfilled"
+        ? asArray(asObject(brandsRes.value).items).map((item) => ({ id: asText(item.id), name: asText(item.name) }))
+        : []
+    );
+    setCategories(
+      categoriesRes.status === "fulfilled"
+        ? asArray(asObject(categoriesRes.value).items).map((item) => ({ id: asText(item.id), name: asText(item.name) }))
+        : []
+    );
+    setSubCategories(
+      subCategoriesRes.status === "fulfilled"
+        ? asArray(asObject(subCategoriesRes.value).items).map((item) => ({
+            id: asText(item.id),
+            name: asText(item.name),
+            category_id: asText(item.category_id),
+          }))
+        : []
+    );
+    setUnits(
+      unitsRes.status === "fulfilled"
+        ? asArray(asObject(unitsRes.value).items).map((item) => ({
+            id: asText(item.id),
+            unit_code: asText(item.unit_code),
+            unit_name: asText(item.unit_name),
+          }))
+        : []
+    );
+    setHsnOptions(
+      hsnRes.status === "fulfilled"
+        ? asArray(asObject(hsnRes.value).items).map((item) => ({
+            id: asText(item.id),
+            hsn_code: asText(item.hsn_code),
+            gst_percent: asText(item.gst_percent),
+          }))
+        : []
+    );
   }
 
   async function loadRacksForWarehouse(currentWarehouseId: string, currentRackId = "") {
@@ -563,7 +574,7 @@ export function ProcurementCreateFlow() {
       setRackId("");
       return;
     }
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       return;
     }
     try {
@@ -593,7 +604,7 @@ export function ProcurementCreateFlow() {
       setBillRackId("");
       return;
     }
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       return;
     }
     try {
@@ -627,7 +638,7 @@ export function ProcurementCreateFlow() {
       setResults([]);
       return;
     }
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       return;
     }
     setLoading(true);
@@ -654,7 +665,7 @@ export function ProcurementCreateFlow() {
   }
 
   async function loadChallans() {
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       setLoadingChallans(false);
       return;
     }
@@ -690,7 +701,7 @@ export function ProcurementCreateFlow() {
   }
 
   async function loadBills() {
-    if (!hasAdminAccessToken()) {
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       setLoadingBills(false);
       return;
     }
@@ -725,6 +736,44 @@ export function ProcurementCreateFlow() {
 
   useEffect(() => {
     if (!hasAdminAccessToken()) {
+      setPermissionsLoaded(true);
+      setLoadingChallans(false);
+      setLoadingBills(false);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const purchasePermission = asObject(asObject(payload.admin_permissions).purchase);
+        const canRead = isSuperAdmin || Boolean(purchasePermission.read) || Boolean(purchasePermission.write);
+        const canWrite = isSuperAdmin || Boolean(purchasePermission.write);
+        if (!active) {
+          return;
+        }
+        setCanReadPurchase(canRead);
+        setCanWritePurchase(canWrite);
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadPurchase(false);
+        setCanWritePurchase(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded) {
+      return;
+    }
+    if (!hasAdminAccessToken() || !canReadPurchase) {
       setLoadingChallans(false);
       setLoadingBills(false);
       return;
@@ -733,7 +782,7 @@ export function ProcurementCreateFlow() {
     void loadProductReferences();
     void loadChallans();
     void loadBills();
-  }, []);
+  }, [permissionsLoaded, canReadPurchase]);
 
   useEffect(() => {
     void loadRacksForWarehouse(warehouseId, rackId);
@@ -744,6 +793,9 @@ export function ProcurementCreateFlow() {
   }, [billWarehouseId, billRackId]);
 
   async function createInlineVendor() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (!newVendorForm.firm_name.trim()) {
       return;
     }
@@ -783,6 +835,9 @@ export function ProcurementCreateFlow() {
   }
 
   async function createInlineWarehouse() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (!newWarehouseForm.code.trim() || !newWarehouseForm.name.trim()) {
       return;
     }
@@ -815,6 +870,9 @@ export function ProcurementCreateFlow() {
   }
 
   async function createInlineRack() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (!warehouseId) {
       return;
     }
@@ -846,6 +904,9 @@ export function ProcurementCreateFlow() {
   }
 
   async function quickCreateProductMaster() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (!quickCreateType) {
       return;
     }
@@ -882,6 +943,9 @@ export function ProcurementCreateFlow() {
   }
 
   async function createInlineProduct() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (
       !newProductForm.sku.trim() ||
       !newProductForm.name.trim() ||
@@ -1069,6 +1133,9 @@ export function ProcurementCreateFlow() {
   }, [filteredBills, billPage]);
 
   function addProduct(product: ProductOption) {
+    if (!canWritePurchase) {
+      return;
+    }
     setItems((prev) => {
       const existing = prev.find((row) => row.product_id === product.id);
       if (existing) {
@@ -1081,10 +1148,16 @@ export function ProcurementCreateFlow() {
   }
 
   function removeItem(productId: string) {
+    if (!canWritePurchase) {
+      return;
+    }
     setItems((prev) => prev.filter((row) => row.product_id !== productId));
   }
 
   function addBillProduct(product: ProductOption) {
+    if (!canWritePurchase) {
+      return;
+    }
     setBillItems((prev) => {
       const existingIndex = prev.findIndex((row) => row.product_id === product.id);
       if (existingIndex >= 0) {
@@ -1111,10 +1184,16 @@ export function ProcurementCreateFlow() {
   }
 
   function removeBillItem(indexToRemove: number) {
+    if (!canWritePurchase) {
+      return;
+    }
     setBillItems((prev) => prev.filter((_, index) => index !== indexToRemove));
   }
 
   async function createChallanWithItems() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (submittingChallan) {
       return;
     }
@@ -1159,6 +1238,9 @@ export function ProcurementCreateFlow() {
   }
 
   async function createPurchaseBill() {
+    if (!canWritePurchase) {
+      return;
+    }
     if (!canCreateBill || submittingBill) {
       return;
     }
@@ -1220,6 +1302,16 @@ export function ProcurementCreateFlow() {
             <CardDescription>Available challans are listed first. Click create new to open entry form.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {permissionsLoaded && !canReadPurchase ? (
+              <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                You have no purchase module access.
+              </p>
+            ) : null}
+            {permissionsLoaded && canReadPurchase && !canWritePurchase ? (
+              <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                Read-only access. Create and update actions are hidden.
+              </p>
+            ) : null}
             {feedback ? <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{feedback}</p> : null}
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-muted-foreground">Available Challans</p>
@@ -1230,10 +1322,12 @@ export function ProcurementCreateFlow() {
                   onChange={(e) => setChallanSearch(e.target.value)}
                   className="md:w-80"
                 />
-                <Dialog open={showNewChallan} onOpenChange={setShowNewChallan}>
-                  <DialogTrigger asChild>
-                    <Button>Create New</Button>
-                  </DialogTrigger>
+                <Dialog open={showNewChallan} onOpenChange={(open) => setShowNewChallan(canWritePurchase ? open : false)}>
+                  {canWritePurchase ? (
+                    <DialogTrigger asChild>
+                      <Button>Create New</Button>
+                    </DialogTrigger>
+                  ) : null}
                   <DialogContent className="max-h-[90vh] w-[75vw] max-w-[1080px] sm:max-w-[1080px] overflow-y-auto overflow-x-hidden p-4 sm:p-5">
                     <DialogHeader>
                       <DialogTitle>Create Purchase Challan</DialogTitle>
@@ -1243,9 +1337,9 @@ export function ProcurementCreateFlow() {
                         <div className="space-y-1">
                           <div className="flex items-center justify-between gap-2">
                             <Label>Vendor *</Label>
-                            <Dialog open={showVendorCreate} onOpenChange={setShowVendorCreate}>
+                            <Dialog open={showVendorCreate} onOpenChange={(open) => setShowVendorCreate(canWritePurchase ? open : false)}>
                               <DialogTrigger asChild>
-                                <Button type="button" variant="outline" size="sm">
+                                <Button type="button" variant="outline" size="sm" disabled={!canWritePurchase}>
                                   + Add Vendor
                                 </Button>
                               </DialogTrigger>
@@ -1372,9 +1466,9 @@ export function ProcurementCreateFlow() {
                         <div className="space-y-1">
                           <div className="flex items-center justify-between gap-2">
                             <Label>Warehouse *</Label>
-                            <Dialog open={showWarehouseCreate} onOpenChange={setShowWarehouseCreate}>
+                            <Dialog open={showWarehouseCreate} onOpenChange={(open) => setShowWarehouseCreate(canWritePurchase ? open : false)}>
                               <DialogTrigger asChild>
-                                <Button type="button" variant="outline" size="sm">
+                                <Button type="button" variant="outline" size="sm" disabled={!canWritePurchase}>
                                   + Add Warehouse
                                 </Button>
                               </DialogTrigger>
@@ -1467,9 +1561,9 @@ export function ProcurementCreateFlow() {
                         <div className="space-y-1">
                           <div className="flex items-center justify-between gap-2">
                             <Label>Rack (Optional)</Label>
-                            <Dialog open={showRackCreate} onOpenChange={setShowRackCreate}>
+                            <Dialog open={showRackCreate} onOpenChange={(open) => setShowRackCreate(canWritePurchase ? open : false)}>
                               <DialogTrigger asChild>
-                                <Button type="button" variant="outline" size="sm" disabled={!warehouseId}>
+                                <Button type="button" variant="outline" size="sm" disabled={!warehouseId || !canWritePurchase}>
                                   + Add Rack
                                 </Button>
                               </DialogTrigger>
@@ -1527,7 +1621,7 @@ export function ProcurementCreateFlow() {
                             onChange={(e) => setProductSearch(e.target.value)}
                             placeholder="Type first 3 letters of SKU, name or brand"
                           />
-                          <Button type="button" variant="outline" onClick={() => { setProductCreateMode("challan"); setShowProductCreate(true); }}>
+                          <Button type="button" variant="outline" disabled={!canWritePurchase} onClick={() => { setProductCreateMode("challan"); setShowProductCreate(true); }}>
                             + Add Product
                           </Button>
                         </div>
@@ -1545,7 +1639,7 @@ export function ProcurementCreateFlow() {
                                     {product.name || "-"}{product.brand ? ` • ${product.brand}` : ""}
                                   </p>
                                 </div>
-                                <Button size="sm" variant="outline" onClick={() => addProduct(product)}>
+                                <Button size="sm" variant="outline" onClick={() => addProduct(product)} disabled={!canWritePurchase}>
                                   Add
                                 </Button>
                               </div>
@@ -1606,7 +1700,7 @@ export function ProcurementCreateFlow() {
                                 </div>
                                 <div className="md:col-span-2">
                                   <p className="mb-1 text-xs text-muted-foreground">Action</p>
-                                  <Button size="sm" variant="outline" onClick={() => removeItem(row.product_id)}>
+                                  <Button size="sm" variant="outline" onClick={() => removeItem(row.product_id)} disabled={!canWritePurchase}>
                                     Remove
                                   </Button>
                                 </div>
@@ -1616,7 +1710,7 @@ export function ProcurementCreateFlow() {
                         )}
                       </div>
 
-                      <Button onClick={createChallanWithItems} disabled={!canCreateChallan || submittingChallan}>
+                      <Button onClick={createChallanWithItems} disabled={!canWritePurchase || !canCreateChallan || submittingChallan}>
                         {submittingChallan ? "Creating..." : "Create Purchase Challan"}
                       </Button>
                       {!vendorId || !warehouseId ? (
@@ -1768,6 +1862,16 @@ export function ProcurementCreateFlow() {
             <CardDescription>Available bills are listed first. Click create new to open bill form.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {permissionsLoaded && !canReadPurchase ? (
+              <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                You have no purchase module access.
+              </p>
+            ) : null}
+            {permissionsLoaded && canReadPurchase && !canWritePurchase ? (
+              <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                Read-only access. Create and update actions are hidden.
+              </p>
+            ) : null}
             {feedback ? <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{feedback}</p> : null}
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-muted-foreground">Available Bills</p>
@@ -1778,10 +1882,12 @@ export function ProcurementCreateFlow() {
                   onChange={(e) => setBillSearch(e.target.value)}
                   className="md:w-80"
                 />
-                <Dialog open={showNewBill} onOpenChange={setShowNewBill}>
-                  <DialogTrigger asChild>
-                    <Button>Create New</Button>
-                  </DialogTrigger>
+                <Dialog open={showNewBill} onOpenChange={(open) => setShowNewBill(canWritePurchase ? open : false)}>
+                  {canWritePurchase ? (
+                    <DialogTrigger asChild>
+                      <Button>Create New</Button>
+                    </DialogTrigger>
+                  ) : null}
                   <DialogContent className="max-h-[90vh] w-[75vw] max-w-[1080px] sm:max-w-[1080px] overflow-y-auto overflow-x-hidden p-4 sm:p-5">
                     <DialogHeader>
                       <DialogTitle>Create Purchase Bill</DialogTitle>
@@ -1897,7 +2003,7 @@ export function ProcurementCreateFlow() {
                             <div className="space-y-1">
                               <div className="flex items-center justify-between gap-2">
                                 <Label>Vendor *</Label>
-                                <Button type="button" variant="outline" size="sm" onClick={() => setShowVendorCreate(true)}>
+                                <Button type="button" variant="outline" size="sm" onClick={() => setShowVendorCreate(true)} disabled={!canWritePurchase}>
                                   + Add Vendor
                                 </Button>
                               </div>
@@ -1913,7 +2019,7 @@ export function ProcurementCreateFlow() {
                                   </option>
                                 ))}
                               </select>
-                              <Dialog open={showVendorCreate} onOpenChange={setShowVendorCreate}>
+                              <Dialog open={showVendorCreate} onOpenChange={(open) => setShowVendorCreate(canWritePurchase ? open : false)}>
                                 <DialogContent className="sm:max-w-md">
                                   <DialogHeader>
                                     <DialogTitle>Add Vendor</DialogTitle>
@@ -1998,7 +2104,7 @@ export function ProcurementCreateFlow() {
                             <div className="space-y-1">
                               <div className="flex items-center justify-between gap-2">
                                 <Label>Warehouse *</Label>
-                                <Button type="button" variant="outline" size="sm" onClick={() => setShowWarehouseCreate(true)}>
+                                <Button type="button" variant="outline" size="sm" onClick={() => setShowWarehouseCreate(true)} disabled={!canWritePurchase}>
                                   + Add Warehouse
                                 </Button>
                               </div>
@@ -2014,7 +2120,7 @@ export function ProcurementCreateFlow() {
                                   </option>
                                 ))}
                               </select>
-                              <Dialog open={showWarehouseCreate} onOpenChange={setShowWarehouseCreate}>
+                              <Dialog open={showWarehouseCreate} onOpenChange={(open) => setShowWarehouseCreate(canWritePurchase ? open : false)}>
                                 <DialogContent className="sm:max-w-md">
                                   <DialogHeader>
                                     <DialogTitle>Add Warehouse</DialogTitle>
@@ -2122,7 +2228,7 @@ export function ProcurementCreateFlow() {
                                 onChange={(e) => setBillProductSearch(e.target.value)}
                                 placeholder="Type first 3 letters of SKU, name or brand"
                               />
-                              <Button type="button" variant="outline" onClick={() => { setProductCreateMode("bill"); setShowProductCreate(true); }}>
+                              <Button type="button" variant="outline" disabled={!canWritePurchase} onClick={() => { setProductCreateMode("bill"); setShowProductCreate(true); }}>
                                 + Add Product
                               </Button>
                             </div>
@@ -2140,7 +2246,7 @@ export function ProcurementCreateFlow() {
                                         {product.name || "-"}{product.brand ? ` • ${product.brand}` : ""}
                                       </p>
                                     </div>
-                                    <Button size="sm" variant="outline" onClick={() => addBillProduct(product)}>
+                                    <Button size="sm" variant="outline" onClick={() => addBillProduct(product)} disabled={!canWritePurchase}>
                                       Add
                                     </Button>
                                   </div>
@@ -2222,7 +2328,7 @@ export function ProcurementCreateFlow() {
                                   </div>
                                   <div className="md:col-span-1">
                                     <p className="mb-1 text-xs text-muted-foreground">Action</p>
-                                    <Button size="sm" variant="outline" onClick={() => removeBillItem(index)}>
+                                    <Button size="sm" variant="outline" onClick={() => removeBillItem(index)} disabled={!canWritePurchase}>
                                       Remove
                                     </Button>
                                   </div>
@@ -2237,7 +2343,7 @@ export function ProcurementCreateFlow() {
                         </TabsContent>
                       </Tabs>
 
-                      <Button onClick={createPurchaseBill} disabled={!canCreateBill || submittingBill}>
+                      <Button onClick={createPurchaseBill} disabled={!canWritePurchase || !canCreateBill || submittingBill}>
                         {submittingBill ? "Creating..." : "Create Purchase Bill"}
                       </Button>
                     </div>
@@ -2333,7 +2439,7 @@ export function ProcurementCreateFlow() {
       </TabsContent>
     </Tabs>
 
-    <Dialog open={showProductCreate} onOpenChange={setShowProductCreate}>
+    <Dialog open={showProductCreate} onOpenChange={(open) => setShowProductCreate(canWritePurchase ? open : false)}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Add Product</DialogTitle>
@@ -2347,11 +2453,13 @@ export function ProcurementCreateFlow() {
           units={units}
           hsnOptions={hsnOptions}
           onQuickCreate={(type) => setQuickCreateType(type)}
+          canQuickCreate={canWritePurchase}
         />
         <div className="pt-2">
           <Button
             onClick={createInlineProduct}
             disabled={
+              !canWritePurchase ||
               creatingProduct ||
               !newProductForm.sku.trim() ||
               !newProductForm.name.trim() ||
@@ -2421,6 +2529,7 @@ export function ProcurementCreateFlow() {
           <Button
             onClick={quickCreateProductMaster}
             disabled={
+              !canWritePurchase ||
               quickCreating ||
               ((quickCreateType === "brand" || quickCreateType === "category" || quickCreateType === "subCategory" || quickCreateType === "unit") &&
                 !quickName.trim()) ||

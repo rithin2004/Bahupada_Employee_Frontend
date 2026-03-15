@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,6 +57,9 @@ function mapArea(row: Record<string, unknown>): AreaRow {
 }
 
 export function AreasAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadAreas, setCanReadAreas] = useState(false);
+  const [canWriteAreas, setCanWriteAreas] = useState(false);
   const [rows, setRows] = useState<AreaRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -80,6 +83,11 @@ export function AreasAdminEditor() {
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
+    if (!canReadAreas) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setRows([]);
     setFeedback("");
@@ -111,9 +119,40 @@ export function AreasAdminEditor() {
   }
 
   useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).areas);
+        if (!active) {
+          return;
+        }
+        setCanReadAreas(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteAreas(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadAreas(false);
+        setCanWriteAreas(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadAreas) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadAreas]);
 
   function toggleSelectAll(checked: boolean) {
     setSelectedIds(checked ? rows.map((row) => row.id) : []);
@@ -131,6 +170,9 @@ export function AreasAdminEditor() {
   }
 
   async function createArea() {
+    if (!canWriteAreas) {
+      return;
+    }
     if (!createForm.area_name.trim()) {
       return;
     }
@@ -162,6 +204,9 @@ export function AreasAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteAreas) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -191,6 +236,9 @@ export function AreasAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteAreas) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -216,6 +264,16 @@ export function AreasAdminEditor() {
         <CardTitle>Areas (Editable)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadAreas ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no areas module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadAreas && !canWriteAreas ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search area, city, state, pincode"
@@ -254,13 +312,17 @@ export function AreasAdminEditor() {
           >
             Reset
           </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
-          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
-            <DialogTrigger asChild>
-              <Button>Add Area</Button>
-            </DialogTrigger>
+          {canWriteAreas ? (
+            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+              Delete Selected
+            </Button>
+          ) : null}
+          <Dialog open={openCreateDialog} onOpenChange={(open) => setOpenCreateDialog(canWriteAreas ? open : false)}>
+            {canWriteAreas ? (
+              <DialogTrigger asChild>
+                <Button>Add Area</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Add Area</DialogTitle>
@@ -293,7 +355,7 @@ export function AreasAdminEditor() {
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={createArea} disabled={creating || !createForm.area_name.trim()}>
+                <Button onClick={createArea} disabled={!canWriteAreas || creating || !createForm.area_name.trim()}>
                   {creating ? "Creating..." : "Create Area"}
                 </Button>
               </DialogFooter>
@@ -358,12 +420,14 @@ export function AreasAdminEditor() {
                     <TableCell>{row.latitude || "-"}</TableCell>
                     <TableCell>{row.longitude || "-"}</TableCell>
                     <TableCell>
-                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            Edit
-                          </Button>
-                        </DialogTrigger>
+                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteAreas && open ? row.id : null)}>
+                        {canWriteAreas ? (
+                          <DialogTrigger asChild>
+                            <Button size="sm" variant="outline">
+                              Edit
+                            </Button>
+                          </DialogTrigger>
+                        ) : null}
                         <DialogContent className="sm:max-w-2xl">
                           <DialogHeader>
                             <DialogTitle>Edit Area</DialogTitle>
@@ -398,7 +462,7 @@ export function AreasAdminEditor() {
                             </div>
                           ) : null}
                           <DialogFooter>
-                            <Button onClick={saveSelected} disabled={!selected || savingId === selected.id}>
+                            <Button onClick={saveSelected} disabled={!canWriteAreas || !selected || savingId === selected.id}>
                               {savingId === selected?.id ? "Saving..." : "Save"}
                             </Button>
                           </DialogFooter>
