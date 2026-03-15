@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, delete, distinct, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.models.entities import CustomerCategory, Product, Scheme, SchemeProduct
 from app.schemas.schemes import SchemeCreate, SchemeOut, SchemeProductOption, SchemeScopeMeta, SchemeUpdate
@@ -83,7 +84,7 @@ async def _serialize_scheme(db: AsyncSession, scheme: Scheme) -> dict[str, objec
     }
 
 
-@router.get("", response_model=list[SchemeOut])
+@router.get("", response_model=list[SchemeOut], dependencies=[Depends(require_permission("schemes", "read"))])
 async def list_schemes(
     search: str | None = Query(None),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -113,7 +114,7 @@ async def list_schemes(
     return [await _serialize_scheme(db, row) for row in rows]
 
 
-@router.post("", response_model=SchemeOut)
+@router.post("", response_model=SchemeOut, dependencies=[Depends(require_permission("schemes", "create"))])
 async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db)):
     await _require_active_customer_category(db, payload.customer_category_id)
 
@@ -144,7 +145,7 @@ async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db
     return await _serialize_scheme(db, scheme)
 
 
-@router.patch("/{scheme_id}", response_model=SchemeOut)
+@router.patch("/{scheme_id}", response_model=SchemeOut, dependencies=[Depends(require_permission("schemes", "update"))])
 async def update_scheme(scheme_id: uuid.UUID, payload: SchemeUpdate, db: AsyncSession = Depends(get_db)):
     scheme = await db.get(Scheme, scheme_id)
     if scheme is None:
@@ -166,7 +167,7 @@ async def update_scheme(scheme_id: uuid.UUID, payload: SchemeUpdate, db: AsyncSe
     return await _serialize_scheme(db, scheme)
 
 
-@router.delete("/{scheme_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{scheme_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_permission("schemes", "delete"))])
 async def delete_scheme(scheme_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     scheme = await db.get(Scheme, scheme_id)
     if scheme is None:
@@ -177,7 +178,7 @@ async def delete_scheme(scheme_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     await db.commit()
 
 
-@router.get("/active", response_model=list[SchemeOut])
+@router.get("/active", response_model=list[SchemeOut], dependencies=[Depends(require_permission("schemes", "read"))])
 async def list_active_schemes(on_date: date | None = None, db: AsyncSession = Depends(get_db)):
     target = on_date or date.today()
     rows = (
@@ -196,7 +197,7 @@ async def list_active_schemes(on_date: date | None = None, db: AsyncSession = De
     return [await _serialize_scheme(db, row) for row in rows]
 
 
-@router.get("/meta/scope", response_model=SchemeScopeMeta)
+@router.get("/meta/scope", response_model=SchemeScopeMeta, dependencies=[Depends(require_permission("schemes", "read"))])
 async def get_scheme_scope_meta(db: AsyncSession = Depends(get_db)):
     brand_rows = (
         await db.execute(
@@ -226,7 +227,7 @@ async def get_scheme_scope_meta(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/meta/categories")
+@router.get("/meta/categories", dependencies=[Depends(require_permission("schemes", "read"))])
 async def list_categories_for_brand(brand: str, db: AsyncSession = Depends(get_db)):
     rows = (
         await db.execute(
@@ -245,7 +246,7 @@ async def list_categories_for_brand(brand: str, db: AsyncSession = Depends(get_d
     return [str(item) for item in rows]
 
 
-@router.get("/meta/sub-categories")
+@router.get("/meta/sub-categories", dependencies=[Depends(require_permission("schemes", "read"))])
 async def list_sub_categories_for_scope(
     brand: str,
     category: str,
@@ -269,7 +270,7 @@ async def list_sub_categories_for_scope(
     return [str(item) for item in rows]
 
 
-@router.get("/meta/products", response_model=list[SchemeProductOption])
+@router.get("/meta/products", response_model=list[SchemeProductOption], dependencies=[Depends(require_permission("schemes", "read"))])
 async def list_products_for_scheme_scope(
     brand: str,
     category: str,
@@ -295,7 +296,7 @@ async def list_products_for_scheme_scope(
     ]
 
 
-@router.get("/{scheme_id}", response_model=SchemeOut)
+@router.get("/{scheme_id}", response_model=SchemeOut, dependencies=[Depends(require_permission("schemes", "read"))])
 async def get_scheme_detail(scheme_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     scheme = await db.get(Scheme, scheme_id)
     if scheme is None:

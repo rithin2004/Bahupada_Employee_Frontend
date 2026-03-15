@@ -54,8 +54,12 @@ class AuthUserInfo(BaseModel):
     account_type: str
     portal: str
     portal_scope: str | None = None
+    is_super_admin: bool = False
     session_id: str | None = None
     employee_id: str | None = None
     employee_role: str | None = None
+    admin_role_id: str | None = None
+    admin_role_name: str | None = None
+    admin_permissions: dict[str, dict[str, bool]] = {}
     customer_id: str | None = None
     display_name: str | None = None

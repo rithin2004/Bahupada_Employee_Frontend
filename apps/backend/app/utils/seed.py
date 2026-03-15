@@ -60,11 +60,14 @@ async def seed() -> None:
                     phone="9999999999",
                     username="admin",
                     password_hash=hash_password("ChangeMe@123"),
+                    is_super_admin=True,
                     is_active=True,
                 )
             )
         elif admin_user.username is None:
             admin_user.username = "admin"
+        else:
+            admin_user.is_super_admin = True
 
         await session.commit()
 

@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.schemas.finance import (
     CustomerAgingResponse,
@@ -42,7 +43,7 @@ from app.models.entities import PartyType, PaymentFlowDirection
 router = APIRouter()
 
 
-@router.post("/payments", response_model=PaymentOut)
+@router.post("/payments", response_model=PaymentOut, dependencies=[Depends(require_permission("credit-debit-notes", "create"))])
 async def create_payment(
     payload: PaymentCreate,
     db: AsyncSession = Depends(get_db),
@@ -72,7 +73,11 @@ async def create_payment(
     return response
 
 
-@router.get("/customers/{customer_id}/outstanding", response_model=CustomerOutstandingResponse)
+@router.get(
+    "/customers/{customer_id}/outstanding",
+    response_model=CustomerOutstandingResponse,
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def customer_outstanding(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     try:
         breakdown = await customer_outstanding_breakdown(db, customer_id)
@@ -81,23 +86,31 @@ async def customer_outstanding(customer_id: uuid.UUID, db: AsyncSession = Depend
     return {"customer_id": customer_id, **breakdown}
 
 
-@router.get("/ledger/trial-balance", response_model=TrialBalanceResponse)
+@router.get("/ledger/trial-balance", response_model=TrialBalanceResponse, dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
 async def get_trial_balance(db: AsyncSession = Depends(get_db)):
     return await trial_balance(db)
 
 
-@router.get("/ledger/summary", response_model=LedgerSummaryResponse)
+@router.get("/ledger/summary", response_model=LedgerSummaryResponse, dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
 async def get_ledger_summary(db: AsyncSession = Depends(get_db)):
     return {"items": await ledger_summary(db)}
 
 
-@router.get("/customers/{customer_id}/statement", response_model=CustomerStatementResponse)
+@router.get(
+    "/customers/{customer_id}/statement",
+    response_model=CustomerStatementResponse,
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def get_customer_statement(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     data = await customer_statement(db, customer_id)
     return {"customer_id": customer_id, **data}
 
 
-@router.get("/customers/{customer_id}/aging", response_model=CustomerAgingResponse)
+@router.get(
+    "/customers/{customer_id}/aging",
+    response_model=CustomerAgingResponse,
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def get_customer_aging(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     buckets = await customer_aging(db, customer_id)
     return {
@@ -109,7 +122,7 @@ async def get_customer_aging(customer_id: uuid.UUID, db: AsyncSession = Depends(
     }
 
 
-@router.post("/journal-entries", response_model=JournalEntryOut)
+@router.post("/journal-entries", response_model=JournalEntryOut, dependencies=[Depends(require_permission("credit-debit-notes", "create"))])
 async def post_journal_entry(payload: JournalEntryCreate, db: AsyncSession = Depends(get_db)):
     try:
         return await create_journal_entry(db, payload)
@@ -117,7 +130,11 @@ async def post_journal_entry(payload: JournalEntryCreate, db: AsyncSession = Dep
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
-@router.get("/journal-entries/{journal_entry_id}/lines", response_model=list[JournalLineOut])
+@router.get(
+    "/journal-entries/{journal_entry_id}/lines",
+    response_model=list[JournalLineOut],
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def get_journal_entry_lines(journal_entry_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
 
@@ -130,7 +147,11 @@ async def get_journal_entry_lines(journal_entry_id: uuid.UUID, db: AsyncSession 
     ).scalars().all()
 
 
-@router.post("/payments/{payment_id}/allocations", response_model=PaymentAllocationOut)
+@router.post(
+    "/payments/{payment_id}/allocations",
+    response_model=PaymentAllocationOut,
+    dependencies=[Depends(require_permission("credit-debit-notes", "create"))],
+)
 async def post_payment_allocation(
     payment_id: uuid.UUID,
     payload: PaymentAllocationCreate,
@@ -148,7 +169,11 @@ async def post_payment_allocation(
         raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
-@router.get("/payments/{payment_id}/allocations", response_model=list[PaymentAllocationOut])
+@router.get(
+    "/payments/{payment_id}/allocations",
+    response_model=list[PaymentAllocationOut],
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def list_payment_allocations(payment_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
 
@@ -159,7 +184,7 @@ async def list_payment_allocations(payment_id: uuid.UUID, db: AsyncSession = Dep
     ).scalars().all()
 
 
-@router.get("/credit-notes")
+@router.get("/credit-notes", dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
 async def list_credit_notes(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
 
@@ -168,7 +193,7 @@ async def list_credit_notes(db: AsyncSession = Depends(get_db)):
     return (await db.execute(select(CreditNote).order_by(CreditNote.created_at.desc()))).scalars().all()
 
 
-@router.get("/debit-notes")
+@router.get("/debit-notes", dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
 async def list_debit_notes(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
 
@@ -177,7 +202,11 @@ async def list_debit_notes(db: AsyncSession = Depends(get_db)):
     return (await db.execute(select(DebitNote).order_by(DebitNote.created_at.desc()))).scalars().all()
 
 
-@router.get("/party-ledger/accounts", response_model=PartyLedgerAccountsResponse)
+@router.get(
+    "/party-ledger/accounts",
+    response_model=PartyLedgerAccountsResponse,
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def get_party_ledger_accounts(
     party_type: str,
     page: int = 1,
@@ -198,7 +227,11 @@ async def get_party_ledger_accounts(
     )
 
 
-@router.get("/party-ledger/{party_type}/{party_id}", response_model=PartyLedgerStatementResponse)
+@router.get(
+    "/party-ledger/{party_type}/{party_id}",
+    response_model=PartyLedgerStatementResponse,
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
 async def get_party_statement(
     party_type: str,
     party_id: uuid.UUID,
@@ -212,7 +245,7 @@ async def get_party_statement(
         raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
-@router.post("/party-ledger/payments")
+@router.post("/party-ledger/payments", dependencies=[Depends(require_permission("credit-debit-notes", "create"))])
 async def create_party_ledger_payment(
     payload: PartyLedgerPaymentCreate,
     db: AsyncSession = Depends(get_db),
