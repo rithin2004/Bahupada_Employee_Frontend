@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend, postBackendForm } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend, postBackendForm } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -111,6 +111,9 @@ function mapCustomerCategory(row: Record<string, unknown>): CustomerCategory {
 }
 
 export function CustomersAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadCustomers, setCanReadCustomers] = useState(false);
+  const [canWriteCustomers, setCanWriteCustomers] = useState(false);
   const [rows, setRows] = useState<CustomerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -187,6 +190,9 @@ export function CustomersAdminEditor() {
   }, [rows, search]);
 
   async function loadCategories() {
+    if (!canReadCustomers) {
+      return;
+    }
     try {
       const res = asObject(await fetchBackend("/masters/customer-categories?page=1&page_size=100"));
       setCategories(asArray(res.items).map(mapCustomerCategory));
@@ -196,6 +202,9 @@ export function CustomersAdminEditor() {
   }
 
   async function loadAccountCategories() {
+    if (!canReadCustomers) {
+      return;
+    }
     try {
       const res = asObject(await fetchBackend("/masters/account-categories?party_type=CUSTOMER&page=1&page_size=100"));
       setAccountCategories(
@@ -211,6 +220,9 @@ export function CustomersAdminEditor() {
   }
 
   async function createInlineCategory() {
+    if (!canWriteCustomers) {
+      return;
+    }
     if (!newCategoryCode.trim() || !newCategoryName.trim()) {
       toast.error("Category code and name are required.", { duration: 4000 });
       return;
@@ -243,6 +255,9 @@ export function CustomersAdminEditor() {
   }
 
   async function createInlineAccountCategory() {
+    if (!canWriteCustomers) {
+      return;
+    }
     if (!newAccountCategoryCode.trim() || !newAccountCategoryName.trim()) {
       toast.error("Account category code and name are required.", { duration: 4000 });
       return;
@@ -273,6 +288,11 @@ export function CustomersAdminEditor() {
   }
 
   async function loadCustomers(page: number, pageSizeValue = pageSize) {
+    if (!canReadCustomers) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setRows([]);
     setFeedback("");
@@ -298,14 +318,48 @@ export function CustomersAdminEditor() {
   }
 
   useEffect(() => {
-    void loadCategories();
-    void loadAccountCategories();
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).customers);
+        if (!active) {
+          return;
+        }
+        setCanReadCustomers(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteCustomers(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadCustomers(false);
+        setCanWriteCustomers(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadCustomers) {
+      return;
+    }
+    void loadCategories();
+    void loadAccountCategories();
+  }, [permissionsLoaded, canReadCustomers]);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadCustomers) {
+      setLoading(false);
+      return;
+    }
     void loadCustomers(currentPage, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize]);
+  }, [currentPage, pageSize, permissionsLoaded, canReadCustomers]);
 
   const categoryOptions = useMemo(() => {
     return categories.map((item) => ({
@@ -330,6 +384,9 @@ export function CustomersAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteCustomers) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -373,6 +430,9 @@ export function CustomersAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteCustomers) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -393,6 +453,9 @@ export function CustomersAdminEditor() {
   }
 
   async function createCustomer() {
+    if (!canWriteCustomers) {
+      return;
+    }
     if (!form.name.trim()) {
       toast.error("Customer name is required.", { duration: 4000 });
       return;
@@ -491,13 +554,17 @@ export function CustomersAdminEditor() {
         <div className="flex items-center justify-between gap-2">
           <CardTitle>Customers (Editable)</CardTitle>
           <div className="flex items-center gap-2">
-            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-              Delete Selected
-            </Button>
-            <Dialog open={openAddDialog} onOpenChange={setOpenAddDialog}>
-              <DialogTrigger asChild>
-                <Button>Add Customer</Button>
-              </DialogTrigger>
+            {canWriteCustomers ? (
+              <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+                Delete Selected
+              </Button>
+            ) : null}
+            <Dialog open={openAddDialog} onOpenChange={(open) => setOpenAddDialog(canWriteCustomers ? open : false)}>
+              {canWriteCustomers ? (
+                <DialogTrigger asChild>
+                  <Button>Add Customer</Button>
+                </DialogTrigger>
+              ) : null}
               <DialogContent className="max-h-[85vh] w-[92vw] max-w-[900px] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle>Create Customer</DialogTitle>
@@ -536,9 +603,9 @@ export function CustomersAdminEditor() {
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <Label>Customer Category</Label>
-                      <Dialog open={openCategoryDialog} onOpenChange={setOpenCategoryDialog}>
+                      <Dialog open={openCategoryDialog} onOpenChange={(open) => setOpenCategoryDialog(canWriteCustomers ? open : false)}>
                         <DialogTrigger asChild>
-                          <Button size="sm" type="button" variant="outline">+ Add Category</Button>
+                          <Button size="sm" type="button" variant="outline" disabled={!canWriteCustomers}>+ Add Category</Button>
                         </DialogTrigger>
                         <DialogContent className="w-[92vw] max-w-[520px]">
                           <DialogHeader>
@@ -613,9 +680,9 @@ export function CustomersAdminEditor() {
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <Label>Account Category</Label>
-                      <Dialog open={openAccountCategoryDialog} onOpenChange={setOpenAccountCategoryDialog}>
+                      <Dialog open={openAccountCategoryDialog} onOpenChange={(open) => setOpenAccountCategoryDialog(canWriteCustomers ? open : false)}>
                         <DialogTrigger asChild>
-                          <Button size="sm" type="button" variant="outline">+ Add Account Category</Button>
+                          <Button size="sm" type="button" variant="outline" disabled={!canWriteCustomers}>+ Add Account Category</Button>
                         </DialogTrigger>
                         <DialogContent className="w-[92vw] max-w-[520px]">
                           <DialogHeader>
@@ -802,7 +869,7 @@ export function CustomersAdminEditor() {
                 </div>
 
                 <DialogFooter>
-                  <Button onClick={createCustomer} disabled={creating || !form.name.trim()}>
+                  <Button onClick={createCustomer} disabled={!canWriteCustomers || creating || !form.name.trim()}>
                     {creating ? "Creating..." : "Create Customer"}
                   </Button>
                 </DialogFooter>
@@ -813,6 +880,16 @@ export function CustomersAdminEditor() {
       </CardHeader>
 
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadCustomers ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no customers module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadCustomers && !canWriteCustomers ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search name, outlet, whatsapp, category"
@@ -909,10 +986,12 @@ export function CustomersAdminEditor() {
                       <TableCell>{row.credit_limit}</TableCell>
                       <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                       <TableCell>
-                        <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                          <DialogTrigger asChild>
-                            <Button size="sm" variant="outline">Edit</Button>
-                          </DialogTrigger>
+                        <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteCustomers && open ? row.id : null)}>
+                          {canWriteCustomers ? (
+                            <DialogTrigger asChild>
+                              <Button size="sm" variant="outline">Edit</Button>
+                            </DialogTrigger>
+                          ) : null}
                           <DialogContent className="max-h-[85vh] w-[92vw] max-w-[900px] overflow-y-auto">
                             <DialogHeader>
                               <DialogTitle>Edit Customer</DialogTitle>
@@ -1071,7 +1150,7 @@ export function CustomersAdminEditor() {
                               <Button variant="outline" onClick={() => setOpenId(null)}>
                                 Cancel
                               </Button>
-                              <Button onClick={saveSelected} disabled={savingId === row.id || !selected?.name.trim()}>
+                              <Button onClick={saveSelected} disabled={!canWriteCustomers || savingId === row.id || !selected?.name.trim()}>
                                 {savingId === row.id ? "Saving..." : "Save"}
                               </Button>
                             </DialogFooter>

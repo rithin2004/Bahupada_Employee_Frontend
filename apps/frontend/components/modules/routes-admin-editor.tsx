@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,6 +53,9 @@ function mapRoute(row: Record<string, unknown>): RouteRow {
 }
 
 export function RoutesAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadRoutes, setCanReadRoutes] = useState(false);
+  const [canWriteRoutes, setCanWriteRoutes] = useState(false);
   const [rows, setRows] = useState<RouteRow[]>([]);
   const [areas, setAreas] = useState<AreaOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,6 +80,9 @@ export function RoutesAdminEditor() {
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
   async function loadAreas() {
+    if (!canReadRoutes) {
+      return;
+    }
     try {
       const response = asObject(await fetchBackend("/masters/areas?page=1&page_size=100"));
       const nextAreas = asArray(response.items).map((row) => ({
@@ -90,6 +96,11 @@ export function RoutesAdminEditor() {
   }
 
   async function load(page: number, searchText: string, pageSizeValue = pageSize) {
+    if (!canReadRoutes) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setRows([]);
     setFeedback("");
@@ -121,8 +132,38 @@ export function RoutesAdminEditor() {
   }
 
   useEffect(() => {
-    void loadAreas();
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).routes);
+        if (!active) {
+          return;
+        }
+        setCanReadRoutes(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteRoutes(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadRoutes(false);
+        setCanWriteRoutes(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadRoutes) {
+      return;
+    }
+    void loadAreas();
+  }, [permissionsLoaded, canReadRoutes]);
 
   useEffect(() => {
     if (!createForm.area_id && areas.length > 0) {
@@ -131,9 +172,13 @@ export function RoutesAdminEditor() {
   }, [areas, createForm.area_id]);
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadRoutes) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, search, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, search, pageSize]);
+  }, [currentPage, search, pageSize, permissionsLoaded, canReadRoutes]);
 
   function toggleSelectAll(checked: boolean) {
     setSelectedIds(checked ? rows.map((row) => row.id) : []);
@@ -151,6 +196,9 @@ export function RoutesAdminEditor() {
   }
 
   async function createRoute() {
+    if (!canWriteRoutes) {
+      return;
+    }
     if (!createForm.route_name.trim() || !createForm.area_id) {
       return;
     }
@@ -178,6 +226,9 @@ export function RoutesAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteRoutes) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -203,6 +254,9 @@ export function RoutesAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteRoutes) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -228,6 +282,16 @@ export function RoutesAdminEditor() {
         <CardTitle>Routes (Editable)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {permissionsLoaded && !canReadRoutes ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no routes module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadRoutes && !canWriteRoutes ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
             placeholder="Search route name or area"
@@ -266,16 +330,20 @@ export function RoutesAdminEditor() {
           >
             Reset
           </Button>
-          <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-            Delete Selected
-          </Button>
+          {canWriteRoutes ? (
+            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+              Delete Selected
+            </Button>
+          ) : null}
           <Button variant="outline" asChild>
             <Link href="/areas">Manage Areas</Link>
           </Button>
-          <Dialog open={openCreateDialog} onOpenChange={setOpenCreateDialog}>
-            <DialogTrigger asChild>
-              <Button>Add Route</Button>
-            </DialogTrigger>
+          <Dialog open={openCreateDialog} onOpenChange={(open) => setOpenCreateDialog(canWriteRoutes ? open : false)}>
+            {canWriteRoutes ? (
+              <DialogTrigger asChild>
+                <Button>Add Route</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Add Route</DialogTitle>
@@ -311,7 +379,7 @@ export function RoutesAdminEditor() {
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={createRoute} disabled={creating || !createForm.route_name.trim() || !createForm.area_id}>
+                <Button onClick={createRoute} disabled={!canWriteRoutes || creating || !createForm.route_name.trim() || !createForm.area_id}>
                   {creating ? "Creating..." : "Create Route"}
                 </Button>
               </DialogFooter>
@@ -367,12 +435,14 @@ export function RoutesAdminEditor() {
                     <TableCell>{row.area_name || "-"}</TableCell>
                     <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                     <TableCell>
-                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            Edit
-                          </Button>
-                        </DialogTrigger>
+                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteRoutes && open ? row.id : null)}>
+                        {canWriteRoutes ? (
+                          <DialogTrigger asChild>
+                            <Button size="sm" variant="outline">
+                              Edit
+                            </Button>
+                          </DialogTrigger>
+                        ) : null}
                         <DialogContent className="sm:max-w-2xl">
                           <DialogHeader>
                             <DialogTitle>Edit Route</DialogTitle>
@@ -407,7 +477,7 @@ export function RoutesAdminEditor() {
                             </div>
                           ) : null}
                           <DialogFooter>
-                            <Button onClick={saveSelected} disabled={!selected || savingId === selected.id}>
+                            <Button onClick={saveSelected} disabled={!canWriteRoutes || !selected || savingId === selected.id}>
                               {savingId === selected?.id ? "Saving..." : "Save"}
                             </Button>
                           </DialogFooter>

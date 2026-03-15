@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { invalidateByPrefixes } from "@/lib/state/api-cache-slice";
 import { usePersistedPage, usePersistedUiState } from "@/lib/state/pagination-hooks";
 import { store } from "@/lib/state/store";
@@ -218,11 +218,49 @@ export function SalesInvoicesAdminEditor() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [documentDrafts, setDocumentDrafts] = useState<Record<string, { e_invoice_number: string; gst_invoice_number: string; eway_bill_number: string }>>({});
   const [savingDocumentId, setSavingDocumentId] = useState<string | null>(null);
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadSales, setCanReadSales] = useState(false);
+  const [canWriteSales, setCanWriteSales] = useState(false);
+  const [canReadDelivery, setCanReadDelivery] = useState(false);
+  const [canWriteDelivery, setCanWriteDelivery] = useState(false);
   const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage(
     "sales-final-invoices-admin",
     1,
     DEFAULT_PAGE_SIZE
   );
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permissions = asObject(payload.admin_permissions);
+        const salesPermission = asObject(permissions.sales);
+        const deliveryPermission = asObject(permissions.delivery);
+        if (!active) {
+          return;
+        }
+        setCanReadSales(isSuperAdmin || Boolean(salesPermission.read) || Boolean(salesPermission.write));
+        setCanWriteSales(isSuperAdmin || Boolean(salesPermission.write));
+        setCanReadDelivery(isSuperAdmin || Boolean(deliveryPermission.read) || Boolean(deliveryPermission.write));
+        setCanWriteDelivery(isSuperAdmin || Boolean(deliveryPermission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadSales(false);
+        setCanWriteSales(false);
+        setCanReadDelivery(false);
+        setCanWriteDelivery(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     setPersistedUiState({
@@ -259,7 +297,11 @@ export function SalesInvoicesAdminEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function searchCustomers(term: string) {
+  const searchCustomers = useCallback(async (term: string) => {
+    if (!canReadSales) {
+      setCustomerOptions([]);
+      return;
+    }
     setCustomerLoading(true);
     try {
       const params = new URLSearchParams();
@@ -277,7 +319,7 @@ export function SalesInvoicesAdminEditor() {
     } finally {
       setCustomerLoading(false);
     }
-  }
+  }, [canReadSales]);
 
   useEffect(() => {
     const term = customerSearchInput.trim();
@@ -289,9 +331,13 @@ export function SalesInvoicesAdminEditor() {
       void searchCustomers(term);
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [customerSearchInput]);
+  }, [customerSearchInput, canReadSales, searchCustomers]);
 
   async function loadPendingOrders(customerId: string) {
+    if (!canReadSales) {
+      setPendingOrders([]);
+      return;
+    }
     setPendingLoading(true);
     setCreateFeedback("");
     try {
@@ -347,6 +393,9 @@ export function SalesInvoicesAdminEditor() {
   }
 
   async function createInvoice() {
+    if (!canWriteSales) {
+      return;
+    }
     if (!selectedOrder) {
       toast.error("Select a sales order first.");
       return;
@@ -393,6 +442,13 @@ export function SalesInvoicesAdminEditor() {
   }
 
   const loadInvoices = useCallback(async (page: number, searchText: string, size = pageSize) => {
+    if (!canReadSales) {
+      setInvoiceRows([]);
+      setInvoiceTotalCount(0);
+      setInvoiceTotalPages(0);
+      setInvoiceLoading(false);
+      return;
+    }
     setInvoiceLoading(true);
     setInvoiceFeedback("");
     try {
@@ -426,9 +482,15 @@ export function SalesInvoicesAdminEditor() {
     } finally {
       setInvoiceLoading(false);
     }
-  }, [pageSize]);
+  }, [pageSize, canReadSales]);
 
   const loadWorkflowBatches = useCallback(async () => {
+    if (!canReadDelivery) {
+      setWorkflowBatches([]);
+      setSelectedBatchId("");
+      setWorkflowLoading(false);
+      return;
+    }
     setWorkflowLoading(true);
     try {
       const response = asObject(await fetchBackend("/delivery-workflow/invoice-batches"));
@@ -458,9 +520,13 @@ export function SalesInvoicesAdminEditor() {
     } finally {
       setWorkflowLoading(false);
     }
-  }, []);
+  }, [canReadDelivery]);
 
   const loadVehicleOptions = useCallback(async (dutyDate: string) => {
+    if (!canReadDelivery) {
+      setVehicleOptions([]);
+      return;
+    }
     if (!dutyDate) {
       setVehicleOptions([]);
       return;
@@ -487,7 +553,7 @@ export function SalesInvoicesAdminEditor() {
     } finally {
       setVehicleOptionsLoading(false);
     }
-  }, []);
+  }, [canReadDelivery]);
 
   const mapDeliveryRun = useCallback((row: Record<string, unknown>): DeliveryRun => {
     return {
@@ -529,6 +595,12 @@ export function SalesInvoicesAdminEditor() {
   }, []);
 
   const loadDeliveryRuns = useCallback(async () => {
+    if (!canReadDelivery) {
+      setDeliveryRuns([]);
+      setSelectedRunId("");
+      setRunsLoading(false);
+      return;
+    }
     setRunsLoading(true);
     try {
       const response = asObject(await fetchBackend("/delivery-workflow/delivery-runs"));
@@ -541,9 +613,12 @@ export function SalesInvoicesAdminEditor() {
     } finally {
       setRunsLoading(false);
     }
-  }, [mapDeliveryRun]);
+  }, [mapDeliveryRun, canReadDelivery]);
 
   async function allocateSelectedInvoices() {
+    if (!canWriteDelivery) {
+      return;
+    }
     if (selectedInvoiceIds.length === 0) {
       toast.error("Select at least one ready-to-dispatch invoice.");
       return;
@@ -583,6 +658,9 @@ export function SalesInvoicesAdminEditor() {
   }
 
   async function saveInvoiceDocuments(invoiceId: string) {
+    if (!canWriteDelivery) {
+      return;
+    }
     const draft = documentDrafts[invoiceId];
     if (!draft) {
       return;
@@ -601,6 +679,9 @@ export function SalesInvoicesAdminEditor() {
   }
 
   async function assignSelectedInvoices() {
+    if (!canWriteDelivery) {
+      return;
+    }
     if (selectedInvoiceIds.length === 0) {
       toast.error("Select at least one invoice.");
       return;
@@ -633,21 +714,25 @@ export function SalesInvoicesAdminEditor() {
   }
 
   useEffect(() => {
+    if (!permissionsLoaded || !canReadSales) {
+      setInvoiceLoading(false);
+      return;
+    }
     void loadInvoices(currentPage, invoiceSearch, pageSize);
-  }, [currentPage, invoiceSearch, loadInvoices, pageSize]);
+  }, [currentPage, invoiceSearch, loadInvoices, pageSize, permissionsLoaded, canReadSales]);
 
   useEffect(() => {
-    if (tab === "invoices") {
+    if (tab === "invoices" && canReadDelivery) {
       void loadWorkflowBatches();
       void loadDeliveryRuns();
     }
-  }, [loadDeliveryRuns, loadWorkflowBatches, tab]);
+  }, [loadDeliveryRuns, loadWorkflowBatches, tab, canReadDelivery]);
 
   useEffect(() => {
-    if (allocationDialogOpen) {
+    if (allocationDialogOpen && canReadDelivery) {
       void loadVehicleOptions(allocationDate);
     }
-  }, [allocationDate, allocationDialogOpen, loadVehicleOptions]);
+  }, [allocationDate, allocationDialogOpen, loadVehicleOptions, canReadDelivery]);
 
   const selectedRun = deliveryRuns.find((run) => run.run_id === selectedRunId) ?? deliveryRuns[0] ?? null;
 
@@ -698,11 +783,36 @@ export function SalesInvoicesAdminEditor() {
 
   return (
     <>
+      {permissionsLoaded && !canReadSales ? (
+        <Card>
+          <CardContent className="pt-6">
+            <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+              You do not have access to the Sales Invoices module.
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+      {!permissionsLoaded || canReadSales ? (
       <Card>
         <CardHeader>
           <CardTitle>Sales Invoices</CardTitle>
         </CardHeader>
         <CardContent>
+        {permissionsLoaded && canReadSales && !canWriteSales ? (
+          <div className="mb-4 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            Read-only access. Invoice creation is disabled for your admin role.
+          </div>
+        ) : null}
+        {permissionsLoaded && canReadSales && !canReadDelivery ? (
+          <div className="mb-4 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            Delivery workflow sections are hidden because your admin role does not include delivery access.
+          </div>
+        ) : null}
+        {permissionsLoaded && canReadDelivery && !canWriteDelivery ? (
+          <div className="mb-4 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            Delivery workflow is read-only for your admin role.
+          </div>
+        ) : null}
         <Tabs value={tab} onValueChange={setTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="create">Create Invoice</TabsTrigger>
@@ -813,6 +923,7 @@ export function SalesInvoicesAdminEditor() {
                                       min={0}
                                       max={item.quantity}
                                       className="h-9"
+                                      disabled={!canWriteSales}
                                       value={String(deliverQtyByItemId[item.sales_order_item_id] ?? item.quantity)}
                                       onChange={(e) => setDeliverQty(item.sales_order_item_id, Number(e.target.value), item.quantity)}
                                     />
@@ -827,9 +938,9 @@ export function SalesInvoicesAdminEditor() {
                         <div className="flex flex-col gap-3 md:flex-row md:items-end">
                           <div className="space-y-1">
                             <Label>Invoice Date</Label>
-                            <Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+                            <Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} disabled={!canWriteSales} />
                           </div>
-                          <Button onClick={() => void createInvoice()} disabled={creatingInvoice}>
+                          <Button onClick={() => void createInvoice()} disabled={!canWriteSales || creatingInvoice}>
                             {creatingInvoice ? "Creating..." : "Create Invoice"}
                           </Button>
                         </div>
@@ -902,6 +1013,7 @@ export function SalesInvoicesAdminEditor() {
               <Button
                 onClick={() => void assignSelectedInvoices()}
                 disabled={
+                  !canWriteDelivery ||
                   assigningInvoices ||
                   selectedInvoiceIds.length === 0 ||
                   selectedInvoiceIds.some((id) => {
@@ -916,6 +1028,7 @@ export function SalesInvoicesAdminEditor() {
                 variant="outline"
                 onClick={() => setAllocationDialogOpen(true)}
                 disabled={
+                  !canWriteDelivery ||
                   selectedInvoiceIds.length === 0 ||
                   selectedInvoiceIds.some((id) => {
                     const row = filteredInvoiceRows.find((entry) => entry.id === id);
@@ -938,6 +1051,7 @@ export function SalesInvoicesAdminEditor() {
                       <input
                         type="checkbox"
                         checked={allInvoicesSelected}
+                        disabled={!canWriteDelivery}
                         onChange={(e) => setSelectedInvoiceIds(e.target.checked ? filteredInvoiceRows.map((row) => row.id) : [])}
                       />
                     </TableHead>
@@ -979,6 +1093,7 @@ export function SalesInvoicesAdminEditor() {
                           <input
                             type="checkbox"
                             checked={selectedInvoiceIds.includes(row.id)}
+                            disabled={!canWriteDelivery}
                             onChange={(e) =>
                               setSelectedInvoiceIds((prev) =>
                                 e.target.checked ? [...new Set([...prev, row.id])] : prev.filter((id) => id !== row.id)
@@ -1017,6 +1132,7 @@ export function SalesInvoicesAdminEditor() {
               />
             ) : null}
 
+            {canReadDelivery ? (
             <div className="space-y-3 rounded-xl border p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -1068,7 +1184,9 @@ export function SalesInvoicesAdminEditor() {
                 </div>
               )}
             </div>
+            ) : null}
 
+            {canReadDelivery ? (
             <div className="space-y-3 rounded-xl border p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -1118,10 +1236,12 @@ export function SalesInvoicesAdminEditor() {
                 </div>
               )}
             </div>
+            ) : null}
           </TabsContent>
         </Tabs>
         </CardContent>
       </Card>
+      ) : null}
 
       <Dialog open={workflowDialogOpen} onOpenChange={setWorkflowDialogOpen}>
         <DialogContent className="max-h-[85vh] w-[94vw] max-w-5xl overflow-y-auto">
@@ -1212,13 +1332,14 @@ export function SalesInvoicesAdminEditor() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label>Delivery Date</Label>
-              <Input type="date" value={allocationDate} onChange={(e) => setAllocationDate(e.target.value)} />
+              <Input type="date" value={allocationDate} onChange={(e) => setAllocationDate(e.target.value)} disabled={!canWriteDelivery} />
             </div>
             <div className="space-y-2">
               <Label>Planned Vehicle</Label>
               <select
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={selectedVehicleId}
+                disabled={!canWriteDelivery}
                 onChange={(e) => setSelectedVehicleId(e.target.value)}
               >
                 <option value="">{vehicleOptionsLoading ? "Loading vehicles..." : "Select vehicle"}</option>
@@ -1279,7 +1400,7 @@ export function SalesInvoicesAdminEditor() {
 
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setAllocationDialogOpen(false)}>Cancel</Button>
-            <Button onClick={() => void allocateSelectedInvoices()} disabled={allocatingRun || !selectedVehicleId || !allocationDate}>
+            <Button onClick={() => void allocateSelectedInvoices()} disabled={!canWriteDelivery || allocatingRun || !selectedVehicleId || !allocationDate}>
               {allocatingRun ? "Allocating..." : "Create Vehicle Run"}
             </Button>
           </div>
@@ -1351,6 +1472,7 @@ export function SalesInvoicesAdminEditor() {
                           <TableCell>
                             <Input
                               value={draft.e_invoice_number}
+                              disabled={!canWriteDelivery}
                               onChange={(e) =>
                                 setDocumentDrafts((prev) => ({
                                   ...prev,
@@ -1363,6 +1485,7 @@ export function SalesInvoicesAdminEditor() {
                           <TableCell>
                             <Input
                               value={draft.gst_invoice_number}
+                              disabled={!canWriteDelivery}
                               onChange={(e) =>
                                 setDocumentDrafts((prev) => ({
                                   ...prev,
@@ -1375,6 +1498,7 @@ export function SalesInvoicesAdminEditor() {
                           <TableCell>
                             <Input
                               value={draft.eway_bill_number}
+                              disabled={!canWriteDelivery}
                               onChange={(e) =>
                                 setDocumentDrafts((prev) => ({
                                   ...prev,
@@ -1389,7 +1513,7 @@ export function SalesInvoicesAdminEditor() {
                               size="sm"
                               variant="outline"
                               onClick={() => void saveInvoiceDocuments(stop.sales_final_invoice_id)}
-                              disabled={savingDocumentId === stop.sales_final_invoice_id}
+                              disabled={!canWriteDelivery || savingDocumentId === stop.sales_final_invoice_id}
                             >
                               {savingDocumentId === stop.sales_final_invoice_id ? "Saving..." : "Save Docs"}
                             </Button>

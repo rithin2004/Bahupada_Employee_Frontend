@@ -57,12 +57,17 @@ export function LoginForm({ role, title, description }: LoginFormProps) {
         refreshToken: String(payload.refresh_token ?? ""),
       });
       let landingHref = role === "admin" ? defaultRouteForAdmin() : defaultRouteForEmployee(null);
-      if (role === "employee") {
-        const meResponse = await fetchWithPortalAuth("/auth/me", { method: "GET" });
-        if (meResponse.ok) {
-          const mePayload = asObject(await meResponse.json().catch(() => ({})));
+      const meResponse = await fetchWithPortalAuth("/auth/me", { method: "GET" });
+      if (meResponse.ok) {
+        const mePayload = asObject(await meResponse.json().catch(() => ({})));
+        if (role === "employee") {
           const employeeRole = typeof mePayload.employee_role === "string" ? (mePayload.employee_role as EmployeeRole) : null;
           landingHref = defaultRouteForEmployee(employeeRole);
+        } else {
+          landingHref = defaultRouteForAdmin(
+            asObject(mePayload.admin_permissions) as Record<string, { read?: boolean; write?: boolean }>,
+            Boolean(mePayload.is_super_admin)
+          );
         }
       }
       toast.success(`${role === "admin" ? "Admin" : "Employee"} login successful.`);

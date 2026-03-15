@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedUiState } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -212,6 +212,9 @@ function toFormFromRow(row: SchemeRow) {
 }
 
 export function SchemesAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadSchemes, setCanReadSchemes] = useState(false);
+  const [canWriteSchemes, setCanWriteSchemes] = useState(false);
   const { state: persistedUiState, setState: setPersistedUiState } = usePersistedUiState(
     "schemes-admin-ui",
     defaultSchemesUiState
@@ -265,6 +268,11 @@ export function SchemesAdminEditor() {
   }, [appliedSearch, createOpen, editingId, form, rewardProductSearch, searchText, setPersistedUiState, statusFilter]);
 
   const loadSchemes = useCallback(async (search = appliedSearch, filter: "ALL" | "ACTIVE" | "INACTIVE" = statusFilter) => {
+    if (!canReadSchemes) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setFeedback("");
     try {
@@ -289,6 +297,9 @@ export function SchemesAdminEditor() {
   }, [appliedSearch, statusFilter]);
 
   async function loadCategories() {
+    if (!canReadSchemes) {
+      return;
+    }
     try {
       const res = asObject(await fetchBackend("/masters/customer-categories?page=1&page_size=100"));
       setCategories(asArray(res.items).map((row) => mapCategory(asObject(row))));
@@ -298,6 +309,9 @@ export function SchemesAdminEditor() {
   }
 
   async function loadScopeMeta() {
+    if (!canReadSchemes) {
+      return;
+    }
     try {
       const res = asObject(await fetchBackend("/schemes/meta/scope"));
       setBrands(asArray(res.brands).map((item) => String(item)));
@@ -307,6 +321,9 @@ export function SchemesAdminEditor() {
   }
 
   async function loadRewardProducts(searchText: string) {
+    if (!canReadSchemes) {
+      return;
+    }
     try {
       const params = new URLSearchParams();
       params.set("limit", "50");
@@ -322,8 +339,39 @@ export function SchemesAdminEditor() {
   }
 
   useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).schemes);
+        if (!active) {
+          return;
+        }
+        setCanReadSchemes(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteSchemes(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadSchemes(false);
+        setCanWriteSchemes(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadSchemes) {
+      setLoading(false);
+      return;
+    }
     void Promise.all([loadSchemes(), loadCategories(), loadScopeMeta()]);
-  }, [loadSchemes]);
+  }, [permissionsLoaded, canReadSchemes, loadSchemes]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -404,6 +452,9 @@ export function SchemesAdminEditor() {
   }, [rewardProductSearch]);
 
   async function createInlineCategory() {
+    if (!canWriteSchemes) {
+      return;
+    }
     if (!newCategoryCode.trim() || !newCategoryName.trim()) {
       toast.error("Category code and name are required.");
       return;
@@ -435,6 +486,9 @@ export function SchemesAdminEditor() {
   }
 
   async function saveScheme() {
+    if (!canWriteSchemes) {
+      return;
+    }
     if (!form.scheme_name.trim()) {
       toast.error("Scheme name is required.");
       return;
@@ -500,6 +554,9 @@ export function SchemesAdminEditor() {
   }
 
   function openCreateDialog() {
+    if (!canWriteSchemes) {
+      return;
+    }
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
     setRewardProductSearch("");
@@ -507,6 +564,9 @@ export function SchemesAdminEditor() {
   }
 
   function openEditDialog(row: SchemeRow) {
+    if (!canWriteSchemes) {
+      return;
+    }
     setEditingId(row.id);
     setForm(toFormFromRow(row));
     setRewardProductSearch(row.reward_product_name || "");
@@ -514,6 +574,9 @@ export function SchemesAdminEditor() {
   }
 
   async function toggleSchemeStatus(row: SchemeRow) {
+    if (!canWriteSchemes) {
+      return;
+    }
     try {
       await patchBackend(`/schemes/${row.id}`, { is_active: !row.is_active });
       toast.success(`Scheme ${row.is_active ? "deactivated" : "activated"}.`);
@@ -524,6 +587,9 @@ export function SchemesAdminEditor() {
   }
 
   async function removeScheme(row: SchemeRow) {
+    if (!canWriteSchemes) {
+      return;
+    }
     const confirmed = window.confirm(`Delete scheme "${row.scheme_name}"? This cannot be undone.`);
     if (!confirmed) {
       return;
@@ -547,10 +613,12 @@ export function SchemesAdminEditor() {
               Apply customer-category-specific discount or free-item rules on value, weight, or quantity thresholds.
             </p>
           </div>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button onClick={openCreateDialog}>Add Scheme</Button>
-            </DialogTrigger>
+          <Dialog open={createOpen} onOpenChange={(open) => setCreateOpen(canWriteSchemes ? open : false)}>
+            {canWriteSchemes ? (
+              <DialogTrigger asChild>
+                <Button onClick={openCreateDialog}>Add Scheme</Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent className="!w-[92vw] !max-w-4xl overflow-y-auto max-h-[90vh]">
               <DialogHeader>
                 <DialogTitle>{editingId ? "Edit Scheme" : "Create Scheme"}</DialogTitle>
@@ -599,7 +667,7 @@ export function SchemesAdminEditor() {
                   </div>
                   <Dialog open={addCategoryOpen} onOpenChange={setAddCategoryOpen}>
                     <DialogTrigger asChild>
-                      <Button type="button" variant="outline">
+                      <Button type="button" variant="outline" disabled={!canWriteSchemes}>
                         + Add Category
                       </Button>
                     </DialogTrigger>
@@ -657,7 +725,7 @@ export function SchemesAdminEditor() {
                         <Button type="button" variant="outline" onClick={() => setAddCategoryOpen(false)}>
                           Cancel
                         </Button>
-                        <Button type="button" onClick={createInlineCategory} disabled={creatingCategory}>
+                        <Button type="button" onClick={createInlineCategory} disabled={!canWriteSchemes || creatingCategory}>
                           {creatingCategory ? "Adding..." : "Add Category"}
                         </Button>
                       </DialogFooter>
@@ -950,7 +1018,7 @@ export function SchemesAdminEditor() {
                 >
                   Cancel
                 </Button>
-                <Button type="button" onClick={saveScheme} disabled={creating}>
+                <Button type="button" onClick={saveScheme} disabled={!canWriteSchemes || creating}>
                   {creating ? (editingId ? "Saving..." : "Creating...") : editingId ? "Save Scheme" : "Create Scheme"}
                 </Button>
               </DialogFooter>
@@ -964,6 +1032,16 @@ export function SchemesAdminEditor() {
           <CardTitle>Existing Schemes</CardTitle>
         </CardHeader>
         <CardContent>
+          {permissionsLoaded && !canReadSchemes ? (
+            <p className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              You have no schemes module access.
+            </p>
+          ) : null}
+          {permissionsLoaded && canReadSchemes && !canWriteSchemes ? (
+            <p className="mb-4 rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+              Read-only access. Create, edit, activate, and delete actions are hidden.
+            </p>
+          ) : null}
           {feedback ? <p className="mb-4 text-sm text-destructive">{feedback}</p> : null}
           <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_200px]">
             <Input
@@ -1017,17 +1095,19 @@ export function SchemesAdminEditor() {
                           <TableCell>{`${row.start_date || "-"} to ${row.end_date || "-"}`}</TableCell>
                           <TableCell>{row.is_active ? "Active" : "Inactive"}</TableCell>
                           <TableCell className="text-right">
-                            <div className="flex justify-end gap-2">
-                              <Button type="button" variant="outline" size="sm" onClick={() => openEditDialog(row)}>
-                                Edit
-                              </Button>
-                              <Button type="button" variant="outline" size="sm" onClick={() => void toggleSchemeStatus(row)}>
-                                {row.is_active ? "Deactivate" : "Activate"}
-                              </Button>
-                              <Button type="button" variant="outline" size="sm" onClick={() => void removeScheme(row)}>
-                                Delete
-                              </Button>
-                            </div>
+                            {canWriteSchemes ? (
+                              <div className="flex justify-end gap-2">
+                                <Button type="button" variant="outline" size="sm" onClick={() => openEditDialog(row)}>
+                                  Edit
+                                </Button>
+                                <Button type="button" variant="outline" size="sm" onClick={() => void toggleSchemeStatus(row)}>
+                                  {row.is_active ? "Deactivate" : "Activate"}
+                                </Button>
+                                <Button type="button" variant="outline" size="sm" onClick={() => void removeScheme(row)}>
+                                  Delete
+                                </Button>
+                              </div>
+                            ) : null}
                           </TableCell>
                         </TableRow>
                       ))

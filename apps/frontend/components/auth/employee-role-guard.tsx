@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { fetchPortalMe, readCachedPortalMe, readPortalSession } from "@/lib/backend-api";
+import { fetchPortalMe, readPortalSession } from "@/lib/backend-api";
 import { defaultRouteForEmployee, type EmployeeRole } from "@/lib/navigation";
 
 type EmployeeRoleGuardProps = {
@@ -13,14 +13,7 @@ type EmployeeRoleGuardProps = {
 
 export function EmployeeRoleGuard({ allow, children }: EmployeeRoleGuardProps) {
   const router = useRouter();
-  const [ready, setReady] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    const cachedMe = readCachedPortalMe();
-    const employeeRole = typeof cachedMe?.employee_role === "string" ? (cachedMe.employee_role as EmployeeRole) : null;
-    return Boolean(employeeRole && allow.includes(employeeRole));
-  });
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let active = true;

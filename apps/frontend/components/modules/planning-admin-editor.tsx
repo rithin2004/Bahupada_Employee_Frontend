@@ -5,7 +5,7 @@ import Link from "next/link";
 import { CalendarDays } from "lucide-react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, postBackend } from "@/lib/backend-api";
 import { usePersistedUiState } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -211,6 +211,9 @@ function mapDeliveryAssignment(row: Record<string, unknown>): DeliveryAssignment
 }
 
 export function PlanningAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadPlanning, setCanReadPlanning] = useState(false);
+  const [canWritePlanning, setCanWritePlanning] = useState(false);
   const { state, setState } = usePersistedUiState<PersistedPlannerState>("planning-admin", DEFAULT_STATE);
   const [mastersLoading, setMastersLoading] = useState(true);
   const [plansLoading, setPlansLoading] = useState(true);
@@ -526,6 +529,9 @@ export function PlanningAdminEditor() {
   const deliveryMissingVehicles = vehicles.length === 0;
 
   async function createVehicleInline() {
+    if (!canWritePlanning) {
+      return;
+    }
     setVehicleSubmitting(true);
     try {
       const payload = cleanPayload({
@@ -545,8 +551,45 @@ export function PlanningAdminEditor() {
     }
   }
 
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).planning);
+        if (!active) {
+          return;
+        }
+        setCanReadPlanning(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWritePlanning(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadPlanning(false);
+        setCanWritePlanning(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <div className="space-y-6">
+      {permissionsLoaded && !canReadPlanning ? (
+        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          You have no planning module access.
+        </p>
+      ) : null}
+      {permissionsLoaded && canReadPlanning && !canWritePlanning ? (
+        <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+          Read-only access. Plan creation, deletion, assignment changes, and quick vehicle creation are disabled.
+        </p>
+      ) : null}
       <Card>
         <CardHeader className="space-y-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -625,10 +668,10 @@ export function PlanningAdminEditor() {
                 </select>
               </div>
               <div className="flex items-end gap-2">
-                <Button onClick={() => void createPlan()} disabled={planCreating || plansLoading}>
+                <Button onClick={() => void createPlan()} disabled={!canWritePlanning || planCreating || plansLoading}>
                   {planCreating ? "Creating..." : "Create Plan"}
                 </Button>
-                <Button variant="outline" onClick={() => void deletePlan()} disabled={!selectedPlanId || planDeleting}>
+                <Button variant="outline" onClick={() => void deletePlan()} disabled={!canWritePlanning || !selectedPlanId || planDeleting}>
                   {planDeleting ? "Deleting..." : "Delete Plan"}
                 </Button>
               </div>
@@ -736,7 +779,7 @@ export function PlanningAdminEditor() {
                                         className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                                         value={assignment?.route_id ?? ""}
                                         onChange={(e) => void handleSalesmanRouteChange(dutyDate, employee.id, e.target.value)}
-                                        disabled={cellSaving}
+                                        disabled={!canWritePlanning || cellSaving}
                                       >
                                         <option value="">Unassigned</option>
                                         {routes.map((route) => (
@@ -787,10 +830,12 @@ export function PlanningAdminEditor() {
                           Delivery planning needs vehicles. Add a vehicle here and it will immediately appear in the planner.
                         </p>
                         <div className="flex gap-2">
-                          <Dialog open={openVehicleDialog} onOpenChange={setOpenVehicleDialog}>
-                            <DialogTrigger asChild>
-                              <Button variant="outline">Quick Add Vehicle</Button>
-                            </DialogTrigger>
+                          <Dialog open={openVehicleDialog} onOpenChange={(open) => setOpenVehicleDialog(canWritePlanning ? open : false)}>
+                            {canWritePlanning ? (
+                              <DialogTrigger asChild>
+                                <Button variant="outline">Quick Add Vehicle</Button>
+                              </DialogTrigger>
+                            ) : null}
                             <DialogContent className="sm:max-w-xl">
                               <DialogHeader>
                                 <DialogTitle>Create Vehicle</DialogTitle>
@@ -831,7 +876,7 @@ export function PlanningAdminEditor() {
                               <div className="flex justify-end">
                                 <Button
                                   onClick={() => void createVehicleInline()}
-                                  disabled={vehicleSubmitting || !vehicleForm.registration_no.trim()}
+                                  disabled={!canWritePlanning || vehicleSubmitting || !vehicleForm.registration_no.trim()}
                                 >
                                   {vehicleSubmitting ? "Creating..." : "Create Vehicle"}
                                 </Button>
@@ -889,7 +934,7 @@ export function PlanningAdminEditor() {
                                       className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                                       value={assignment?.vehicle_id ?? ""}
                                       onChange={(e) => void handleDeliveryFieldChange(dutyDate, "vehicle_id", e.target.value)}
-                                      disabled={savingCellKey === `delivery::${dutyDate}::vehicle_id`}
+                                      disabled={!canWritePlanning || savingCellKey === `delivery::${dutyDate}::vehicle_id`}
                                     >
                                       <option value="">Unassigned</option>
                                       {vehicles.map((vehicle) => (
@@ -905,7 +950,7 @@ export function PlanningAdminEditor() {
                                         className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                                         value={assignment?.[field] ?? ""}
                                         onChange={(e) => void handleDeliveryFieldChange(dutyDate, field, e.target.value)}
-                                        disabled={savingCellKey === `delivery::${dutyDate}::${field}`}
+                                        disabled={!canWritePlanning || savingCellKey === `delivery::${dutyDate}::${field}`}
                                       >
                                         <option value="">Unassigned</option>
                                         {deliveryEmployeeOptions.map((employee) => (

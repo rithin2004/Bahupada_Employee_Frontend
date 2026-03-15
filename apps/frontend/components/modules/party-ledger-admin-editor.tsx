@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, fetchBackend, fetchPortalMe, postBackend } from "@/lib/backend-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -82,6 +82,9 @@ function formatAmount(value: string): string {
 }
 
 export function PartyLedgerAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadLedger, setCanReadLedger] = useState(false);
+  const [canWriteLedger, setCanWriteLedger] = useState(false);
   const [tab, setTab] = useState<PartyKind>("VENDOR");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
@@ -104,6 +107,11 @@ export function PartyLedgerAdminEditor() {
   const [newCategoryDescription, setNewCategoryDescription] = useState("");
 
   async function loadAccounts(kind: PartyKind, term: string) {
+    if (!canReadLedger) {
+      setAccountsLoading(false);
+      setAccounts([]);
+      return;
+    }
     setAccountsLoading(true);
     setAccountsFeedback("");
     try {
@@ -142,6 +150,11 @@ export function PartyLedgerAdminEditor() {
   }
 
   async function loadStatement(account: AccountRow | null) {
+    if (!canReadLedger) {
+      setStatement(null);
+      setStatementFeedback("");
+      return;
+    }
     if (!account) {
       setStatement(null);
       setStatementFeedback("");
@@ -182,8 +195,39 @@ export function PartyLedgerAdminEditor() {
   }
 
   useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions)["credit-debit-notes"]);
+        if (!active) {
+          return;
+        }
+        setCanReadLedger(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteLedger(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadLedger(false);
+        setCanWriteLedger(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadLedger) {
+      setAccountsLoading(false);
+      return;
+    }
     void loadAccounts(tab, search);
-  }, [search, tab]);
+  }, [permissionsLoaded, canReadLedger, search, tab]);
 
   useEffect(() => {
     void loadStatement(selectedAccount);
@@ -199,6 +243,9 @@ export function PartyLedgerAdminEditor() {
   );
 
   async function submitPayment() {
+    if (!canWriteLedger) {
+      return;
+    }
     if (!selectedAccount) {
       toast.error("Select an account first.");
       return;
@@ -235,6 +282,9 @@ export function PartyLedgerAdminEditor() {
   }
 
   async function createAccountCategory() {
+    if (!canWriteLedger) {
+      return;
+    }
     if (!newCategoryCode.trim() || !newCategoryName.trim()) {
       toast.error("Category code and name are required.");
       return;
@@ -270,15 +320,27 @@ export function PartyLedgerAdminEditor() {
       </TabsList>
 
       <TabsContent value={tab} className="space-y-4">
+        {permissionsLoaded && !canReadLedger ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no credit/debit notes module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadLedger && !canWriteLedger ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Payment posting and account-category creation are hidden.
+          </p>
+        ) : null}
         <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between gap-2">
                 <CardTitle>{tab === "VENDOR" ? "Vendor Ledger Accounts" : "Customer Ledger Accounts"}</CardTitle>
-                <Dialog open={openCategoryDialog} onOpenChange={setOpenCategoryDialog}>
-                  <DialogTrigger asChild>
-                    <Button size="sm" variant="outline">+ Add Account Category</Button>
-                  </DialogTrigger>
+                <Dialog open={openCategoryDialog} onOpenChange={(open) => setOpenCategoryDialog(canWriteLedger ? open : false)}>
+                  {canWriteLedger ? (
+                    <DialogTrigger asChild>
+                      <Button size="sm" variant="outline">+ Add Account Category</Button>
+                    </DialogTrigger>
+                  ) : null}
                   <DialogContent className="w-[92vw] max-w-[520px]">
                     <DialogHeader>
                       <DialogTitle>Add {tab === "VENDOR" ? "Vendor" : "Customer"} Account Category</DialogTitle>
@@ -305,7 +367,7 @@ export function PartyLedgerAdminEditor() {
                       <Button
                         type="button"
                         onClick={() => void createAccountCategory()}
-                        disabled={creatingCategory || !newCategoryCode.trim() || !newCategoryName.trim()}
+                        disabled={!canWriteLedger || creatingCategory || !newCategoryCode.trim() || !newCategoryName.trim()}
                       >
                         {creatingCategory ? "Adding..." : "Add Account Category"}
                       </Button>
@@ -485,7 +547,7 @@ export function PartyLedgerAdminEditor() {
                     <Input value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="Optional note" />
                   </div>
                 </div>
-                <Button onClick={() => void submitPayment()} disabled={postingPayment || !selectedAccount}>
+                <Button onClick={() => void submitPayment()} disabled={!canWriteLedger || postingPayment || !selectedAccount}>
                   {postingPayment ? "Posting..." : tab === "VENDOR" ? "Record Payment" : "Record Receipt"}
                 </Button>
               </CardContent>

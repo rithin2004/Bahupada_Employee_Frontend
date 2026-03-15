@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +38,9 @@ type WarehouseRow = {
 const DEFAULT_PAGE_SIZE = 50;
 
 export function WarehousesAdminEditor() {
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadWarehouses, setCanReadWarehouses] = useState(false);
+  const [canWriteWarehouses, setCanWriteWarehouses] = useState(false);
   const [rows, setRows] = useState<WarehouseRow[]>([]);
   const [feedback, setFeedback] = useState("");
   const [loading, setLoading] = useState(true);
@@ -68,6 +71,11 @@ export function WarehousesAdminEditor() {
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
 
   async function load(page: number, pageSizeValue = pageSize) {
+    if (!canReadWarehouses) {
+      setLoading(false);
+      setRows([]);
+      return;
+    }
     setLoading(true);
     setFeedback("");
     try {
@@ -104,11 +112,45 @@ export function WarehousesAdminEditor() {
   }
 
   useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const permission = asObject(asObject(payload.admin_permissions).warehouses);
+        if (!active) {
+          return;
+        }
+        setCanReadWarehouses(isSuperAdmin || Boolean(permission.read) || Boolean(permission.write));
+        setCanWriteWarehouses(isSuperAdmin || Boolean(permission.write));
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setCanReadWarehouses(false);
+        setCanWriteWarehouses(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !canReadWarehouses) {
+      setLoading(false);
+      return;
+    }
     void load(currentPage, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, pageSize]);
+  }, [currentPage, pageSize, permissionsLoaded, canReadWarehouses]);
 
   async function createWarehouse() {
+    if (!canWriteWarehouses) {
+      return;
+    }
     if (!form.code.trim() || !form.name.trim()) {
       return;
     }
@@ -165,6 +207,9 @@ export function WarehousesAdminEditor() {
   }
 
   async function saveSelected() {
+    if (!canWriteWarehouses) {
+      return;
+    }
     if (!selected) {
       return;
     }
@@ -195,6 +240,9 @@ export function WarehousesAdminEditor() {
   }
 
   async function deleteSelected() {
+    if (!canWriteWarehouses) {
+      return;
+    }
     if (!selectedIds.length || loading) {
       return;
     }
@@ -220,13 +268,17 @@ export function WarehousesAdminEditor() {
         <div className="flex items-center justify-between gap-2">
           <CardTitle>Warehouses</CardTitle>
           <div className="flex items-center gap-2">
-            <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
-              Delete Selected
-            </Button>
-            <Dialog open={openAddDialog} onOpenChange={setOpenAddDialog}>
-              <DialogTrigger asChild>
-                <Button>Add Warehouse</Button>
-              </DialogTrigger>
+            {canWriteWarehouses ? (
+              <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
+                Delete Selected
+              </Button>
+            ) : null}
+            <Dialog open={openAddDialog} onOpenChange={(open) => setOpenAddDialog(canWriteWarehouses ? open : false)}>
+              {canWriteWarehouses ? (
+                <DialogTrigger asChild>
+                  <Button>Add Warehouse</Button>
+                </DialogTrigger>
+              ) : null}
               <DialogContent className="max-h-[85vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle>Add Warehouse</DialogTitle>
@@ -266,7 +318,7 @@ export function WarehousesAdminEditor() {
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button onClick={createWarehouse} disabled={creating || !form.code.trim() || !form.name.trim()}>
+                  <Button onClick={createWarehouse} disabled={!canWriteWarehouses || creating || !form.code.trim() || !form.name.trim()}>
                     {creating ? "Creating..." : "Create Warehouse"}
                   </Button>
                 </DialogFooter>
@@ -276,6 +328,16 @@ export function WarehousesAdminEditor() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {permissionsLoaded && !canReadWarehouses ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have no warehouses module access.
+          </p>
+        ) : null}
+        {permissionsLoaded && canReadWarehouses && !canWriteWarehouses ? (
+          <p className="rounded-md border/30 px-3 py-2 text-sm text-muted-foreground">
+            Read-only access. Create, edit, and delete actions are hidden.
+          </p>
+        ) : null}
         {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
 
         <div className="overflow-x-auto rounded-lg border">
@@ -328,12 +390,14 @@ export function WarehousesAdminEditor() {
                     <TableCell>{row.state || "-"}</TableCell>
                     <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                     <TableCell>
-                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(open ? row.id : null)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            Edit
-                          </Button>
-                        </DialogTrigger>
+                      <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteWarehouses && open ? row.id : null)}>
+                        {canWriteWarehouses ? (
+                          <DialogTrigger asChild>
+                            <Button size="sm" variant="outline">
+                              Edit
+                            </Button>
+                          </DialogTrigger>
+                        ) : null}
                         <DialogContent className="max-h-[85vh] overflow-y-auto">
                           <DialogHeader>
                             <DialogTitle>Edit Warehouse</DialogTitle>
@@ -384,7 +448,7 @@ export function WarehousesAdminEditor() {
                             </div>
                           ) : null}
                           <DialogFooter>
-                            <Button onClick={saveSelected} disabled={!selected || !selected.code.trim() || !selected.name.trim() || savingId === selected.id}>
+                            <Button onClick={saveSelected} disabled={!canWriteWarehouses || !selected || !selected.code.trim() || !selected.name.trim() || savingId === selected.id}>
                               {savingId === selected?.id ? "Saving..." : "Save"}
                             </Button>
                           </DialogFooter>

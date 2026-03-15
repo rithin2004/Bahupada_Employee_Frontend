@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "*"
 
     pagination_default_page_size: int = 50
-    pagination_max_page_size: int = 100
+    pagination_max_page_size: int = 1000
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_region: str | None = None
