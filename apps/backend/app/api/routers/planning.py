@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.models.entities import (
     DeliveryDailyAssignment,
@@ -34,7 +35,7 @@ from app.schemas.planning import (
 router = APIRouter()
 
 
-@router.get("/salesman/monthly-plans", response_model=list[SalesmanMonthlyPlanOut])
+@router.get("/salesman/monthly-plans", response_model=list[SalesmanMonthlyPlanOut], dependencies=[Depends(require_permission("planning", "read"))])
 async def list_salesman_monthly_plans(
     month: int | None = None,
     year: int | None = None,
@@ -49,7 +50,7 @@ async def list_salesman_monthly_plans(
     return (await db.execute(stmt)).scalars().all()
 
 
-@router.post("/salesman/monthly-plans", response_model=SalesmanMonthlyPlanOut)
+@router.post("/salesman/monthly-plans", response_model=SalesmanMonthlyPlanOut, dependencies=[Depends(require_permission("planning", "create"))])
 async def create_salesman_monthly_plan(payload: SalesmanMonthlyPlanCreate, db: AsyncSession = Depends(get_db)):
     plan = SalesmanMonthlyPlan(**payload.model_dump())
     db.add(plan)
@@ -62,7 +63,11 @@ async def create_salesman_monthly_plan(payload: SalesmanMonthlyPlanCreate, db: A
     return plan
 
 
-@router.delete("/salesman/monthly-plans/{monthly_plan_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/salesman/monthly-plans/{monthly_plan_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("planning", "delete"))],
+)
 async def delete_salesman_monthly_plan(
     monthly_plan_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -77,6 +82,7 @@ async def delete_salesman_monthly_plan(
 @router.post(
     "/salesman/monthly-plans/{monthly_plan_id}/assignments",
     response_model=SalesmanDailyAssignmentOut,
+    dependencies=[Depends(require_permission("planning", "update"))],
 )
 async def upsert_salesman_daily_assignment(
     monthly_plan_id: uuid.UUID,
@@ -123,6 +129,7 @@ async def upsert_salesman_daily_assignment(
 @router.get(
     "/salesman/monthly-plans/{monthly_plan_id}/assignments",
     response_model=list[SalesmanDailyAssignmentOut],
+    dependencies=[Depends(require_permission("planning", "read"))],
 )
 async def list_salesman_daily_assignments(
     monthly_plan_id: uuid.UUID,
@@ -139,6 +146,7 @@ async def list_salesman_daily_assignments(
 @router.delete(
     "/salesman/monthly-plans/{monthly_plan_id}/assignments/{assignment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("planning", "delete"))],
 )
 async def delete_salesman_daily_assignment(
     monthly_plan_id: uuid.UUID,
@@ -152,7 +160,7 @@ async def delete_salesman_daily_assignment(
     await db.commit()
 
 
-@router.get("/delivery/monthly-plans", response_model=list[DeliveryMonthlyPlanOut])
+@router.get("/delivery/monthly-plans", response_model=list[DeliveryMonthlyPlanOut], dependencies=[Depends(require_permission("planning", "read"))])
 async def list_delivery_monthly_plans(
     month: int | None = None,
     year: int | None = None,
@@ -167,7 +175,7 @@ async def list_delivery_monthly_plans(
     return (await db.execute(stmt)).scalars().all()
 
 
-@router.post("/delivery/monthly-plans", response_model=DeliveryMonthlyPlanOut)
+@router.post("/delivery/monthly-plans", response_model=DeliveryMonthlyPlanOut, dependencies=[Depends(require_permission("planning", "create"))])
 async def create_delivery_monthly_plan(payload: DeliveryMonthlyPlanCreate, db: AsyncSession = Depends(get_db)):
     plan = DeliveryMonthlyPlan(**payload.model_dump())
     db.add(plan)
@@ -180,7 +188,11 @@ async def create_delivery_monthly_plan(payload: DeliveryMonthlyPlanCreate, db: A
     return plan
 
 
-@router.delete("/delivery/monthly-plans/{monthly_plan_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/delivery/monthly-plans/{monthly_plan_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("planning", "delete"))],
+)
 async def delete_delivery_monthly_plan(
     monthly_plan_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -195,6 +207,7 @@ async def delete_delivery_monthly_plan(
 @router.post(
     "/delivery/monthly-plans/{monthly_plan_id}/assignments",
     response_model=DeliveryDailyAssignmentOut,
+    dependencies=[Depends(require_permission("planning", "update"))],
 )
 async def upsert_delivery_daily_assignment(
     monthly_plan_id: uuid.UUID,
@@ -257,6 +270,7 @@ async def upsert_delivery_daily_assignment(
 @router.get(
     "/delivery/monthly-plans/{monthly_plan_id}/assignments",
     response_model=list[DeliveryDailyAssignmentOut],
+    dependencies=[Depends(require_permission("planning", "read"))],
 )
 async def list_delivery_daily_assignments(
     monthly_plan_id: uuid.UUID,
@@ -273,6 +287,7 @@ async def list_delivery_daily_assignments(
 @router.get(
     "/delivery/assignments/by-day",
     response_model=list[DeliveryDailyAssignmentSummary],
+    dependencies=[Depends(require_permission("planning", "read"))],
 )
 async def list_delivery_assignments_by_day(
     duty_date: date,
@@ -330,6 +345,7 @@ async def list_delivery_assignments_by_day(
 @router.delete(
     "/delivery/monthly-plans/{monthly_plan_id}/assignments/{assignment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("planning", "delete"))],
 )
 async def delete_delivery_daily_assignment(
     monthly_plan_id: uuid.UUID,

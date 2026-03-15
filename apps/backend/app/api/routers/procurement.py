@@ -11,6 +11,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.models.entities import (
     InventoryBatch,
@@ -69,7 +70,7 @@ def _challan_batch_no(challan_id: uuid.UUID, line_number: int, created_at: datet
     return f"CHL-{ts.strftime('%Y%m%d-%H%M%S')}-{str(challan_id)[:4].upper()}-{line_number:03d}"
 
 
-@router.post("/purchase-challans")
+@router.post("/purchase-challans", dependencies=[Depends(require_permission("purchase", "create"))])
 async def create_purchase_challan(
     payload: PurchaseChallanCreate,
     db: AsyncSession = Depends(get_db),
@@ -148,7 +149,7 @@ async def create_purchase_challan(
     return response
 
 
-@router.get("/purchase-challans")
+@router.get("/purchase-challans", dependencies=[Depends(require_permission("purchase", "read"))])
 async def list_purchase_challans(db: AsyncSession = Depends(get_db)):
     challans = (
         await db.execute(select(PurchaseChallan).where(PurchaseChallan.deleted_at.is_(None)).order_by(PurchaseChallan.created_at.desc()))
@@ -196,7 +197,7 @@ async def list_purchase_challans(db: AsyncSession = Depends(get_db)):
     return response
 
 
-@router.get("/purchase-bills")
+@router.get("/purchase-bills", dependencies=[Depends(require_permission("purchase", "read"))])
 async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
     bills = (
         await db.execute(select(PurchaseBill).where(PurchaseBill.deleted_at.is_(None)).order_by(PurchaseBill.created_at.desc()))
@@ -227,7 +228,7 @@ async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
     return response
 
 
-@router.get("/stock-snapshot")
+@router.get("/stock-snapshot", dependencies=[Depends(require_permission("stock", "read"))])
 async def list_stock_snapshot(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -350,7 +351,7 @@ async def list_stock_snapshot(
     }
 
 
-@router.post("/purchase-bills")
+@router.post("/purchase-bills", dependencies=[Depends(require_permission("purchase", "create"))])
 async def create_purchase_bill(
     payload: PurchaseBillCreate,
     db: AsyncSession = Depends(get_db),
@@ -554,7 +555,7 @@ async def create_purchase_bill(
     return response
 
 
-@router.post("/purchase-bills/{purchase_bill_id}/post")
+@router.post("/purchase-bills/{purchase_bill_id}/post", dependencies=[Depends(require_permission("purchase", "update"))])
 async def post_bill(
     purchase_bill_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -582,7 +583,7 @@ async def post_bill(
     return response
 
 
-@router.post("/purchase-returns")
+@router.post("/purchase-returns", dependencies=[Depends(require_permission("purchase", "create"))])
 async def create_purchase_return(payload: PurchaseReturnCreate, db: AsyncSession = Depends(get_db)):
     row = PurchaseReturn(
         vendor_id=payload.vendor_id,
@@ -600,12 +601,12 @@ async def create_purchase_return(payload: PurchaseReturnCreate, db: AsyncSession
     return row
 
 
-@router.get("/purchase-returns")
+@router.get("/purchase-returns", dependencies=[Depends(require_permission("purchase", "read"))])
 async def list_purchase_returns(db: AsyncSession = Depends(get_db)):
     return (await db.execute(select(PurchaseReturn).where(PurchaseReturn.deleted_at.is_(None)))).scalars().all()
 
 
-@router.post("/purchase-expiries")
+@router.post("/purchase-expiries", dependencies=[Depends(require_permission("purchase", "create"))])
 async def create_purchase_expiry(payload: PurchaseExpiryCreate, db: AsyncSession = Depends(get_db)):
     row = PurchaseExpiry(
         vendor_id=payload.vendor_id,
@@ -623,12 +624,12 @@ async def create_purchase_expiry(payload: PurchaseExpiryCreate, db: AsyncSession
     return row
 
 
-@router.get("/purchase-expiries")
+@router.get("/purchase-expiries", dependencies=[Depends(require_permission("purchase", "read"))])
 async def list_purchase_expiries(db: AsyncSession = Depends(get_db)):
     return (await db.execute(select(PurchaseExpiry).where(PurchaseExpiry.deleted_at.is_(None)))).scalars().all()
 
 
-@router.post("/warehouse-transfers")
+@router.post("/warehouse-transfers", dependencies=[Depends(require_permission("stock", "create"))])
 async def create_warehouse_transfer(payload: WarehouseTransferCreate, db: AsyncSession = Depends(get_db)):
     if payload.from_warehouse_id == payload.to_warehouse_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="from_warehouse_id and to_warehouse_id must differ")
@@ -646,12 +647,12 @@ async def create_warehouse_transfer(payload: WarehouseTransferCreate, db: AsyncS
     return row
 
 
-@router.get("/warehouse-transfers")
+@router.get("/warehouse-transfers", dependencies=[Depends(require_permission("stock", "read"))])
 async def list_warehouse_transfers(db: AsyncSession = Depends(get_db)):
     return (await db.execute(select(WarehouseTransfer).where(WarehouseTransfer.deleted_at.is_(None)))).scalars().all()
 
 
-@router.post("/reorder-logs")
+@router.post("/reorder-logs", dependencies=[Depends(require_permission("stock", "create"))])
 async def create_reorder_log(payload: ReorderLogCreate, db: AsyncSession = Depends(get_db)):
     row = ReorderLog(
         brand=payload.brand,
@@ -671,6 +672,6 @@ async def create_reorder_log(payload: ReorderLogCreate, db: AsyncSession = Depen
     return row
 
 
-@router.get("/reorder-logs")
+@router.get("/reorder-logs", dependencies=[Depends(require_permission("stock", "read"))])
 async def list_reorder_logs(db: AsyncSession = Depends(get_db)):
     return (await db.execute(select(ReorderLog))).scalars().all()

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import get_db
+from app.api.routers.auth import require_permission, require_super_admin
 from app.models.entities import (
     AccountCategory,
     AccountType,
@@ -32,8 +33,11 @@ from app.models.entities import (
     ProductCategory,
     ProductSubCategory,
     Product,
+    Permission,
+    PortalScope,
     Rack,
     Role,
+    RolePermission,
     RouteMaster,
     Unit,
     User,
@@ -44,6 +48,10 @@ from app.models.entities import (
 from app.schemas.masters import (
     AccountCategoryCreate,
     AccountCategoryUpdate,
+    AdminRoleCreate,
+    AdminRoleUpdate,
+    AdminUserCreate,
+    AdminUserUpdate,
     AreaCreate,
     AreaUpdate,
     CompanyCreate,
@@ -82,6 +90,27 @@ from app.services.s3_storage import upload_customer_doc
 
 router = APIRouter()
 
+ADMIN_PERMISSION_MODULES: list[tuple[str, str]] = [
+    ("dashboard", "Dashboard"),
+    ("purchase", "Purchase Module"),
+    ("stock", "Stock Module"),
+    ("products", "Products"),
+    ("warehouses", "Warehouse Module"),
+    ("sales", "Sales Module"),
+    ("sales-invoices", "Sales Invoices"),
+    ("planning", "Planner Module"),
+    ("areas", "Areas Module"),
+    ("routes", "Routes Module"),
+    ("vehicles", "Vehicles Module"),
+    ("schemes", "Schemes Module"),
+    ("price", "Price Module"),
+    ("credit-debit-notes", "Credit Debit Notes"),
+    ("customers", "Customers Module"),
+    ("employees", "Employees Module"),
+    ("vendors", "Vendor Module"),
+    ("delivery", "Delivery Workflow"),
+]
+
 
 async def _paginate(db: AsyncSession, stmt, page: int, page_size: int):
     # Count from the lightest possible subquery: remove ordering and replace the
@@ -101,6 +130,99 @@ async def _paginate(db: AsyncSession, stmt, page: int, page_size: int):
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
+
+async def _ensure_permission_record(db: AsyncSession, module_name: str, action_name: str) -> Permission:
+    record = (
+        await db.execute(
+            select(Permission).where(Permission.module_name == module_name, Permission.action_name == action_name).limit(1)
+        )
+    ).scalar_one_or_none()
+    if record is not None:
+        return record
+    record = Permission(
+        module_name=module_name,
+        action_name=action_name,
+        description=f"{module_name}.{action_name} permission",
+    )
+    db.add(record)
+    await db.flush()
+    return record
+
+
+async def _load_role_permission_matrix(db: AsyncSession, role_id: uuid.UUID) -> dict[str, dict[str, bool]]:
+    rows = (
+        await db.execute(
+            select(Permission.module_name, Permission.action_name, RolePermission)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .where(RolePermission.role_id == role_id)
+        )
+    ).all()
+    matrix: dict[str, dict[str, bool]] = {module_name: {"read": False, "write": False} for module_name, _ in ADMIN_PERMISSION_MODULES}
+    for module_name, action_name, mapping in rows:
+        access = matrix.setdefault(str(module_name), {"read": False, "write": False})
+        if str(action_name) == "read" and mapping.can_read:
+            access["read"] = True
+        if str(action_name) in {"create", "update", "delete"} and (mapping.can_create or mapping.can_update or mapping.can_delete):
+            access["write"] = True
+            access["read"] = True
+    return matrix
+
+
+async def _apply_admin_role_permissions(
+    db: AsyncSession,
+    role: Role,
+    permissions: dict[str, dict[str, bool]] | dict[str, object],
+) -> None:
+    for module_name, _label in ADMIN_PERMISSION_MODULES:
+        raw_config = permissions.get(module_name, {}) if isinstance(permissions, dict) else {}
+        config = raw_config if isinstance(raw_config, dict) else {}
+        read_allowed = bool(config.get("read", False) or config.get("write", False))
+        write_allowed = bool(config.get("write", False))
+        for action_name in ("create", "read", "update", "delete"):
+            permission = await _ensure_permission_record(db, module_name, action_name)
+            mapping = (
+                await db.execute(
+                    select(RolePermission)
+                    .where(RolePermission.role_id == role.id, RolePermission.permission_id == permission.id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if mapping is None:
+                mapping = RolePermission(role_id=role.id, permission_id=permission.id)
+                db.add(mapping)
+            mapping.can_read = read_allowed
+            mapping.can_create = write_allowed
+            mapping.can_update = write_allowed
+            mapping.can_delete = write_allowed
+
+
+async def _ensure_admin_role(db: AsyncSession, role_id: uuid.UUID) -> Role:
+    role = await db.get(Role, role_id)
+    role_scope = getattr(role.portal_scope, "value", role.portal_scope) if role is not None else None
+    if role is None or not role.is_active or role_scope != PortalScope.ADMIN.value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid admin role")
+    if role.role_name == "SUPER_ADMIN":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SUPER_ADMIN cannot be assigned as a normal admin role")
+    return role
+
+
+async def _create_internal_admin_role(
+    db: AsyncSession,
+    *,
+    employee_name: str,
+    permissions: dict[str, dict[str, bool]] | dict[str, object],
+) -> Role:
+    role = Role(
+        role_name=f"ADMIN_USER_{uuid.uuid4().hex[:12].upper()}",
+        portal_scope=PortalScope.ADMIN,
+        description=f"Internal admin access profile for {employee_name}",
+        is_active=True,
+    )
+    db.add(role)
+    await db.flush()
+    await _apply_admin_role_permissions(db, role, permissions)
+    return role
 
 
 def _encode_products_cursor(created_at: datetime, product_id: str) -> str:
@@ -196,7 +318,7 @@ async def create_company(payload: CompanyCreate, db: AsyncSession = Depends(get_
     return obj
 
 
-@router.post("/areas")
+@router.post("/areas", dependencies=[Depends(require_permission("areas", "create"))])
 async def create_area(payload: AreaCreate, db: AsyncSession = Depends(get_db)):
     obj = AreaMaster(**payload.model_dump())
     db.add(obj)
@@ -205,7 +327,7 @@ async def create_area(payload: AreaCreate, db: AsyncSession = Depends(get_db)):
     return obj
 
 
-@router.post("/routes")
+@router.post("/routes", dependencies=[Depends(require_permission("routes", "create"))])
 async def create_route(payload: RouteCreate, db: AsyncSession = Depends(get_db)):
     obj = RouteMaster(**payload.model_dump())
     db.add(obj)
@@ -214,7 +336,7 @@ async def create_route(payload: RouteCreate, db: AsyncSession = Depends(get_db))
     return obj
 
 
-@router.post("/warehouses")
+@router.post("/warehouses", dependencies=[Depends(require_permission("warehouses", "create"))])
 async def create_warehouse(payload: WarehouseCreate, db: AsyncSession = Depends(get_db)):
     obj = Warehouse(**payload.model_dump())
     db.add(obj)
@@ -223,7 +345,7 @@ async def create_warehouse(payload: WarehouseCreate, db: AsyncSession = Depends(
     return obj
 
 
-@router.post("/racks")
+@router.post("/racks", dependencies=[Depends(require_permission("warehouses", "create"))])
 async def create_rack(payload: RackCreate, db: AsyncSession = Depends(get_db)):
     obj = Rack(**payload.model_dump())
     db.add(obj)
@@ -232,7 +354,7 @@ async def create_rack(payload: RackCreate, db: AsyncSession = Depends(get_db)):
     return obj
 
 
-@router.post("/vehicles")
+@router.post("/vehicles", dependencies=[Depends(require_permission("vehicles", "create"))])
 async def create_vehicle(payload: VehicleCreate, db: AsyncSession = Depends(get_db)):
     obj = Vehicle(**payload.model_dump())
     db.add(obj)
@@ -241,7 +363,7 @@ async def create_vehicle(payload: VehicleCreate, db: AsyncSession = Depends(get_
     return obj
 
 
-@router.post("/employees")
+@router.post("/employees", dependencies=[Depends(require_permission("employees", "create"))])
 async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(get_db)):
     data = payload.model_dump()
     username = data.pop("username", None)
@@ -264,7 +386,7 @@ async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(ge
     return obj
 
 
-@router.post("/products")
+@router.post("/products", dependencies=[Depends(require_permission("products", "create"))])
 async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_db)):
     data = await _apply_product_reference_fields(db, payload.model_dump())
     obj = Product(**data)
@@ -274,7 +396,7 @@ async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_
     return obj
 
 
-@router.post("/vendors")
+@router.post("/vendors", dependencies=[Depends(require_permission("vendors", "create"))])
 async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db)):
     await _require_account_category(db, payload.account_category_id, party_type="VENDOR")
     data = payload.model_dump()
@@ -288,7 +410,7 @@ async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db
     return obj
 
 
-@router.post("/customer-documents/upload")
+@router.post("/customer-documents/upload", dependencies=[Depends(require_permission("customers", "update"))])
 async def upload_customer_document(
     doc_type: str = Query(..., pattern="^(pan_doc|gst_doc)$"),
     file: UploadFile = File(...),
@@ -297,7 +419,7 @@ async def upload_customer_document(
     return {"path": object_key, "url": public_url}
 
 
-@router.post("/customers")
+@router.post("/customers", dependencies=[Depends(require_permission("customers", "create"))])
 async def create_customer(payload: CustomerCreate, db: AsyncSession = Depends(get_db)):
     data = payload.model_dump()
     username = data.pop("username", None)
@@ -337,7 +459,7 @@ async def create_customer(payload: CustomerCreate, db: AsyncSession = Depends(ge
     return obj
 
 
-@router.post("/units")
+@router.post("/units", dependencies=[Depends(require_permission("products", "create"))])
 async def create_unit(payload: UnitCreate, db: AsyncSession = Depends(get_db)):
     obj = Unit(**payload.model_dump())
     db.add(obj)
@@ -346,7 +468,7 @@ async def create_unit(payload: UnitCreate, db: AsyncSession = Depends(get_db)):
     return obj
 
 
-@router.post("/hsn")
+@router.post("/hsn", dependencies=[Depends(require_permission("products", "create"))])
 async def create_hsn(payload: HSNMasterCreate, db: AsyncSession = Depends(get_db)):
     obj = HSNMaster(**payload.model_dump())
     db.add(obj)
@@ -355,7 +477,7 @@ async def create_hsn(payload: HSNMasterCreate, db: AsyncSession = Depends(get_db
     return obj
 
 
-@router.post("/product-brands")
+@router.post("/product-brands", dependencies=[Depends(require_permission("products", "create"))])
 async def create_product_brand(payload: ProductBrandCreate, db: AsyncSession = Depends(get_db)):
     obj = ProductBrand(**payload.model_dump())
     db.add(obj)
@@ -364,7 +486,7 @@ async def create_product_brand(payload: ProductBrandCreate, db: AsyncSession = D
     return obj
 
 
-@router.post("/product-categories")
+@router.post("/product-categories", dependencies=[Depends(require_permission("products", "create"))])
 async def create_product_category(payload: ProductCategoryCreate, db: AsyncSession = Depends(get_db)):
     obj = ProductCategory(**payload.model_dump())
     db.add(obj)
@@ -373,7 +495,7 @@ async def create_product_category(payload: ProductCategoryCreate, db: AsyncSessi
     return obj
 
 
-@router.post("/product-sub-categories")
+@router.post("/product-sub-categories", dependencies=[Depends(require_permission("products", "create"))])
 async def create_product_sub_category(payload: ProductSubCategoryCreate, db: AsyncSession = Depends(get_db)):
     if payload.category_id is not None:
         await _require_active_lookup(db, ProductCategory, payload.category_id, "category_id")
@@ -384,7 +506,7 @@ async def create_product_sub_category(payload: ProductSubCategoryCreate, db: Asy
     return obj
 
 
-@router.get("/products")
+@router.get("/products", dependencies=[Depends(require_permission("products", "read"))])
 async def list_products(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -530,7 +652,7 @@ async def list_products(
     }
 
 
-@router.get("/pricing")
+@router.get("/pricing", dependencies=[Depends(require_permission("price", "read"))])
 async def list_pricing(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -570,7 +692,7 @@ async def list_pricing(
     }
 
 
-@router.get("/customers")
+@router.get("/customers", dependencies=[Depends(require_permission("customers", "read"))])
 async def list_customers(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -625,7 +747,7 @@ async def list_customers(
     }
 
 
-@router.post("/customer-categories")
+@router.post("/customer-categories", dependencies=[Depends(require_permission("customers", "create"))])
 async def create_customer_category(payload: CustomerCategoryCreate, db: AsyncSession = Depends(get_db)):
     obj = CustomerCategory(**payload.model_dump())
     db.add(obj)
@@ -634,7 +756,7 @@ async def create_customer_category(payload: CustomerCategoryCreate, db: AsyncSes
     return obj
 
 
-@router.post("/account-categories")
+@router.post("/account-categories", dependencies=[Depends(require_permission("credit-debit-notes", "create"))])
 async def create_account_category(payload: AccountCategoryCreate, db: AsyncSession = Depends(get_db)):
     obj = AccountCategory(**payload.model_dump())
     db.add(obj)
@@ -643,7 +765,7 @@ async def create_account_category(payload: AccountCategoryCreate, db: AsyncSessi
     return obj
 
 
-@router.post("/roles")
+@router.post("/roles", dependencies=[Depends(require_permission("employees", "create"))])
 async def create_role(payload: RoleCreate, db: AsyncSession = Depends(get_db)):
     obj = Role(**payload.model_dump())
     db.add(obj)
@@ -652,7 +774,91 @@ async def create_role(payload: RoleCreate, db: AsyncSession = Depends(get_db)):
     return obj
 
 
-@router.get("/customer-categories")
+@router.get("/admin-permissions", dependencies=[Depends(require_super_admin)])
+async def list_admin_permissions():
+    return {
+        "items": [
+            {"module_name": module_name, "label": label}
+            for module_name, label in ADMIN_PERMISSION_MODULES
+        ]
+    }
+
+
+@router.get("/admin-roles", dependencies=[Depends(require_super_admin)])
+async def list_admin_roles(db: AsyncSession = Depends(get_db)):
+    rows = (
+        await db.execute(select(Role).where(Role.portal_scope == PortalScope.ADMIN, Role.is_active.is_(True)).order_by(Role.role_name.asc()))
+    ).scalars().all()
+    items = []
+    for row in rows:
+        if row.role_name == "SUPER_ADMIN":
+            continue
+        items.append(
+            {
+                "id": str(row.id),
+                "role_name": row.role_name,
+                "description": row.description,
+                "is_active": bool(row.is_active),
+                "permissions": await _load_role_permission_matrix(db, row.id),
+            }
+        )
+    return {"items": items}
+
+
+@router.post("/admin-roles", dependencies=[Depends(require_super_admin)])
+async def create_admin_role(payload: AdminRoleCreate, db: AsyncSession = Depends(get_db)):
+    role_name = payload.role_name.strip()
+    if not role_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_name is required")
+    existing = (
+        await db.execute(select(Role).where(Role.role_name == role_name, Role.portal_scope == PortalScope.ADMIN).limit(1))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Admin role already exists")
+    obj = Role(role_name=role_name, portal_scope=PortalScope.ADMIN, description=payload.description, is_active=payload.is_active)
+    db.add(obj)
+    await db.flush()
+    await _apply_admin_role_permissions(db, obj, payload.model_dump()["permissions"])
+    await db.commit()
+    await db.refresh(obj)
+    return {
+        "id": str(obj.id),
+        "role_name": obj.role_name,
+        "description": obj.description,
+        "is_active": bool(obj.is_active),
+        "permissions": await _load_role_permission_matrix(db, obj.id),
+    }
+
+
+@router.patch("/admin-roles/{role_id}", dependencies=[Depends(require_super_admin)])
+async def patch_admin_role(role_id: str, payload: AdminRoleUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _ensure_admin_role(db, uuid.UUID(role_id))
+    if obj.role_name == "ADMIN" and "role_name" in payload.model_dump(exclude_unset=True):
+        requested_name = (payload.role_name or "").strip()
+        if requested_name != "ADMIN":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default ADMIN role cannot be renamed")
+    data = payload.model_dump(exclude_unset=True)
+    permissions = data.pop("permissions", None)
+    if "role_name" in data and data["role_name"]:
+        obj.role_name = data["role_name"].strip()
+    if "description" in data:
+        obj.description = data["description"]
+    if "is_active" in data:
+        obj.is_active = bool(data["is_active"])
+    if permissions is not None:
+        await _apply_admin_role_permissions(db, obj, permissions)
+    await db.commit()
+    await db.refresh(obj)
+    return {
+        "id": str(obj.id),
+        "role_name": obj.role_name,
+        "description": obj.description,
+        "is_active": bool(obj.is_active),
+        "permissions": await _load_role_permission_matrix(db, obj.id),
+    }
+
+
+@router.get("/customer-categories", dependencies=[Depends(require_permission("customers", "read"))])
 async def list_customer_categories(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -662,7 +868,7 @@ async def list_customer_categories(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/account-categories")
+@router.get("/account-categories", dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
 async def list_account_categories(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -680,7 +886,7 @@ async def list_account_categories(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/warehouses")
+@router.get("/warehouses", dependencies=[Depends(require_permission("warehouses", "read"))])
 async def list_warehouses(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -690,7 +896,7 @@ async def list_warehouses(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/racks")
+@router.get("/racks", dependencies=[Depends(require_permission("warehouses", "read"))])
 async def list_racks(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -710,7 +916,7 @@ async def list_racks(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/vendors")
+@router.get("/vendors", dependencies=[Depends(require_permission("vendors", "read"))])
 async def list_vendors(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -769,7 +975,7 @@ async def list_vendors(
     }
 
 
-@router.get("/areas")
+@router.get("/areas", dependencies=[Depends(require_permission("areas", "read"))])
 async def list_areas(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -791,7 +997,7 @@ async def list_areas(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/routes")
+@router.get("/routes", dependencies=[Depends(require_permission("routes", "read"))])
 async def list_routes(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -834,7 +1040,7 @@ async def list_routes(
     }
 
 
-@router.get("/units")
+@router.get("/units", dependencies=[Depends(require_permission("products", "read"))])
 async def list_units(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -849,35 +1055,35 @@ async def list_units(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/product-brands")
+@router.get("/product-brands", dependencies=[Depends(require_permission("products", "read"))])
 async def list_product_brands(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(ProductBrand)
+    stmt = select(ProductBrand).where(ProductBrand.is_active == True)
     if search and search.strip():
         stmt = stmt.where(ProductBrand.name.ilike(f"%{search.strip()}%"))
     stmt = stmt.order_by(ProductBrand.name.asc())
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/product-categories")
+@router.get("/product-categories", dependencies=[Depends(require_permission("products", "read"))])
 async def list_product_categories(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(ProductCategory)
+    stmt = select(ProductCategory).where(ProductCategory.is_active == True)
     if search and search.strip():
         stmt = stmt.where(ProductCategory.name.ilike(f"%{search.strip()}%"))
     stmt = stmt.order_by(ProductCategory.name.asc())
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/product-sub-categories")
+@router.get("/product-sub-categories", dependencies=[Depends(require_permission("products", "read"))])
 async def list_product_sub_categories(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -896,6 +1102,7 @@ async def list_product_sub_categories(
         )
         .select_from(ProductSubCategory)
         .outerjoin(ProductCategory, ProductCategory.id == ProductSubCategory.category_id)
+        .where(ProductSubCategory.is_active == True)
     )
     if category_id:
         stmt = stmt.where(ProductSubCategory.category_id == uuid.UUID(category_id))
@@ -917,7 +1124,7 @@ async def list_product_sub_categories(
     }
 
 
-@router.get("/roles")
+@router.get("/roles", dependencies=[Depends(require_permission("employees", "read"))])
 async def list_roles(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -931,14 +1138,14 @@ async def list_roles(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/hsn")
+@router.get("/hsn", dependencies=[Depends(require_permission("products", "read"))])
 async def list_hsn(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(HSNMaster)
+    stmt = select(HSNMaster).where(HSNMaster.is_active == True)
     if search and search.strip():
         q = f"%{search.strip()}%"
         stmt = stmt.where(or_(HSNMaster.hsn_code.ilike(q), HSNMaster.description.ilike(q)))
@@ -946,7 +1153,7 @@ async def list_hsn(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/employees")
+@router.get("/employees", dependencies=[Depends(require_permission("employees", "read"))])
 async def list_employees(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -1007,7 +1214,77 @@ async def list_employees(
     }
 
 
-@router.get("/vehicles")
+@router.get("/admin-users", dependencies=[Depends(require_super_admin)])
+async def list_admin_users(db: AsyncSession = Depends(get_db)):
+    stmt = (
+        select(
+            Employee.id.label("employee_id"),
+            Employee.full_name.label("full_name"),
+            Employee.phone.label("phone"),
+            Employee.alternate_phone.label("alternate_phone"),
+            Employee.email.label("email"),
+            Employee.warehouse_id.label("warehouse_id"),
+            Warehouse.name.label("warehouse_name"),
+            Employee.is_active.label("is_active"),
+            User.id.label("user_id"),
+            User.username.label("username"),
+            User.is_super_admin.label("is_super_admin"),
+            Role.id.label("role_id"),
+            Role.role_name.label("role_name"),
+        )
+        .select_from(Employee)
+        .join(Warehouse, Warehouse.id == Employee.warehouse_id)
+        .join(User, User.employee_id == Employee.id)
+        .outerjoin(Role, Role.id == Employee.role_id)
+        .where(Employee.role == EmployeeRole.ADMIN)
+        .order_by(User.is_super_admin.desc(), Employee.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).mappings().all()
+    items: list[dict[str, object]] = []
+    for row in rows:
+        data = dict(row)
+        role_id = data.get("role_id")
+        data["permissions"] = await _load_role_permission_matrix(db, role_id) if role_id else {}
+        items.append(data)
+    return {"items": items}
+
+
+@router.post("/admin-users", dependencies=[Depends(require_super_admin)])
+async def create_admin_user(payload: AdminUserCreate, db: AsyncSession = Depends(get_db)):
+    assigned_role = await _ensure_admin_role(db, payload.role_id) if payload.role_id is not None else await _create_internal_admin_role(
+        db,
+        employee_name=payload.full_name.strip(),
+        permissions=payload.permissions,
+    )
+    employee = Employee(
+        warehouse_id=payload.warehouse_id,
+        role_id=assigned_role.id,
+        full_name=payload.full_name.strip(),
+        name=payload.full_name.strip(),
+        role=EmployeeRole.ADMIN,
+        phone=payload.phone.strip(),
+        alternate_phone=(payload.alternate_phone or "").strip() or None,
+        email=(payload.email or "").strip() or None,
+        is_active=payload.is_active,
+    )
+    db.add(employee)
+    await db.flush()
+    await _upsert_employee_credentials(db, employee, payload.username, payload.password)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Admin credentials already exist") from exc
+    await db.refresh(employee)
+    return {
+        "employee_id": str(employee.id),
+        "role_id": str(assigned_role.id),
+        "role_name": assigned_role.role_name,
+        "permissions": await _load_role_permission_matrix(db, assigned_role.id),
+    }
+
+
+@router.get("/vehicles", dependencies=[Depends(require_permission("vehicles", "read"))])
 async def list_vehicles(
     page: int = Query(1, ge=1),
     page_size: int = Query(settings.pagination_default_page_size, ge=1, le=settings.pagination_max_page_size),
@@ -1027,17 +1304,17 @@ async def list_vehicles(
     return await _paginate(db, stmt, page, page_size)
 
 
-@router.get("/routes/{route_id}")
+@router.get("/routes/{route_id}", dependencies=[Depends(require_permission("routes", "read"))])
 async def get_route(route_id: str, db: AsyncSession = Depends(get_db)):
     return await _get_or_404(db, RouteMaster, uuid.UUID(route_id), "Route")
 
 
-@router.get("/areas/{area_id}")
+@router.get("/areas/{area_id}", dependencies=[Depends(require_permission("areas", "read"))])
 async def get_area(area_id: str, db: AsyncSession = Depends(get_db)):
     return await _get_or_404(db, AreaMaster, uuid.UUID(area_id), "Area")
 
 
-@router.patch("/areas/{area_id}")
+@router.patch("/areas/{area_id}", dependencies=[Depends(require_permission("areas", "update"))])
 async def patch_area(area_id: str, payload: AreaUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, AreaMaster, uuid.UUID(area_id), "Area")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1047,7 +1324,7 @@ async def patch_area(area_id: str, payload: AreaUpdate, db: AsyncSession = Depen
     return obj
 
 
-@router.delete("/areas/{area_id}")
+@router.delete("/areas/{area_id}", dependencies=[Depends(require_permission("areas", "delete"))])
 async def deactivate_area(area_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, AreaMaster, uuid.UUID(area_id), "Area")
     obj.is_active = False
@@ -1055,7 +1332,7 @@ async def deactivate_area(area_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.patch("/routes/{route_id}")
+@router.patch("/routes/{route_id}", dependencies=[Depends(require_permission("routes", "update"))])
 async def patch_route(route_id: str, payload: RouteUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, RouteMaster, uuid.UUID(route_id), "Route")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1065,7 +1342,7 @@ async def patch_route(route_id: str, payload: RouteUpdate, db: AsyncSession = De
     return obj
 
 
-@router.delete("/routes/{route_id}")
+@router.delete("/routes/{route_id}", dependencies=[Depends(require_permission("routes", "delete"))])
 async def deactivate_route(route_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, RouteMaster, uuid.UUID(route_id), "Route")
     obj.is_active = False
@@ -1073,12 +1350,12 @@ async def deactivate_route(route_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.get("/vehicles/{vehicle_id}")
+@router.get("/vehicles/{vehicle_id}", dependencies=[Depends(require_permission("vehicles", "read"))])
 async def get_vehicle(vehicle_id: str, db: AsyncSession = Depends(get_db)):
     return await _get_or_404(db, Vehicle, uuid.UUID(vehicle_id), "Vehicle")
 
 
-@router.patch("/vehicles/{vehicle_id}")
+@router.patch("/vehicles/{vehicle_id}", dependencies=[Depends(require_permission("vehicles", "update"))])
 async def patch_vehicle(vehicle_id: str, payload: VehicleUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, Vehicle, uuid.UUID(vehicle_id), "Vehicle")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1088,7 +1365,7 @@ async def patch_vehicle(vehicle_id: str, payload: VehicleUpdate, db: AsyncSessio
     return obj
 
 
-@router.delete("/vehicles/{vehicle_id}")
+@router.delete("/vehicles/{vehicle_id}", dependencies=[Depends(require_permission("vehicles", "delete"))])
 async def deactivate_vehicle(vehicle_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, Vehicle, uuid.UUID(vehicle_id), "Vehicle")
     obj.is_active = False
@@ -1195,14 +1472,14 @@ async def _upsert_customer_credentials(
         user.password_hash = hash_password(password.strip())
 
 
-@router.get("/products/{product_id}")
+@router.get("/products/{product_id}", dependencies=[Depends(require_permission("products", "read"))])
 async def get_product(product_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
     return await _get_or_404(db, Product, uuid.UUID(product_id), "Product")
 
 
-@router.patch("/products/{product_id}")
+@router.patch("/products/{product_id}", dependencies=[Depends(require_permission("products", "update"))])
 async def patch_product(product_id: str, payload: ProductUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1243,7 +1520,7 @@ async def patch_product(product_id: str, payload: ProductUpdate, db: AsyncSessio
     return obj
 
 
-@router.delete("/products/{product_id}")
+@router.delete("/products/{product_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def deactivate_product(product_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1253,14 +1530,14 @@ async def deactivate_product(product_id: str, db: AsyncSession = Depends(get_db)
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.get("/customers/{customer_id}")
+@router.get("/customers/{customer_id}", dependencies=[Depends(require_permission("customers", "read"))])
 async def get_customer(customer_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
     return await _get_or_404(db, Customer, uuid.UUID(customer_id), "Customer")
 
 
-@router.patch("/customers/{customer_id}")
+@router.patch("/customers/{customer_id}", dependencies=[Depends(require_permission("customers", "update"))])
 async def patch_customer(customer_id: str, payload: CustomerUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1294,7 +1571,7 @@ async def patch_customer(customer_id: str, payload: CustomerUpdate, db: AsyncSes
     return obj
 
 
-@router.patch("/customer-categories/{category_id}")
+@router.patch("/customer-categories/{category_id}", dependencies=[Depends(require_permission("customers", "update"))])
 async def patch_customer_category(category_id: str, payload: CustomerCategoryUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1306,7 +1583,7 @@ async def patch_customer_category(category_id: str, payload: CustomerCategoryUpd
     return obj
 
 
-@router.delete("/customers/{customer_id}")
+@router.delete("/customers/{customer_id}", dependencies=[Depends(require_permission("customers", "delete"))])
 async def deactivate_customer(customer_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1319,14 +1596,14 @@ async def deactivate_customer(customer_id: str, db: AsyncSession = Depends(get_d
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.get("/warehouses/{warehouse_id}")
+@router.get("/warehouses/{warehouse_id}", dependencies=[Depends(require_permission("warehouses", "read"))])
 async def get_warehouse(warehouse_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
     return await _get_or_404(db, Warehouse, uuid.UUID(warehouse_id), "Warehouse")
 
 
-@router.patch("/warehouses/{warehouse_id}")
+@router.patch("/warehouses/{warehouse_id}", dependencies=[Depends(require_permission("warehouses", "update"))])
 async def patch_warehouse(warehouse_id: str, payload: WarehouseUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1338,7 +1615,7 @@ async def patch_warehouse(warehouse_id: str, payload: WarehouseUpdate, db: Async
     return obj
 
 
-@router.delete("/warehouses/{warehouse_id}")
+@router.delete("/warehouses/{warehouse_id}", dependencies=[Depends(require_permission("warehouses", "delete"))])
 async def deactivate_warehouse(warehouse_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1348,14 +1625,14 @@ async def deactivate_warehouse(warehouse_id: str, db: AsyncSession = Depends(get
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.get("/racks/{rack_id}")
+@router.get("/racks/{rack_id}", dependencies=[Depends(require_permission("warehouses", "read"))])
 async def get_rack(rack_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
     return await _get_or_404(db, Rack, uuid.UUID(rack_id), "Rack")
 
 
-@router.patch("/racks/{rack_id}")
+@router.patch("/racks/{rack_id}", dependencies=[Depends(require_permission("warehouses", "update"))])
 async def patch_rack(rack_id: str, payload: RackUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1367,7 +1644,7 @@ async def patch_rack(rack_id: str, payload: RackUpdate, db: AsyncSession = Depen
     return obj
 
 
-@router.delete("/racks/{rack_id}")
+@router.delete("/racks/{rack_id}", dependencies=[Depends(require_permission("warehouses", "delete"))])
 async def deactivate_rack(rack_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1377,14 +1654,14 @@ async def deactivate_rack(rack_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.get("/vendors/{vendor_id}")
+@router.get("/vendors/{vendor_id}", dependencies=[Depends(require_permission("vendors", "read"))])
 async def get_vendor(vendor_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
     return await _get_or_404(db, Vendor, uuid.UUID(vendor_id), "Vendor")
 
 
-@router.patch("/vendors/{vendor_id}")
+@router.patch("/vendors/{vendor_id}", dependencies=[Depends(require_permission("vendors", "update"))])
 async def patch_vendor(vendor_id: str, payload: VendorUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1401,7 +1678,7 @@ async def patch_vendor(vendor_id: str, payload: VendorUpdate, db: AsyncSession =
     return obj
 
 
-@router.patch("/account-categories/{category_id}")
+@router.patch("/account-categories/{category_id}", dependencies=[Depends(require_permission("credit-debit-notes", "update"))])
 async def patch_account_category(category_id: str, payload: AccountCategoryUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1413,7 +1690,7 @@ async def patch_account_category(category_id: str, payload: AccountCategoryUpdat
     return obj
 
 
-@router.delete("/account-categories/{category_id}")
+@router.delete("/account-categories/{category_id}", dependencies=[Depends(require_permission("credit-debit-notes", "delete"))])
 async def deactivate_account_category(category_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1423,7 +1700,7 @@ async def deactivate_account_category(category_id: str, db: AsyncSession = Depen
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.delete("/vendors/{vendor_id}")
+@router.delete("/vendors/{vendor_id}", dependencies=[Depends(require_permission("vendors", "delete"))])
 async def deactivate_vendor(vendor_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1433,7 +1710,7 @@ async def deactivate_vendor(vendor_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.patch("/units/{unit_id}")
+@router.patch("/units/{unit_id}", dependencies=[Depends(require_permission("products", "update"))])
 async def patch_unit(unit_id: str, payload: UnitUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, Unit, uuid.UUID(unit_id), "Unit")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1443,7 +1720,7 @@ async def patch_unit(unit_id: str, payload: UnitUpdate, db: AsyncSession = Depen
     return obj
 
 
-@router.patch("/hsn/{hsn_id}")
+@router.patch("/hsn/{hsn_id}", dependencies=[Depends(require_permission("products", "update"))])
 async def patch_hsn(hsn_id: str, payload: HSNMasterUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, HSNMaster, uuid.UUID(hsn_id), "HSN")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1453,7 +1730,7 @@ async def patch_hsn(hsn_id: str, payload: HSNMasterUpdate, db: AsyncSession = De
     return obj
 
 
-@router.patch("/product-brands/{brand_id}")
+@router.patch("/product-brands/{brand_id}", dependencies=[Depends(require_permission("products", "update"))])
 async def patch_product_brand(brand_id: str, payload: ProductBrandUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, ProductBrand, uuid.UUID(brand_id), "ProductBrand")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1463,7 +1740,7 @@ async def patch_product_brand(brand_id: str, payload: ProductBrandUpdate, db: As
     return obj
 
 
-@router.patch("/product-categories/{category_id}")
+@router.patch("/product-categories/{category_id}", dependencies=[Depends(require_permission("products", "update"))])
 async def patch_product_category(category_id: str, payload: ProductCategoryUpdate, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, ProductCategory, uuid.UUID(category_id), "ProductCategory")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -1473,7 +1750,7 @@ async def patch_product_category(category_id: str, payload: ProductCategoryUpdat
     return obj
 
 
-@router.patch("/product-sub-categories/{sub_category_id}")
+@router.patch("/product-sub-categories/{sub_category_id}", dependencies=[Depends(require_permission("products", "update"))])
 async def patch_product_sub_category(
     sub_category_id: str,
     payload: ProductSubCategoryUpdate,
@@ -1490,7 +1767,7 @@ async def patch_product_sub_category(
     return obj
 
 
-@router.patch("/pricing/{product_id}")
+@router.patch("/pricing/{product_id}", dependencies=[Depends(require_permission("price", "update"))])
 async def patch_pricing(product_id: str, payload: PricingUpdate, db: AsyncSession = Depends(get_db)):
     product_uuid = uuid.UUID(product_id)
     _ = await _get_or_404(db, Product, product_uuid, "Product")
@@ -1519,7 +1796,7 @@ async def patch_pricing(product_id: str, payload: PricingUpdate, db: AsyncSessio
     return pricing
 
 
-@router.delete("/hsn/{hsn_id}")
+@router.delete("/hsn/{hsn_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def deactivate_hsn(hsn_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, HSNMaster, uuid.UUID(hsn_id), "HSN")
     obj.is_active = False
@@ -1527,7 +1804,7 @@ async def deactivate_hsn(hsn_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.delete("/product-brands/{brand_id}")
+@router.delete("/product-brands/{brand_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def deactivate_product_brand(brand_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, ProductBrand, uuid.UUID(brand_id), "ProductBrand")
     obj.is_active = False
@@ -1535,7 +1812,7 @@ async def deactivate_product_brand(brand_id: str, db: AsyncSession = Depends(get
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.delete("/product-categories/{category_id}")
+@router.delete("/product-categories/{category_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def deactivate_product_category(category_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, ProductCategory, uuid.UUID(category_id), "ProductCategory")
     obj.is_active = False
@@ -1543,7 +1820,7 @@ async def deactivate_product_category(category_id: str, db: AsyncSession = Depen
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.delete("/product-sub-categories/{sub_category_id}")
+@router.delete("/product-sub-categories/{sub_category_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def deactivate_product_sub_category(sub_category_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, ProductSubCategory, uuid.UUID(sub_category_id), "ProductSubCategory")
     obj.is_active = False
@@ -1551,7 +1828,7 @@ async def deactivate_product_sub_category(sub_category_id: str, db: AsyncSession
     return {"id": str(obj.id), "is_active": obj.is_active}
 
 
-@router.delete("/units/{unit_id}")
+@router.delete("/units/{unit_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def delete_unit(unit_id: str, db: AsyncSession = Depends(get_db)):
     obj = await _get_or_404(db, Unit, uuid.UUID(unit_id), "Unit")
     await db.delete(obj)
@@ -1566,14 +1843,14 @@ async def delete_unit(unit_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(unit_id), "deleted": True}
 
 
-@router.get("/employees/{employee_id}")
+@router.get("/employees/{employee_id}", dependencies=[Depends(require_permission("employees", "read"))])
 async def get_employee(employee_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
     return await _get_or_404(db, Employee, uuid.UUID(employee_id), "Employee")
 
 
-@router.patch("/employees/{employee_id}")
+@router.patch("/employees/{employee_id}", dependencies=[Depends(require_permission("employees", "update"))])
 async def patch_employee(employee_id: str, payload: EmployeeUpdate, db: AsyncSession = Depends(get_db)):
     import uuid
 
@@ -1601,7 +1878,48 @@ async def patch_employee(employee_id: str, payload: EmployeeUpdate, db: AsyncSes
     return obj
 
 
-@router.delete("/employees/{employee_id}")
+@router.patch("/admin-users/{employee_id}", dependencies=[Depends(require_super_admin)])
+async def patch_admin_user(employee_id: str, payload: AdminUserUpdate, db: AsyncSession = Depends(get_db)):
+    obj = await _get_or_404(db, Employee, uuid.UUID(employee_id), "Admin")
+    if obj.role != EmployeeRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee is not an admin")
+    data = payload.model_dump(exclude_unset=True)
+    username = data.pop("username", None) if "username" in data else None
+    password = data.pop("password", None) if "password" in data else None
+    permissions = data.pop("permissions", None) if "permissions" in data else None
+    if "role_id" in data and data["role_id"] is not None:
+        await _ensure_admin_role(db, data["role_id"])
+    if "full_name" in data and data["full_name"] is not None:
+        obj.full_name = data["full_name"].strip()
+        obj.name = data["full_name"].strip()
+        data.pop("full_name")
+    if "phone" in data and data["phone"] is not None:
+        data["phone"] = data["phone"].strip()
+    if "alternate_phone" in data and data["alternate_phone"] is not None:
+        data["alternate_phone"] = data["alternate_phone"].strip() or None
+    if "email" in data and data["email"] is not None:
+        data["email"] = data["email"].strip() or None
+    for key, value in data.items():
+        setattr(obj, key, value)
+    if permissions is not None:
+        role = await _ensure_admin_role(db, obj.role_id) if obj.role_id is not None else await _create_internal_admin_role(
+            db,
+            employee_name=obj.full_name,
+            permissions=permissions,
+        )
+        obj.role_id = role.id
+        await _apply_admin_role_permissions(db, role, permissions)
+    await _upsert_employee_credentials(db, obj, username, password)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Admin credentials already exist") from exc
+    await db.refresh(obj)
+    return {"employee_id": str(obj.id), "updated": True}
+
+
+@router.delete("/employees/{employee_id}", dependencies=[Depends(require_permission("employees", "delete"))])
 async def deactivate_employee(employee_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 

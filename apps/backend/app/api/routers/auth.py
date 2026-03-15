@@ -110,6 +110,10 @@ def _auth_user_info(
     session_id: str | None,
     employee: Employee | None,
     customer: Customer | None,
+    *,
+    admin_permissions: dict[str, dict[str, bool]] | None = None,
+    admin_role_id: str | None = None,
+    admin_role_name: str | None = None,
 ) -> AuthUserInfo:
     display_name = _get_display_name(user, employee, customer)
     return AuthUserInfo(
@@ -117,9 +121,13 @@ def _auth_user_info(
         account_type=user.account_type.value,
         portal=portal,
         portal_scope=portal_scope,
+        is_super_admin=bool(user.is_super_admin),
         session_id=session_id,
         employee_id=str(employee.id) if employee is not None else None,
         employee_role=employee.role.value if employee is not None else None,
+        admin_role_id=admin_role_id,
+        admin_role_name=admin_role_name,
+        admin_permissions=admin_permissions or {},
         customer_id=str(customer.id) if customer is not None else None,
         display_name=display_name,
     )
@@ -209,6 +217,7 @@ async def _issue_tokens(
             "customer_id": str(customer.id) if customer else None,
             "sid": sid,
             "display_name": display_name,
+            "is_super_admin": bool(user.is_super_admin),
         },
     )
     refresh_token = create_refresh_token(subject, {"portal": resolved_portal, "sid": sid})
@@ -249,6 +258,30 @@ def _bool_for_action(record: RolePermission, action_name: str) -> bool:
     return False
 
 
+async def _load_permission_matrix_for_role(
+    db: AsyncSession,
+    role_id: uuid.UUID | None,
+) -> dict[str, dict[str, bool]]:
+    if role_id is None:
+        return {}
+    stmt = (
+        select(Permission.module_name, Permission.action_name, RolePermission)
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(RolePermission.role_id == role_id)
+    )
+    rows = (await db.execute(stmt)).all()
+    matrix: dict[str, dict[str, bool]] = {}
+    for module_name, action_name, record in rows:
+        module_key = str(module_name)
+        access = matrix.setdefault(module_key, {"read": False, "write": False})
+        if str(action_name).lower() == "read" and record.can_read:
+            access["read"] = True
+        if str(action_name).lower() in {"create", "update", "delete"} and _bool_for_action(record, str(action_name)):
+            access["write"] = True
+            access["read"] = True
+    return matrix
+
+
 async def get_current_auth_info(
     authorization: str = Header(default=""),
 ) -> AuthUserInfo:
@@ -269,8 +302,10 @@ async def get_current_auth_info(
         account_type=decoded.get("account_type", AccountType.EMPLOYEE.value),
         portal=decoded.get("portal", "EMPLOYEE"),
         portal_scope=decoded.get("portal_scope", PortalScope.EMPLOYEE.value),
+        is_super_admin=bool(decoded.get("is_super_admin", False)),
         session_id=str(session_id),
         employee_id=decoded.get("employee_id"),
+        employee_role=decoded.get("employee_role"),
         customer_id=decoded.get("customer_id"),
         display_name=decoded.get("display_name"),
     )
@@ -279,6 +314,12 @@ async def get_current_auth_info(
 async def require_admin_portal(info: AuthUserInfo = Depends(get_current_auth_info)) -> AuthUserInfo:
     if info.portal != "ADMIN":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return info
+
+
+async def require_super_admin(info: AuthUserInfo = Depends(require_admin_portal)) -> AuthUserInfo:
+    if not info.is_super_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super admin access required")
     return info
 
 
@@ -305,8 +346,10 @@ def require_module_access(module_name: str) -> Callable[..., Any]:
     ) -> AuthUserInfo:
         if info.portal == "CUSTOMER":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Staff access required")
-        if info.portal == "ADMIN" or info.account_type == AccountType.SYSTEM.value:
+        if info.is_super_admin or info.account_type == AccountType.SYSTEM.value:
             return info
+        if not info.employee_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"{module_name} access denied")
         stmt = (
             select(RolePermission)
             .join(Permission, Permission.id == RolePermission.permission_id)
@@ -336,8 +379,13 @@ def require_permission(module_name: str, action_name: str) -> Callable[..., Any]
             if module_name == "sales" and action_name == "create":
                 return info
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Staff access required")
-        if info.portal == "ADMIN" or info.account_type == AccountType.SYSTEM.value:
+        if info.is_super_admin or info.account_type == AccountType.SYSTEM.value:
             return info
+        if not info.employee_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission denied: {module_name}.{action_name}",
+            )
         stmt = (
             select(RolePermission)
             .join(Permission, Permission.id == RolePermission.permission_id)
@@ -417,8 +465,30 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)) -
 
 
 @router.get("/me", response_model=AuthUserInfo)
-async def me(info: AuthUserInfo = Depends(get_current_auth_info)) -> AuthUserInfo:
-    return info
+async def me(info: AuthUserInfo = Depends(get_current_auth_info), db: AsyncSession = Depends(get_db)) -> AuthUserInfo:
+    user = await db.get(User, uuid.UUID(info.user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive account")
+    employee, role, customer = await _load_linked_entities(db, user)
+    admin_permissions: dict[str, dict[str, bool]] = {}
+    admin_role_id: str | None = None
+    admin_role_name: str | None = None
+    if info.portal == "ADMIN" and employee is not None and role is not None:
+        admin_role_id = str(role.id)
+        admin_role_name = role.role_name
+        if not user.is_super_admin:
+            admin_permissions = await _load_permission_matrix_for_role(db, role.id)
+    return _auth_user_info(
+        user,
+        info.portal,
+        info.portal_scope or PortalScope.EMPLOYEE.value,
+        info.session_id,
+        employee,
+        customer,
+        admin_permissions=admin_permissions,
+        admin_role_id=admin_role_id,
+        admin_role_name=admin_role_name,
+    )
 
 
 @router.post("/change-password", response_model=MessageResponse)

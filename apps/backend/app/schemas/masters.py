@@ -326,6 +326,51 @@ class RoleCreate(StrictModel):
     is_active: bool = True
 
 
+class AdminModulePermission(StrictModel):
+    read: bool = False
+    write: bool = False
+
+
+class AdminRoleCreate(StrictModel):
+    role_name: str
+    description: str | None = None
+    is_active: bool = True
+    permissions: dict[str, AdminModulePermission]
+
+
+class AdminRoleUpdate(BaseModel):
+    role_name: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+    permissions: dict[str, AdminModulePermission] | None = None
+
+
+class AdminUserCreate(StrictModel):
+    warehouse_id: uuid.UUID
+    full_name: str
+    phone: str
+    username: str | None = None
+    password: str | None = None
+    email: str | None = None
+    alternate_phone: str | None = None
+    role_id: uuid.UUID | None = None
+    permissions: dict[str, AdminModulePermission]
+    is_active: bool = True
+
+
+class AdminUserUpdate(BaseModel):
+    warehouse_id: uuid.UUID | None = None
+    full_name: str | None = None
+    phone: str | None = None
+    username: str | None = None
+    password: str | None = None
+    email: str | None = None
+    alternate_phone: str | None = None
+    role_id: uuid.UUID | None = None
+    permissions: dict[str, AdminModulePermission] | None = None
+    is_active: bool | None = None
+
+
 class CustomerCategoryUpdate(BaseModel):
     code: str | None = None
     name: str | None = None
