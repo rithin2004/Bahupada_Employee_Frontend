@@ -1,7 +1,7 @@
 import base64
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, Query
@@ -14,7 +14,13 @@ from app.core.config import settings
 from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.models.entities import (
+    HSNMaster,
     InventoryBatch,
+    PartyLedgerAccount,
+    PartyLedgerEntry,
+    PartyLedgerPayment,
+    PartyType,
+    Pricing,
     Product,
     PurchaseBill,
     PurchaseBillItem,
@@ -29,6 +35,7 @@ from app.models.entities import (
     ReorderLog,
     StockMovement,
     StockMoveType,
+    Unit,
     Vendor,
     VoucherStatus,
     Warehouse,
@@ -37,6 +44,9 @@ from app.models.entities import (
 )
 from app.schemas.procurement import (
     PurchaseBillCreate,
+    PurchaseEntryBootstrap,
+    PurchaseEntryProductSummary,
+    PurchaseEntryVendorSummary,
     PurchaseChallanCreate,
     PurchaseExpiryCreate,
     PurchaseReturnCreate,
@@ -68,6 +78,486 @@ def _decode_stock_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
 def _challan_batch_no(challan_id: uuid.UUID, line_number: int, created_at: datetime | None = None) -> str:
     ts = (created_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return f"CHL-{ts.strftime('%Y%m%d-%H%M%S')}-{str(challan_id)[:4].upper()}-{line_number:03d}"
+
+
+def _purchase_entry_number(now: datetime | None = None) -> str:
+    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return f"P{ts.strftime('%y%m%d%H%M%S')}"
+
+
+def _purchase_bill_batch_no(bill_number: str, line_number: int, now: datetime | None = None) -> str:
+    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    compact_bill = "".join(ch for ch in bill_number.upper() if ch.isalnum())[-8:] or "AUTO"
+    return f"PBL-{ts.strftime('%Y%m%d')}-{compact_bill}-{line_number:03d}"
+
+
+def _as_decimal(value: Decimal | int | float | None) -> Decimal:
+    return Decimal(value or 0)
+
+
+def _normalize_unit_ratio(base_quantity: Decimal, conv_2_to_1: Decimal | None, conv_3_to_1: Decimal | None) -> tuple[str, dict[str, Decimal]]:
+    base = Decimal(base_quantity or 0)
+    conv2 = Decimal(conv_2_to_1 or 0)
+    conv3 = Decimal(conv_3_to_1 or 0)
+    third = Decimal("0")
+    second = Decimal("0")
+    first = base
+    if conv3 > 0:
+        third = (base // conv3)
+        first = base - (third * conv3)
+    if conv2 > 0:
+        second = (first // conv2)
+        first = first - (second * conv2)
+    ratio = f"{int(third)} : {int(second)} : {int(first)}"
+    return ratio, {"quantity_1st": first, "quantity_2nd": second, "quantity_3rd": third}
+
+
+def _derive_tax_type(*, warehouse_state: str | None, vendor_gstin: str | None, vendor_state: str | None) -> str:
+    warehouse_state_normalized = (warehouse_state or "").strip().upper()
+    vendor_state_from_gstin = ""
+    if vendor_gstin and len(vendor_gstin) >= 2 and vendor_gstin[:2].isdigit():
+        vendor_state_from_gstin = vendor_gstin[:2]
+    vendor_state_normalized = (vendor_state or "").strip().upper()
+    if vendor_state_from_gstin and warehouse_state_normalized:
+        # GST state code compare can be added later once warehouse keeps code; for now fallback to name compare.
+        pass
+    if warehouse_state_normalized and vendor_state_normalized and warehouse_state_normalized == vendor_state_normalized:
+        return "LOCAL"
+    return "CENTRAL"
+
+
+async def _unit_name(db: AsyncSession, unit_id: uuid.UUID | None) -> str | None:
+    if unit_id is None:
+        return None
+    unit = await db.get(Unit, unit_id)
+    return unit.unit_name if unit else None
+
+
+async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEntryVendorSummary:
+    today = datetime.now(timezone.utc).date()
+    month_start = today.replace(day=1)
+    year_start = date(today.year, 1, 1)
+
+    annual_purchase_amount = (
+        await db.execute(
+            select(func.coalesce(func.sum(PurchaseBill.total_amount), Decimal("0"))).where(
+                PurchaseBill.vendor_id == vendor.id,
+                PurchaseBill.deleted_at.is_(None),
+                PurchaseBill.bill_date >= year_start,
+            )
+        )
+    ).scalar_one()
+    monthly_purchase_amount = (
+        await db.execute(
+            select(func.coalesce(func.sum(PurchaseBill.total_amount), Decimal("0"))).where(
+                PurchaseBill.vendor_id == vendor.id,
+                PurchaseBill.deleted_at.is_(None),
+                PurchaseBill.bill_date >= month_start,
+            )
+        )
+    ).scalar_one()
+    last_purchase_date = (
+        await db.execute(
+            select(PurchaseBill.bill_date)
+            .where(PurchaseBill.vendor_id == vendor.id, PurchaseBill.deleted_at.is_(None))
+            .order_by(PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    last_bills_rows = (
+        await db.execute(
+            select(PurchaseBill.bill_number, PurchaseBill.bill_date, PurchaseBill.total_amount)
+            .where(PurchaseBill.vendor_id == vendor.id, PurchaseBill.deleted_at.is_(None))
+            .order_by(PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc())
+            .limit(3)
+        )
+    ).all()
+    account = (
+        await db.execute(
+            select(PartyLedgerAccount).where(PartyLedgerAccount.party_type == PartyType.VENDOR, PartyLedgerAccount.party_id == vendor.id)
+        )
+    ).scalar_one_or_none()
+    balance = Decimal("0")
+    balance_side = "CR"
+    last_payment_date = None
+    if account is not None:
+        totals = (
+            await db.execute(
+                select(
+                    func.coalesce(func.sum(PartyLedgerEntry.admin_debit), Decimal("0")),
+                    func.coalesce(func.sum(PartyLedgerEntry.admin_credit), Decimal("0")),
+                ).where(PartyLedgerEntry.account_id == account.id)
+            )
+        ).one()
+        debit_total = Decimal(totals[0] or 0)
+        credit_total = Decimal(totals[1] or 0)
+        net = credit_total - debit_total
+        balance = abs(net)
+        balance_side = "CR" if net >= 0 else "DR"
+        last_payment_date = (
+            await db.execute(
+                select(PartyLedgerPayment.payment_date)
+                .where(PartyLedgerPayment.account_id == account.id)
+                .order_by(PartyLedgerPayment.payment_date.desc(), PartyLedgerPayment.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    address_lines = [line for line in [vendor.firm_name or vendor.name, vendor.street, vendor.city, vendor.state, vendor.pincode] if line]
+    return PurchaseEntryVendorSummary(
+        vendor_id=vendor.id,
+        vendor_name=vendor.firm_name or vendor.name,
+        address_lines=address_lines,
+        city=vendor.city,
+        state=vendor.state,
+        pincode=vendor.pincode,
+        gstin=vendor.gstin,
+        owner_name=vendor.owner_name,
+        phone=vendor.phone,
+        area=vendor.city,
+        route=None,
+        annual_purchase_amount=Decimal(annual_purchase_amount or 0),
+        monthly_purchase_amount=Decimal(monthly_purchase_amount or 0),
+        balance=balance,
+        balance_side=balance_side,
+        last_purchase_date=last_purchase_date,
+        last_payment_date=last_payment_date,
+        last_bills=[
+            {"bill_number": row[0], "bill_date": row[1], "total_amount": Decimal(row[2] or 0)}
+            for row in last_bills_rows
+        ],
+    )
+
+
+async def _build_product_summary(db: AsyncSession, product: Product) -> PurchaseEntryProductSummary:
+    pricing = (
+        await db.execute(select(Pricing).where(Pricing.product_id == product.id))
+    ).scalar_one_or_none()
+    hsn = await db.get(HSNMaster, product.hsn_id) if product.hsn_id else None
+    stock_total = (
+        await db.execute(
+            select(func.coalesce(func.sum(InventoryBatch.available_quantity), Decimal("0"))).where(InventoryBatch.product_id == product.id)
+        )
+    ).scalar_one()
+    latest_line = (
+        await db.execute(
+            select(
+                PurchaseBillItem.rate_value,
+                PurchaseBillItem.rate_unit_level,
+                PurchaseBillItem.discount_percent,
+                PurchaseBill.bill_number,
+                PurchaseBill.bill_date,
+                PurchaseBillItem.line_total_amount,
+            )
+            .join(PurchaseBill, PurchaseBill.id == PurchaseBillItem.purchase_bill_id)
+            .where(PurchaseBillItem.product_id == product.id, PurchaseBill.deleted_at.is_(None))
+            .order_by(PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc(), PurchaseBillItem.id.desc())
+            .limit(3)
+        )
+    ).all()
+    conv2 = Decimal(product.conv_2_to_1 or 0)
+    conv3 = Decimal(product.conv_3_to_1 or 0)
+    stock_ratio, _ = _normalize_unit_ratio(Decimal(stock_total or 0), conv2, conv3)
+
+    return PurchaseEntryProductSummary(
+        product_id=product.id,
+        sku=product.sku,
+        name=product.name,
+        brand=product.brand,
+        description=product.description,
+        hsn_code=hsn.hsn_code if hsn else None,
+        tax_percent=Decimal(product.tax_percent or 0),
+        mrp=Decimal(pricing.mrp if pricing else 0),
+        cost_price=Decimal(pricing.cost_price if pricing else 0),
+        unit_1st_name=await _unit_name(db, product.primary_unit_id),
+        unit_2nd_name=await _unit_name(db, product.secondary_unit_id),
+        unit_3rd_name=await _unit_name(db, product.third_unit_id),
+        unit_1st_id=product.primary_unit_id,
+        unit_2nd_id=product.secondary_unit_id,
+        unit_3rd_id=product.third_unit_id,
+        conv_2_to_1=conv2 if conv2 > 0 else None,
+        conv_3_to_2=Decimal(product.conv_3_to_2 or 0) if product.conv_3_to_2 else None,
+        conv_3_to_1=conv3 if conv3 > 0 else None,
+        stock_base_quantity=Decimal(stock_total or 0),
+        stock_ratio=stock_ratio,
+        latest_rate_value=Decimal(latest_line[0][0] or 0) if latest_line else None,
+        latest_rate_unit_level=int(latest_line[0][1]) if latest_line and latest_line[0][1] is not None else None,
+        latest_discount_percent=Decimal(latest_line[0][2] or 0) if latest_line else None,
+        recent_bills=[
+            {
+                "bill_number": row[3],
+                "bill_date": row[4],
+                "line_total_amount": Decimal(row[5] or 0),
+            }
+            for row in latest_line
+        ],
+    )
+
+
+def _rate_per_base_unit(rate_value: Decimal, rate_unit_level: int | None, conv_2_to_1: Decimal | None, conv_3_to_1: Decimal | None) -> Decimal:
+    level = int(rate_unit_level or 1)
+    if level == 2:
+        conv2 = Decimal(conv_2_to_1 or 0)
+        return Decimal(rate_value) / conv2 if conv2 > 0 else Decimal(rate_value)
+    if level == 3:
+        conv3 = Decimal(conv_3_to_1 or 0)
+        return Decimal(rate_value) / conv3 if conv3 > 0 else Decimal(rate_value)
+    return Decimal(rate_value)
+
+
+async def _create_purchase_bill_internal(
+    db: AsyncSession,
+    payload: PurchaseBillCreate,
+) -> PurchaseBill:
+    challan = None
+    vendor_id = payload.vendor_id
+    warehouse_id = payload.warehouse_id
+    rack_id = payload.rack_id
+
+    challan_items: list[PurchaseChallanItem] = []
+    challan_qty_by_product: dict[uuid.UUID, Decimal] = {}
+    challan_batch_by_product: dict[uuid.UUID, str] = {}
+    if payload.challan_id is not None:
+        challan = await db.get(PurchaseChallan, payload.challan_id)
+        if challan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
+        vendor_id = challan.vendor_id
+        warehouse_id = challan.warehouse_id
+        rack_id = challan.rack_id
+        challan_items = (
+            await db.execute(select(PurchaseChallanItem).where(PurchaseChallanItem.purchase_challan_id == challan.id))
+        ).scalars().all()
+        for item in challan_items:
+            challan_qty_by_product[item.product_id] = challan_qty_by_product.get(item.product_id, Decimal("0")) + Decimal(item.quantity)
+            if item.product_id not in challan_batch_by_product and item.batch_number:
+                challan_batch_by_product[item.product_id] = item.batch_number
+    else:
+        if vendor_id is None or warehouse_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="vendor_id and warehouse_id are required when challan_id is not provided",
+            )
+        vendor = await db.get(Vendor, vendor_id)
+        if vendor is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+        warehouse = await db.get(Warehouse, warehouse_id)
+        if warehouse is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Warehouse not found")
+    remaining_challan_qty = dict(challan_qty_by_product)
+    vendor = await db.get(Vendor, vendor_id)
+    warehouse = await db.get(Warehouse, warehouse_id)
+
+    derived_tax_type = payload.tax_type or _derive_tax_type(
+        warehouse_state=warehouse.state if warehouse else None,
+        vendor_gstin=vendor.gstin if vendor else None,
+        vendor_state=vendor.state if vendor else None,
+    )
+    bill = PurchaseBill(
+        purchase_challan_id=payload.challan_id,
+        vendor_id=vendor_id,
+        warehouse_id=warehouse_id,
+        rack_id=rack_id,
+        bill_number=payload.bill_number,
+        bill_date=payload.bill_date,
+        received_date=payload.received_date,
+        payment_mode=(payload.payment_mode or "CREDIT").upper(),
+        tax_type=derived_tax_type,
+        freight_amount=Decimal(payload.freight_amount or 0),
+        entry_number=payload.entry_number or _purchase_entry_number(),
+        notes=payload.notes,
+        subtotal=Decimal("0"),
+        gst_amount=Decimal("0"),
+        total_amount=Decimal("0"),
+        status=VoucherStatus.POSTED.value,
+        posted=True,
+    )
+    db.add(bill)
+    await db.flush()
+
+    subtotal = Decimal("0")
+    gst_total = Decimal("0")
+
+    for index, item in enumerate(payload.items, start=1):
+        if item.damaged_quantity < 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="damaged_quantity cannot be negative")
+
+        product = await db.get(Product, item.product_id)
+        if product is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+        qty1 = Decimal(item.quantity_1st or 0)
+        qty2 = Decimal(item.quantity_2nd or 0)
+        qty3 = Decimal(item.quantity_3rd or 0)
+        conv2 = Decimal(product.conv_2_to_1 or 0)
+        conv3 = Decimal(product.conv_3_to_1 or 0)
+        base_quantity = Decimal(item.base_quantity or 0)
+        if base_quantity <= 0:
+            base_quantity = qty1 + (qty2 * conv2) + (qty3 * conv3)
+        if base_quantity <= 0:
+            base_quantity = Decimal(item.quantity or 0)
+        if base_quantity <= 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Line quantity must be positive")
+
+        damaged_qty = Decimal(item.damaged_quantity or 0)
+        if damaged_qty > base_quantity:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="damaged_quantity cannot exceed quantity")
+
+        rate_value = Decimal(item.rate_value if item.rate_value is not None else item.unit_price)
+        rate_unit_level = int(item.rate_unit_level or 1)
+        unit_price = _rate_per_base_unit(rate_value, rate_unit_level, conv2, conv3)
+        line_subtotal = Decimal(item.line_subtotal or (base_quantity * unit_price))
+        discount_percent = Decimal(item.discount_percent or 0)
+        percent_discount_amount = (line_subtotal * discount_percent / Decimal("100")) if discount_percent > 0 else Decimal("0")
+        discount_lumpsum = Decimal(item.discount_lumpsum or 0)
+        line_discount_amount = Decimal(item.line_discount_amount or (percent_discount_amount + discount_lumpsum))
+        taxable_amount = Decimal(item.line_taxable_amount or (line_subtotal - line_discount_amount))
+        tax_percent = Decimal(product.tax_percent or 0)
+        line_tax_amount = Decimal(item.line_tax_amount or (taxable_amount * tax_percent / Decimal("100")))
+        line_total_amount = Decimal(item.line_total_amount or (taxable_amount + line_tax_amount))
+
+        subtotal += taxable_amount
+        gst_total += line_tax_amount
+
+        batch_no = item.batch_no or _purchase_bill_batch_no(payload.bill_number, index)
+
+        db.add(
+            PurchaseBillItem(
+                purchase_bill_id=bill.id,
+                product_id=item.product_id,
+                batch_no=batch_no,
+                batch_number=batch_no,
+                expiry_date=item.expiry_date,
+                quantity=base_quantity,
+                quantity_1st=qty1 if qty1 > 0 else None,
+                quantity_2nd=qty2 if qty2 > 0 else None,
+                quantity_3rd=qty3 if qty3 > 0 else None,
+                unit_1st_id=item.unit_1st_id or product.primary_unit_id,
+                unit_2nd_id=item.unit_2nd_id or product.secondary_unit_id,
+                unit_3rd_id=item.unit_3rd_id or product.third_unit_id,
+                base_quantity=base_quantity,
+                damaged_quantity=damaged_qty,
+                unit_price=unit_price,
+                purchase_price=unit_price,
+                rate_value=rate_value,
+                rate_unit_level=rate_unit_level,
+                discount_percent=discount_percent if discount_percent > 0 else None,
+                discount_lumpsum=discount_lumpsum if discount_lumpsum > 0 else None,
+                line_subtotal=line_subtotal,
+                line_discount_amount=line_discount_amount,
+                line_taxable_amount=taxable_amount,
+                line_tax_amount=line_tax_amount,
+                line_total_amount=line_total_amount,
+            )
+        )
+
+        final_available = base_quantity - damaged_qty
+        if challan is not None:
+            baseline = remaining_challan_qty.get(item.product_id, Decimal("0"))
+            allocated_baseline = baseline if baseline <= base_quantity else base_quantity
+            remaining_challan_qty[item.product_id] = baseline - allocated_baseline
+            delta_available = final_available - allocated_baseline
+        else:
+            delta_available = final_available
+
+        batch_res = await db.execute(
+            select(InventoryBatch).where(
+                InventoryBatch.warehouse_id == warehouse_id,
+                InventoryBatch.product_id == item.product_id,
+                InventoryBatch.batch_no == batch_no,
+            )
+        )
+        batch = batch_res.scalar_one_or_none()
+        if batch is None:
+            batch = InventoryBatch(
+                warehouse_id=warehouse_id,
+                product_id=item.product_id,
+                batch_no=batch_no,
+                expiry_date=item.expiry_date,
+                available_quantity=Decimal("0"),
+                reserved_quantity=Decimal("0"),
+                damaged_quantity=Decimal("0"),
+            )
+            db.add(batch)
+
+        batch.available_quantity = Decimal(batch.available_quantity) + delta_available
+        batch.damaged_quantity = Decimal(batch.damaged_quantity) + damaged_qty
+        if item.expiry_date:
+            batch.expiry_date = item.expiry_date
+
+        if delta_available > 0:
+            db.add(
+                StockMovement(
+                    warehouse_id=warehouse_id,
+                    product_id=item.product_id,
+                    batch_no=batch_no,
+                    move_type=StockMoveType.IN,
+                    quantity=delta_available,
+                    reference_type="purchase_bill_adjust",
+                    reference_id=bill.id,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+        elif delta_available < 0:
+            db.add(
+                StockMovement(
+                    warehouse_id=warehouse_id,
+                    product_id=item.product_id,
+                    batch_no=batch_no,
+                    move_type=StockMoveType.OUT,
+                    quantity=abs(delta_available),
+                    reference_type="purchase_bill_adjust",
+                    reference_id=bill.id,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+
+        if damaged_qty > 0:
+            db.add(
+                StockMovement(
+                    warehouse_id=warehouse_id,
+                    product_id=item.product_id,
+                    batch_no=batch_no,
+                    move_type=StockMoveType.ADJUST,
+                    quantity=damaged_qty,
+                    reference_type="purchase_bill_damage",
+                    reference_id=bill.id,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+
+    if challan is not None:
+        for product_id, missing_qty in remaining_challan_qty.items():
+            if missing_qty <= 0:
+                continue
+            batch_no = challan_batch_by_product.get(product_id, _challan_batch_no(challan.id, 1))
+            batch_res = await db.execute(
+                select(InventoryBatch).where(
+                    InventoryBatch.warehouse_id == warehouse_id,
+                    InventoryBatch.product_id == product_id,
+                    InventoryBatch.batch_no == batch_no,
+                )
+            )
+            batch = batch_res.scalar_one_or_none()
+            if batch is not None:
+                batch.available_quantity = Decimal(batch.available_quantity) - missing_qty
+            db.add(
+                StockMovement(
+                    warehouse_id=warehouse_id,
+                    product_id=product_id,
+                    batch_no=batch_no,
+                    move_type=StockMoveType.OUT,
+                    quantity=missing_qty,
+                    reference_type="purchase_bill_shortage",
+                    reference_id=bill.id,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+
+    bill.subtotal = subtotal
+    bill.gst_amount = gst_total
+    bill.total_amount = subtotal + gst_total + Decimal(payload.freight_amount or 0)
+    await db.flush()
+    return bill
 
 
 @router.post("/purchase-challans", dependencies=[Depends(require_permission("purchase", "create"))])
@@ -362,183 +852,7 @@ async def create_purchase_bill(
     )
     if replay_body is not None:
         return replay_body
-
-    challan = None
-    vendor_id = payload.vendor_id
-    warehouse_id = payload.warehouse_id
-    rack_id = payload.rack_id
-
-    challan_items: list[PurchaseChallanItem] = []
-    challan_qty_by_product: dict[uuid.UUID, Decimal] = {}
-    challan_batch_by_product: dict[uuid.UUID, str] = {}
-    if payload.challan_id is not None:
-        challan = await db.get(PurchaseChallan, payload.challan_id)
-        if challan is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
-        vendor_id = challan.vendor_id
-        warehouse_id = challan.warehouse_id
-        rack_id = challan.rack_id
-        challan_items = (
-            await db.execute(select(PurchaseChallanItem).where(PurchaseChallanItem.purchase_challan_id == challan.id))
-        ).scalars().all()
-        for item in challan_items:
-            challan_qty_by_product[item.product_id] = challan_qty_by_product.get(item.product_id, Decimal("0")) + Decimal(item.quantity)
-            if item.product_id not in challan_batch_by_product and item.batch_number:
-                challan_batch_by_product[item.product_id] = item.batch_number
-    else:
-        if vendor_id is None or warehouse_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="vendor_id and warehouse_id are required when challan_id is not provided",
-            )
-        if await db.get(Vendor, vendor_id) is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
-        if await db.get(Warehouse, warehouse_id) is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Warehouse not found")
-    remaining_challan_qty = dict(challan_qty_by_product)
-
-    bill = PurchaseBill(
-        purchase_challan_id=payload.challan_id,
-        vendor_id=vendor_id,
-        warehouse_id=warehouse_id,
-        rack_id=rack_id,
-        bill_number=payload.bill_number,
-        bill_date=payload.bill_date,
-        subtotal=Decimal("0"),
-        total_amount=Decimal("0"),
-        status=VoucherStatus.POSTED.value,
-        posted=True,
-    )
-    db.add(bill)
-    await db.flush()
-    total_amount = Decimal("0")
-
-    for item in payload.items:
-        if item.damaged_quantity < 0:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="damaged_quantity cannot be negative")
-        received_qty = Decimal(item.quantity)
-        damaged_qty = Decimal(item.damaged_quantity)
-        if damaged_qty > received_qty:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="damaged_quantity cannot exceed quantity")
-        total_amount += received_qty * Decimal(item.unit_price)
-
-        db.add(
-            PurchaseBillItem(
-                purchase_bill_id=bill.id,
-                product_id=item.product_id,
-                batch_no=item.batch_no,
-                expiry_date=item.expiry_date,
-                quantity=received_qty,
-                damaged_quantity=damaged_qty,
-                unit_price=item.unit_price,
-            )
-        )
-
-        final_available = received_qty - damaged_qty
-        if challan is not None:
-            baseline = remaining_challan_qty.get(item.product_id, Decimal("0"))
-            allocated_baseline = baseline if baseline <= received_qty else received_qty
-            remaining_challan_qty[item.product_id] = baseline - allocated_baseline
-            delta_available = final_available - allocated_baseline
-        else:
-            delta_available = final_available
-
-        batch_res = await db.execute(
-            select(InventoryBatch).where(
-                InventoryBatch.warehouse_id == warehouse_id,
-                InventoryBatch.product_id == item.product_id,
-                InventoryBatch.batch_no == item.batch_no,
-            )
-        )
-        batch = batch_res.scalar_one_or_none()
-        if batch is None:
-            batch = InventoryBatch(
-                warehouse_id=warehouse_id,
-                product_id=item.product_id,
-                batch_no=item.batch_no,
-                expiry_date=item.expiry_date,
-                available_quantity=Decimal("0"),
-                reserved_quantity=Decimal("0"),
-                damaged_quantity=Decimal("0"),
-            )
-            db.add(batch)
-
-        batch.available_quantity = Decimal(batch.available_quantity) + delta_available
-        batch.damaged_quantity = Decimal(batch.damaged_quantity) + damaged_qty
-        if item.expiry_date:
-            batch.expiry_date = item.expiry_date
-
-        if delta_available > 0:
-            db.add(
-                StockMovement(
-                    warehouse_id=warehouse_id,
-                    product_id=item.product_id,
-                    batch_no=item.batch_no,
-                    move_type=StockMoveType.IN,
-                    quantity=delta_available,
-                    reference_type="purchase_bill_adjust",
-                    reference_id=bill.id,
-                    created_at=datetime.now(timezone.utc),
-                )
-            )
-        elif delta_available < 0:
-            db.add(
-                StockMovement(
-                    warehouse_id=warehouse_id,
-                    product_id=item.product_id,
-                    batch_no=item.batch_no,
-                    move_type=StockMoveType.OUT,
-                    quantity=abs(delta_available),
-                    reference_type="purchase_bill_adjust",
-                    reference_id=bill.id,
-                    created_at=datetime.now(timezone.utc),
-                )
-            )
-
-        if damaged_qty > 0:
-            db.add(
-                StockMovement(
-                    warehouse_id=warehouse_id,
-                    product_id=item.product_id,
-                    batch_no=item.batch_no,
-                    move_type=StockMoveType.ADJUST,
-                    quantity=damaged_qty,
-                    reference_type="purchase_bill_damage",
-                    reference_id=bill.id,
-                    created_at=datetime.now(timezone.utc),
-                )
-            )
-
-    if challan is not None:
-        for product_id, missing_qty in remaining_challan_qty.items():
-            if missing_qty <= 0:
-                continue
-            batch_no = challan_batch_by_product.get(product_id, _challan_batch_no(challan.id, 1))
-            batch_res = await db.execute(
-                select(InventoryBatch).where(
-                    InventoryBatch.warehouse_id == warehouse_id,
-                    InventoryBatch.product_id == product_id,
-                    InventoryBatch.batch_no == batch_no,
-                )
-            )
-            batch = batch_res.scalar_one_or_none()
-            if batch is not None:
-                batch.available_quantity = Decimal(batch.available_quantity) - missing_qty
-            db.add(
-                StockMovement(
-                    warehouse_id=warehouse_id,
-                    product_id=product_id,
-                    batch_no=batch_no,
-                    move_type=StockMoveType.OUT,
-                    quantity=missing_qty,
-                    reference_type="purchase_bill_shortage",
-                    reference_id=bill.id,
-                    created_at=datetime.now(timezone.utc),
-                )
-            )
-
-    bill.subtotal = total_amount
-    bill.total_amount = total_amount
+    bill = await _create_purchase_bill_internal(db, payload)
     await db.flush()
     try:
         await post_vendor_purchase_bill_payable(db, bill)
@@ -551,6 +865,101 @@ async def create_purchase_bill(
     response = jsonable_encoder(bill)
     await idempotency_store_response(
         db, idempotency_key, "procurement:create_purchase_bill", req_hash, replay_code or 201, response
+    )
+    return response
+
+
+@router.get("/purchase-entry/bootstrap", dependencies=[Depends(require_permission("purchase", "read"))], response_model=PurchaseEntryBootstrap)
+async def purchase_entry_bootstrap(db: AsyncSession = Depends(get_db)):
+    warehouses = (
+        await db.execute(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.name.asc()))
+    ).scalars().all()
+    return PurchaseEntryBootstrap(
+        today=datetime.now(timezone.utc).date(),
+        next_entry_number=_purchase_entry_number(),
+        default_warehouse_id=warehouses[0].id if warehouses else None,
+        warehouses=[{"id": warehouse.id, "name": warehouse.name, "code": warehouse.code} for warehouse in warehouses],
+    )
+
+
+@router.get("/purchase-entry/vendors/search", dependencies=[Depends(require_permission("purchase", "read"))])
+async def search_purchase_entry_vendors(
+    q: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Vendor).where(Vendor.is_active.is_(True))
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(or_(Vendor.name.ilike(term), Vendor.firm_name.ilike(term), Vendor.city.ilike(term), Vendor.gstin.ilike(term)))
+    stmt = stmt.order_by(Vendor.name.asc()).limit(limit)
+    vendors = (await db.execute(stmt)).scalars().all()
+    summaries = []
+    for vendor in vendors:
+        summary = await _build_vendor_summary(db, vendor)
+        summaries.append(jsonable_encoder(summary))
+    return {"items": summaries}
+
+
+@router.get("/purchase-entry/vendors/{vendor_id}/summary", dependencies=[Depends(require_permission("purchase", "read"))], response_model=PurchaseEntryVendorSummary)
+async def get_purchase_entry_vendor_summary(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    return await _build_vendor_summary(db, vendor)
+
+
+@router.get("/purchase-entry/products/search", dependencies=[Depends(require_permission("purchase", "read"))])
+async def search_purchase_entry_products(
+    q: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Product).where(Product.is_active.is_(True))
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(or_(Product.sku.ilike(term), Product.name.ilike(term), Product.brand.ilike(term), Product.category.ilike(term)))
+    stmt = stmt.order_by(Product.name.asc()).limit(limit)
+    products = (await db.execute(stmt)).scalars().all()
+    items = []
+    for product in products:
+        items.append(jsonable_encoder(await _build_product_summary(db, product)))
+    return {"items": items}
+
+
+@router.get("/purchase-entry/products/{product_id}/summary", dependencies=[Depends(require_permission("purchase", "read"))], response_model=PurchaseEntryProductSummary)
+async def get_purchase_entry_product_summary(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    product = await db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    return await _build_product_summary(db, product)
+
+
+@router.post("/purchase-entry", dependencies=[Depends(require_permission("purchase", "create"))])
+async def create_purchase_entry(
+    payload: PurchaseBillCreate,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+):
+    replay_code, replay_body, req_hash = await idempotency_precheck(
+        db, idempotency_key, "procurement:create_purchase_entry", payload.model_dump(mode="json")
+    )
+    if replay_body is not None:
+        return replay_body
+
+    bill = await _create_purchase_bill_internal(db, payload)
+    await db.flush()
+    try:
+        await post_vendor_purchase_bill_payable(db, bill)
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await db.commit()
+    await db.refresh(bill)
+    response = jsonable_encoder(bill)
+    await idempotency_store_response(
+        db, idempotency_key, "procurement:create_purchase_entry", req_hash, replay_code or 201, response
     )
     return response
 

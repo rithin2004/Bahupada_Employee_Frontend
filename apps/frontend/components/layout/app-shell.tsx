@@ -30,7 +30,8 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
   const [employeeRole, setEmployeeRole] = useState<EmployeeRole | null>(null);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [adminPermissions, setAdminPermissions] = useState<Record<string, { read?: boolean; write?: boolean }>>({});
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [desktopSidebarExpanded, setDesktopSidebarExpanded] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notifications, setNotifications] = useState<
@@ -75,7 +76,7 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
   }, []);
 
   useEffect(() => {
-    if (!sidebarOpen) {
+    if (!mobileSidebarOpen) {
       document.body.style.overflow = "";
       return;
     }
@@ -83,7 +84,7 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
     return () => {
       document.body.style.overflow = "";
     };
-  }, [sidebarOpen]);
+  }, [mobileSidebarOpen]);
 
   const modules = modulesForRole(role, employeeRole, adminPermissions, isSuperAdmin);
 
@@ -187,20 +188,93 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-muted/30">
-      {sidebarOpen ? (
+      {mobileSidebarOpen ? (
         <button
           type="button"
           aria-label="Close sidebar overlay"
           className="fixed inset-0 z-40 bg-black/45 transition-opacity duration-300 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => setMobileSidebarOpen(false)}
         />
       ) : null}
 
-      <div className="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 lg:grid-cols-[260px_1fr]">
+      <div className="mx-auto flex min-h-screen max-w-[1680px]">
+        <div
+          className="relative hidden lg:block lg:w-[60px] lg:shrink-0"
+          onMouseEnter={() => setDesktopSidebarExpanded(true)}
+          onMouseLeave={() => setDesktopSidebarExpanded(false)}
+        >
+          <aside
+            className={cn(
+              "fixed inset-y-0 left-0 z-30 hidden border-r bg-card/98 shadow-sm backdrop-blur transition-[width] duration-200 ease-out lg:block",
+              desktopSidebarExpanded ? "w-[248px]" : "w-[60px]"
+            )}
+          >
+            <div className="flex h-full flex-col p-2.5">
+              <div className={cn("mb-2 flex items-center", desktopSidebarExpanded ? "justify-between gap-2" : "justify-center")}>
+                <div className={cn("min-w-0", desktopSidebarExpanded ? "opacity-100" : "w-0 overflow-hidden opacity-0")}>
+                  <p className="truncate text-[11px] uppercase tracking-[0.28em] text-muted-foreground">Bahupada ERP</p>
+                  <h2 className="mt-1 truncate text-base font-semibold">Control Panel</h2>
+                </div>
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border bg-muted font-semibold">
+                  {role === "admin" ? "A" : "E"}
+                </div>
+              </div>
+              <Separator className="mb-2" />
+
+              <nav className="flex-1 space-y-1">
+                {modules.map((module) => {
+                  const isActive = activeKey === module.key;
+                  return (
+                    <Button
+                      key={module.key}
+                      asChild
+                      variant={isActive ? "secondary" : "ghost"}
+                      className={cn(
+                        "h-10 overflow-hidden px-0",
+                        desktopSidebarExpanded ? "w-full justify-start gap-3 px-3" : "w-10 justify-center"
+                      )}
+                      title={module.label}
+                    >
+                      <Link href={module.href}>
+                        <module.icon className="size-4 shrink-0" />
+                        <span className={cn("truncate transition-opacity duration-150", desktopSidebarExpanded ? "opacity-100" : "hidden opacity-0")}>
+                          {module.label}
+                        </span>
+                      </Link>
+                    </Button>
+                  );
+                })}
+              </nav>
+
+              <Separator className="my-2" />
+              <div className={cn("space-y-2", desktopSidebarExpanded ? "opacity-100" : "opacity-0")}>
+                {desktopSidebarExpanded ? (
+                  <>
+                    <Badge variant="outline" className="capitalize">
+                      {role}
+                    </Badge>
+                    <div className="space-y-2 rounded-xl border p-3 text-xs">
+                      <p className="font-medium">Portal Separation</p>
+                      <div className="flex flex-col gap-2">
+                        <Button asChild variant="outline" size="sm" className="w-full justify-start">
+                          <Link href="/auth/admin-login">Admin Login</Link>
+                        </Button>
+                        <Button asChild variant="outline" size="sm" className="w-full justify-start">
+                          <Link href="/auth/employee-login">Employee Login</Link>
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </aside>
+        </div>
+
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[285px] max-w-[86vw] border-r bg-card p-4 shadow-xl transition-transform duration-300 ease-out lg:static lg:z-auto lg:w-auto lg:max-w-none lg:translate-x-0 lg:shadow-none",
-            sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+            "fixed inset-y-0 left-0 z-50 w-[285px] max-w-[86vw] border-r bg-card p-4 shadow-xl transition-transform duration-300 ease-out lg:hidden",
+            mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
           )}
         >
           <div className="mb-4 space-y-2">
@@ -210,9 +284,8 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                 type="button"
                 size="icon"
                 variant="ghost"
-                className="lg:hidden"
                 aria-label="Close sidebar"
-                onClick={() => setSidebarOpen(false)}
+                onClick={() => setMobileSidebarOpen(false)}
               >
                 <X className="size-4" />
               </Button>
@@ -236,7 +309,7 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                   variant={isActive ? "secondary" : "ghost"}
                   className="w-full justify-start"
                 >
-                  <Link href={module.href} onClick={() => setSidebarOpen(false)}>
+                  <Link href={module.href} onClick={() => setMobileSidebarOpen(false)}>
                     <module.icon className="size-4" />
                     {module.label}
                   </Link>
@@ -244,20 +317,6 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
               );
             })}
           </nav>
-
-          <Separator className="my-4" />
-          <div className="space-y-2 rounded-lg border p-3 text-sm">
-            <p className="font-medium">Login Separation</p>
-            <p className="text-muted-foreground">Admin and Employee portals should authenticate separately.</p>
-            <div className="flex flex-col gap-2">
-              <Button asChild variant="outline" size="sm" className="w-full">
-                <Link href="/auth/admin-login">Admin Login</Link>
-              </Button>
-              <Button asChild variant="outline" size="sm" className="w-full">
-                <Link href="/auth/employee-login">Employee Login</Link>
-              </Button>
-            </div>
-          </div>
         </aside>
 
         <div className="flex min-h-screen min-w-0 flex-col">
@@ -270,7 +329,7 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                   variant="outline"
                   className="mt-0.5 lg:hidden"
                   aria-label="Open sidebar menu"
-                  onClick={() => setSidebarOpen(true)}
+                  onClick={() => setMobileSidebarOpen(true)}
                 >
                   <Menu className="size-4" />
                 </Button>

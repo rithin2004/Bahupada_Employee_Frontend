@@ -167,20 +167,22 @@ async def post_vendor_purchase_bill_payable(session: AsyncSession, bill: Purchas
     if vendor is None:
         raise ValueError("Vendor not found")
 
-    amount = (
-        await session.execute(
-            select(
-                func.coalesce(
-                    func.sum(
-                        func.coalesce(PurchaseBillItem.quantity, Decimal("0"))
-                        * func.coalesce(PurchaseBillItem.unit_price, Decimal("0"))
-                    ),
-                    Decimal("0"),
-                )
-            ).where(PurchaseBillItem.purchase_bill_id == bill.id)
-        )
-    ).scalar_one()
-    amount = Decimal(amount or Decimal("0"))
+    amount = Decimal(bill.total_amount or Decimal("0"))
+    if amount <= 0:
+        amount = (
+            await session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(
+                            func.coalesce(PurchaseBillItem.base_quantity, PurchaseBillItem.quantity, Decimal("0"))
+                            * func.coalesce(PurchaseBillItem.unit_price, Decimal("0"))
+                        ),
+                        Decimal("0"),
+                    )
+                ).where(PurchaseBillItem.purchase_bill_id == bill.id)
+            )
+        ).scalar_one()
+        amount = Decimal(amount or Decimal("0"))
     if amount <= 0:
         raise ValueError("Purchase bill amount must be positive to post payable")
 

@@ -53,6 +53,7 @@ async def post_purchase_bill(session: AsyncSession, purchase_bill_id):
     items = items_res.scalars().all()
 
     for item in items:
+        base_quantity = Decimal(item.base_quantity or item.quantity or 0)
         batch_res = await session.execute(
             select(InventoryBatch).where(
                 InventoryBatch.warehouse_id == warehouse_id,
@@ -73,14 +74,14 @@ async def post_purchase_bill(session: AsyncSession, purchase_bill_id):
             )
             session.add(batch)
 
-        batch.available_quantity = Decimal(batch.available_quantity) + Decimal(item.quantity)
+        batch.available_quantity = Decimal(batch.available_quantity) + base_quantity
 
         movement = StockMovement(
             warehouse_id=warehouse_id,
             product_id=item.product_id,
             batch_no=item.batch_no,
             move_type=StockMoveType.IN,
-            quantity=item.quantity,
+            quantity=base_quantity,
             reference_type="purchase_bill",
             reference_id=bill.id,
             created_at=datetime.now(timezone.utc),
