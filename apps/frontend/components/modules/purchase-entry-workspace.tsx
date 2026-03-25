@@ -4,7 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, fetchBackend, fetchBackendFresh, patchBackend, postBackend } from "@/lib/backend-api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -402,7 +402,7 @@ export function PurchaseEntryWorkspace() {
   const searchVendors = useCallback(async (query: string) => {
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    const res = await fetchBackend(`/procurement/purchase-entry/vendors/search?${params.toString()}`);
+    const res = await fetchBackendFresh(`/procurement/purchase-entry/vendors/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapVendorSummary);
     setVendorResults(items);
     setVendorIndex(0);
@@ -411,7 +411,7 @@ export function PurchaseEntryWorkspace() {
   const searchProducts = useCallback(async (query: string) => {
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    const res = await fetchBackend(`/procurement/purchase-entry/products/search?${params.toString()}`);
+    const res = await fetchBackendFresh(`/procurement/purchase-entry/products/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapProductSummary);
     setProductResults(items);
     setProductIndex(0);
@@ -1221,27 +1221,31 @@ export function PurchaseEntryWorkspace() {
               <span className="text-right">Rate</span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {productResults.map((product, index) => (
-                <button
-                  key={product.product_id}
-                  type="button"
-                  className={cn(
-                    "grid w-full grid-cols-[minmax(0,1fr)_130px_130px] items-center border-b px-4 py-3 text-left text-sm",
-                    index === productIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted/50"
-                  )}
-                  onMouseEnter={() => setProductIndex(index)}
-                  onClick={() => selectProduct(product)}
-                >
-                  <div>
-                    <div className="font-semibold">{product.name}</div>
-                    <div className={cn("mt-1 truncate text-xs", index === productIndex ? "text-white/80" : "text-muted-foreground")}>
-                      {product.sku}{product.brand ? ` • ${product.brand}` : ""}
+              {productResults.length ? (
+                productResults.map((product, index) => (
+                  <button
+                    key={product.product_id}
+                    type="button"
+                    className={cn(
+                      "grid w-full grid-cols-[minmax(0,1fr)_130px_130px] items-center border-b px-4 py-3 text-left text-sm",
+                      index === productIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted/50"
+                    )}
+                    onMouseEnter={() => setProductIndex(index)}
+                    onClick={() => selectProduct(product)}
+                  >
+                    <div>
+                      <div className="font-semibold">{product.name}</div>
+                      <div className={cn("mt-1 truncate text-xs", index === productIndex ? "text-white/80" : "text-muted-foreground")}>
+                        {product.sku}{product.brand ? ` • ${product.brand}` : ""}
+                      </div>
                     </div>
-                  </div>
-                  <span className="text-right font-semibold">{product.stock_ratio}</span>
-                  <span className="text-right font-semibold">{Number(product.latest_rate_value || product.cost_price).toFixed(2)}</span>
-                </button>
-              ))}
+                    <span className="text-right font-semibold">{product.stock_ratio}</span>
+                    <span className="text-right font-semibold">{Number(product.latest_rate_value || product.cost_price).toFixed(2)}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="px-4 py-6 text-sm text-muted-foreground">No products found for this search.</div>
+              )}
             </div>
           </div>
           <div className="min-h-0 overflow-y-auto bg-[#f8faf7] p-4 text-sm">

@@ -918,7 +918,15 @@ async def search_purchase_entry_products(
     stmt = select(Product).where(Product.is_active.is_(True))
     if q and q.strip():
         term = f"%{q.strip()}%"
-        stmt = stmt.where(or_(Product.sku.ilike(term), Product.name.ilike(term), Product.brand.ilike(term), Product.category.ilike(term)))
+        stmt = stmt.where(
+            or_(
+                Product.sku.ilike(term),
+                Product.name.ilike(term),
+                Product.brand.ilike(term),
+                Product.category.ilike(term),
+                Product.description.ilike(term),
+            )
+        )
     stmt = stmt.order_by(Product.name.asc()).limit(limit)
     products = (await db.execute(stmt)).scalars().all()
     items = []

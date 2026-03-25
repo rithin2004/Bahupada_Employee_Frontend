@@ -433,23 +433,11 @@ async function fetchBackend(path: string) {
 
 async function fetchBackendFresh(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const response = await fetchWithPortalAuth(normalizedPath, {
-    method: "GET",
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    let detail = "";
-    try {
-      const body = asObject(await response.json());
-      detail = formatBackendDetail(body.detail);
-    } catch {
-      detail = "";
-    }
-    throw new Error(detail || `Backend request failed: ${response.status} ${normalizedPath}`);
+  if (typeof window !== "undefined") {
+    store.dispatch(invalidateByPrefixes([normalizedPath]));
+    inFlightGetRequests.delete(normalizedPath);
   }
-
-  return response.json();
+  return requestBackend(normalizedPath, { method: "GET" });
 }
 
 async function postBackend(path: string, body: Record<string, unknown>) {
