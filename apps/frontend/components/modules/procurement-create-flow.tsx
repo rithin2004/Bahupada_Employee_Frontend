@@ -134,6 +134,7 @@ const LIST_PAGE_SIZE = 50;
 
 const EMPTY_INLINE_VENDOR_FORM = {
   firm_name: "",
+  brand_ids: [] as string[],
   gstin: "",
   pan: "",
   owner_name: "",
@@ -412,7 +413,12 @@ function isMissingBearerTokenError(error: unknown) {
   return error instanceof Error && error.message.toLowerCase().includes("missing bearer token");
 }
 
-export function ProcurementCreateFlow() {
+type ProcurementCreateFlowProps = {
+  initialTab?: "challan" | "bill";
+  hideTabs?: boolean;
+};
+
+export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false }: ProcurementCreateFlowProps = {}) {
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [canReadPurchase, setCanReadPurchase] = useState(false);
   const [canWritePurchase, setCanWritePurchase] = useState(false);
@@ -816,6 +822,7 @@ export function ProcurementCreateFlow() {
           pincode: newVendorForm.pincode.trim() || null,
           bank_account_number: newVendorForm.bank_account_number.trim() || null,
           ifsc_code: newVendorForm.ifsc_code.trim() || null,
+          brand_ids: newVendorForm.brand_ids,
         })
       );
       await loadMasters();
@@ -1289,13 +1296,15 @@ export function ProcurementCreateFlow() {
 
   return (
     <>
-    <Tabs defaultValue="challan" className="w-full">
-      <TabsList>
-        <TabsTrigger value="challan">Purchase Challan</TabsTrigger>
-        <TabsTrigger value="bill">Purchase Bill</TabsTrigger>
-      </TabsList>
+    <Tabs defaultValue={initialTab} className="w-full">
+      {!hideTabs ? (
+        <TabsList>
+          <TabsTrigger value="challan">Purchase Challan</TabsTrigger>
+          <TabsTrigger value="bill">Purchase Bill</TabsTrigger>
+        </TabsList>
+      ) : null}
 
-      <TabsContent value="challan">
+      <TabsContent value="challan" className={hideTabs ? "mt-0" : undefined}>
         <Card>
           <CardHeader>
             <CardTitle>Purchase Challan Entry</CardTitle>
@@ -2088,11 +2097,33 @@ export function ProcurementCreateFlow() {
                                         onChange={(e) => setNewVendorForm((prev) => ({ ...prev, bank_account_number: e.target.value }))}
                                       />
                                     </div>
-                                    <div className="space-y-1 md:col-span-2">
-                                      <Label>IFSC Code</Label>
-                                      <Input value={newVendorForm.ifsc_code} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} />
+                                  <div className="space-y-1 md:col-span-2">
+                                    <Label>IFSC Code</Label>
+                                    <Input value={newVendorForm.ifsc_code} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} />
+                                  </div>
+                                  <div className="space-y-2 md:col-span-2">
+                                    <Label>Linked Brands</Label>
+                                    <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
+                                      {brands.length ? brands.map((brand) => (
+                                        <label key={brand.id} className="flex items-center gap-2 text-sm">
+                                          <input
+                                            type="checkbox"
+                                            checked={newVendorForm.brand_ids.includes(brand.id)}
+                                            onChange={(e) =>
+                                              setNewVendorForm((prev) => ({
+                                                ...prev,
+                                                brand_ids: e.target.checked
+                                                  ? [...prev.brand_ids, brand.id]
+                                                  : prev.brand_ids.filter((id) => id !== brand.id),
+                                              }))
+                                            }
+                                          />
+                                          {brand.name}
+                                        </label>
+                                      )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
                                     </div>
                                   </div>
+                                </div>
                                   <div className="pt-2">
                                     <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.firm_name.trim()}>
                                       {creatingVendor ? "Adding..." : "Add Vendor"}

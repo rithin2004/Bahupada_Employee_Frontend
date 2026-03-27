@@ -7,7 +7,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Header, Query
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -22,6 +22,9 @@ from app.models.entities import (
     PartyType,
     Pricing,
     Product,
+    ProductBrand,
+    ProductCategory,
+    ProductSubCategory,
     PurchaseBill,
     PurchaseBillItem,
     PurchaseChallan,
@@ -37,6 +40,7 @@ from app.models.entities import (
     StockMoveType,
     Unit,
     Vendor,
+    VendorBrand,
     VoucherStatus,
     Warehouse,
     WarehouseTransfer,
@@ -172,6 +176,32 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
             .limit(3)
         )
     ).all()
+    open_challans_rows = (
+        await db.execute(
+            select(
+                PurchaseChallan.id,
+                PurchaseChallan.reference_no,
+                PurchaseChallan.created_at,
+                func.count(PurchaseChallanItem.id),
+            )
+            .outerjoin(PurchaseChallanItem, PurchaseChallanItem.purchase_challan_id == PurchaseChallan.id)
+            .outerjoin(
+                PurchaseBill,
+                and_(
+                    PurchaseBill.purchase_challan_id == PurchaseChallan.id,
+                    PurchaseBill.deleted_at.is_(None),
+                ),
+            )
+            .where(
+                PurchaseChallan.vendor_id == vendor.id,
+                PurchaseChallan.deleted_at.is_(None),
+                PurchaseBill.id.is_(None),
+            )
+            .group_by(PurchaseChallan.id, PurchaseChallan.reference_no, PurchaseChallan.created_at)
+            .order_by(PurchaseChallan.created_at.desc())
+            .limit(5)
+        )
+    ).all()
     account = (
         await db.execute(
             select(PartyLedgerAccount).where(PartyLedgerAccount.party_type == PartyType.VENDOR, PartyLedgerAccount.party_id == vendor.id)
@@ -203,11 +233,20 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
             )
         ).scalar_one_or_none()
 
+    brand_names = (
+        await db.execute(
+            select(ProductBrand.name)
+            .join(VendorBrand, VendorBrand.brand_id == ProductBrand.id)
+            .where(VendorBrand.vendor_id == vendor.id, VendorBrand.is_active.is_(True))
+            .order_by(VendorBrand.is_primary.desc(), ProductBrand.name.asc())
+        )
+    ).scalars().all()
     address_lines = [line for line in [vendor.firm_name or vendor.name, vendor.street, vendor.city, vendor.state, vendor.pincode] if line]
     return PurchaseEntryVendorSummary(
         vendor_id=vendor.id,
         vendor_name=vendor.firm_name or vendor.name,
         address_lines=address_lines,
+        brand_names=[str(name) for name in brand_names],
         city=vendor.city,
         state=vendor.state,
         pincode=vendor.pincode,
@@ -225,6 +264,15 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
         last_bills=[
             {"bill_number": row[0], "bill_date": row[1], "total_amount": Decimal(row[2] or 0)}
             for row in last_bills_rows
+        ],
+        open_challans=[
+            {
+                "challan_id": row[0],
+                "reference_no": row[1],
+                "challan_date": row[2].date() if row[2] else None,
+                "item_count": int(row[3] or 0),
+            }
+            for row in open_challans_rows
         ],
     )
 
@@ -912,22 +960,71 @@ async def get_purchase_entry_vendor_summary(vendor_id: uuid.UUID, db: AsyncSessi
 @router.get("/purchase-entry/products/search", dependencies=[Depends(require_permission("purchase", "read"))])
 async def search_purchase_entry_products(
     q: str | None = Query(None),
+    vendor_id: uuid.UUID | None = Query(None),
     limit: int = Query(25, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Product).where(Product.is_active.is_(True))
+    stmt = (
+        select(Product)
+        .select_from(Product)
+        .outerjoin(ProductBrand, ProductBrand.id == Product.brand_id)
+        .outerjoin(ProductCategory, ProductCategory.id == Product.category_id)
+        .outerjoin(ProductSubCategory, ProductSubCategory.id == Product.sub_category_id)
+        .where(Product.is_active.is_(True))
+    )
+    if vendor_id is not None:
+        linked_brand_rows = (
+            await db.execute(
+                select(VendorBrand.brand_id, ProductBrand.name)
+                .join(ProductBrand, ProductBrand.id == VendorBrand.brand_id)
+                .where(
+                    VendorBrand.vendor_id == vendor_id,
+                    VendorBrand.is_active.is_(True),
+                )
+            )
+        ).all()
+        linked_brand_ids = [row[0] for row in linked_brand_rows if row[0] is not None]
+        linked_brand_names = [str(row[1]).strip() for row in linked_brand_rows if row[1]]
+        if not linked_brand_ids and not linked_brand_names:
+            return {"items": []}
+        brand_filters = []
+        if linked_brand_ids:
+            brand_filters.append(Product.brand_id.in_(linked_brand_ids))
+        if linked_brand_names:
+            brand_filters.append(func.upper(func.trim(Product.brand)).in_([name.upper() for name in linked_brand_names]))
+        stmt = stmt.where(or_(*brand_filters))
+    ranking = None
     if q and q.strip():
-        term = f"%{q.strip()}%"
+        term = q.strip()
+        like_term = f"%{term}%"
+        prefix_term = f"{term}%"
         stmt = stmt.where(
             or_(
-                Product.sku.ilike(term),
-                Product.name.ilike(term),
-                Product.brand.ilike(term),
-                Product.category.ilike(term),
-                Product.description.ilike(term),
+                Product.sku.ilike(like_term),
+                Product.name.ilike(like_term),
+                Product.display_name.ilike(like_term),
+                Product.brand.ilike(like_term),
+                Product.category.ilike(like_term),
+                Product.description.ilike(like_term),
+                ProductBrand.name.ilike(like_term),
+                ProductCategory.name.ilike(like_term),
+                ProductSubCategory.name.ilike(like_term),
             )
         )
-    stmt = stmt.order_by(Product.name.asc()).limit(limit)
+        ranking = case(
+            (Product.sku.ilike(term), 0),
+            (Product.sku.ilike(prefix_term), 1),
+            (Product.name.ilike(prefix_term), 2),
+            (Product.display_name.ilike(prefix_term), 3),
+            (ProductBrand.name.ilike(prefix_term), 4),
+            (ProductCategory.name.ilike(prefix_term), 5),
+            else_=6,
+        )
+    if ranking is not None:
+        stmt = stmt.order_by(ranking.asc(), Product.created_at.desc())
+    else:
+        stmt = stmt.order_by(Product.created_at.desc())
+    stmt = stmt.limit(limit)
     products = (await db.execute(stmt)).scalars().all()
     items = []
     for product in products:

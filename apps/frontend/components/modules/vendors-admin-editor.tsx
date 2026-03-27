@@ -25,6 +25,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 type VendorRow = {
   id: string;
   firm_name: string;
+  brand_ids: string[];
+  brand_names: string[];
   gstin: string;
   pan: string;
   owner_name: string;
@@ -48,10 +50,16 @@ type AccountCategoryRow = {
   name: string;
 };
 
+type BrandRow = {
+  id: string;
+  name: string;
+};
+
 const DEFAULT_PAGE_SIZE = 50;
 
 const EMPTY_CREATE_FORM = {
   firm_name: "",
+  brand_ids: [] as string[],
   gstin: "",
   pan: "",
   owner_name: "",
@@ -77,6 +85,8 @@ function mapRow(row: Record<string, unknown>): VendorRow {
   return {
     id: String(row.id ?? ""),
     firm_name: String(row.firm_name ?? ""),
+    brand_ids: asArray(row.brand_ids).map((item) => String(item)),
+    brand_names: asArray(row.brand_names).map((item) => String(item)),
     gstin: String(row.gstin ?? ""),
     pan: String(row.pan ?? ""),
     owner_name: String(row.owner_name ?? ""),
@@ -106,6 +116,7 @@ export function VendorsAdminEditor() {
   const [creating, setCreating] = useState(false);
   const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
   const [accountCategories, setAccountCategories] = useState<AccountCategoryRow[]>([]);
+  const [brands, setBrands] = useState<BrandRow[]>([]);
   const [openCategoryDialog, setOpenCategoryDialog] = useState(false);
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [categoryForm, setCategoryForm] = useState({ ...EMPTY_CATEGORY_FORM });
@@ -139,6 +150,23 @@ export function VendorsAdminEditor() {
       );
     } catch {
       setAccountCategories([]);
+    }
+  }
+
+  async function loadBrands() {
+    if (!canReadVendors) {
+      return;
+    }
+    try {
+      const response = asObject(await fetchBackend("/masters/product-brands?page=1&page_size=100"));
+      setBrands(
+        asArray(response.items).map((row) => ({
+          id: String(row.id ?? ""),
+          name: String(row.name ?? ""),
+        }))
+      );
+    } catch {
+      setBrands([]);
     }
   }
 
@@ -209,6 +237,7 @@ export function VendorsAdminEditor() {
       return;
     }
     void loadAccountCategories();
+    void loadBrands();
   }, [permissionsLoaded, canReadVendors]);
 
   useEffect(() => {
@@ -262,6 +291,7 @@ export function VendorsAdminEditor() {
         bank_account_number: selected.bank_account_number || null,
         ifsc_code: selected.ifsc_code || null,
         account_category_id: selected.account_category_id || null,
+        brand_ids: selected.brand_ids,
         is_active: selected.is_active,
       });
       toast.success(`Vendor updated: ${selected.firm_name}`, { duration: 5000 });
@@ -301,6 +331,7 @@ export function VendorsAdminEditor() {
         bank_account_number: createForm.bank_account_number.trim() || null,
         ifsc_code: createForm.ifsc_code.trim() || null,
         account_category_id: createForm.account_category_id || null,
+        brand_ids: createForm.brand_ids,
       });
       const createdName = createForm.firm_name.trim();
       setCreateForm({ ...EMPTY_CREATE_FORM });
@@ -576,6 +607,28 @@ export function VendorsAdminEditor() {
                     ))}
                   </select>
                 </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Linked Brands</Label>
+                  <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
+                    {brands.length ? brands.map((brand) => (
+                      <label key={brand.id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={createForm.brand_ids.includes(brand.id)}
+                          onChange={(e) =>
+                            setCreateForm((prev) => ({
+                              ...prev,
+                              brand_ids: e.target.checked
+                                ? [...prev.brand_ids, brand.id]
+                                : prev.brand_ids.filter((id) => id !== brand.id),
+                            }))
+                          }
+                        />
+                        {brand.name}
+                      </label>
+                    )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
+                  </div>
+                </div>
               </div>
               <DialogFooter>
                 <Button onClick={createVendor} disabled={!canWriteVendors || creating || !createForm.firm_name.trim()}>
@@ -598,6 +651,7 @@ export function VendorsAdminEditor() {
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Firm Name</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">GSTIN</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Phone</TableHead>
+              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Brands</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Account Category</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">City</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">State</TableHead>
@@ -613,6 +667,7 @@ export function VendorsAdminEditor() {
                     <TableCell><Skeleton className="h-5 w-40 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-44 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
@@ -624,7 +679,7 @@ export function VendorsAdminEditor() {
               : null}
             {!loading && rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="text-center text-muted-foreground">
+                <TableCell colSpan={11} className="text-center text-muted-foreground">
                   No vendors found.
                 </TableCell>
               </TableRow>
@@ -642,6 +697,7 @@ export function VendorsAdminEditor() {
                   <TableCell>{row.firm_name || "-"}</TableCell>
                   <TableCell>{row.gstin || "-"}</TableCell>
                   <TableCell>{row.phone || "-"}</TableCell>
+                  <TableCell>{row.brand_names.length ? row.brand_names.join(", ") : "-"}</TableCell>
                   <TableCell>{row.account_category_name || "-"}</TableCell>
                   <TableCell>{row.city || "-"}</TableCell>
                   <TableCell>{row.state || "-"}</TableCell>
@@ -748,6 +804,38 @@ export function VendorsAdminEditor() {
                                   </option>
                                 ))}
                               </select>
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                              <Label>Linked Brands</Label>
+                              <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
+                                {brands.length ? brands.map((brand) => (
+                                  <label key={brand.id} className="flex items-center gap-2 text-sm">
+                                    <input
+                                      type="checkbox"
+                                      checked={selected.brand_ids.includes(brand.id)}
+                                      onChange={(e) => {
+                                        const nextIds = e.target.checked
+                                          ? [...selected.brand_ids, brand.id]
+                                          : selected.brand_ids.filter((id) => id !== brand.id);
+                                        setRows((prev) =>
+                                          prev.map((row) =>
+                                            row.id === selected.id
+                                              ? {
+                                                  ...row,
+                                                  brand_ids: nextIds,
+                                                  brand_names: brands
+                                                    .filter((item) => nextIds.includes(item.id))
+                                                    .map((item) => item.name),
+                                                }
+                                              : row
+                                          )
+                                        );
+                                      }}
+                                    />
+                                    {brand.name}
+                                  </label>
+                                )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
+                              </div>
                             </div>
                             <label className="flex items-center gap-2 text-sm">
                               <input

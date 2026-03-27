@@ -377,6 +377,19 @@ class ProductBrand(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class VendorBrand(Base, TimestampMixin):
+    __tablename__ = "vendor_brands"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "brand_id", name="uq_vendor_brand"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("product_brands.id"), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class ProductCategory(Base, TimestampMixin):
     __tablename__ = "product_categories"
 

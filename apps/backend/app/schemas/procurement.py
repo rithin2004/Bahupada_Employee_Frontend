@@ -75,6 +75,7 @@ class PurchaseEntryVendorSummary(BaseModel):
     vendor_id: uuid.UUID
     vendor_name: str
     address_lines: list[str]
+    brand_names: list[str] = []
     city: str | None = None
     state: str | None = None
     pincode: str | None = None
@@ -90,6 +91,7 @@ class PurchaseEntryVendorSummary(BaseModel):
     last_purchase_date: date | None = None
     last_payment_date: date | None = None
     last_bills: list[dict]
+    open_challans: list[dict] = []
 
 
 class PurchaseEntryProductSummary(BaseModel):

@@ -13,11 +13,15 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
-type WarehouseOption = { id: string; name: string; code: string };
+type WarehouseOption = { id: string; name: string; code: string; state: string | null };
+type LookupOption = { id: string; name: string };
+type SubCategoryOption = LookupOption & { category_id?: string };
+type AccountCategoryOption = { id: string; code: string; name: string };
 type VendorSummary = {
   vendor_id: string;
   vendor_name: string;
   address_lines: string[];
+  brand_names: string[];
   city: string | null;
   state: string | null;
   pincode: string | null;
@@ -33,6 +37,7 @@ type VendorSummary = {
   last_purchase_date: string | null;
   last_payment_date: string | null;
   last_bills: Array<{ bill_number: string; bill_date: string; total_amount: string }>;
+  open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number }>;
 };
 
 type ProductSummary = {
@@ -89,6 +94,40 @@ type ProductEditForm = {
 
 type UnitOption = { id: string; unit_code: string; unit_name: string };
 type HsnOption = { id: string; hsn_code: string; gst_percent: string };
+type VendorCreateForm = {
+  firm_name: string;
+  brand_ids: string[];
+  gstin: string;
+  pan: string;
+  owner_name: string;
+  phone: string;
+  alternate_phone: string;
+  email: string;
+  street: string;
+  city: string;
+  state: string;
+  pincode: string;
+  bank_account_number: string;
+  ifsc_code: string;
+  account_category_id: string;
+};
+type ProductCreateForm = {
+  sku: string;
+  name: string;
+  brand_id: string;
+  category_id: string;
+  sub_category_id: string;
+  description: string;
+  hsn_id: string;
+  primary_unit_id: string;
+  secondary_unit_id: string;
+  third_unit_id: string;
+  secondary_unit_quantity: string;
+  third_unit_quantity: string;
+  weight_in_grams: string;
+  base_price: string;
+  tax_percent: string;
+};
 
 type LineDraft = {
   id: string;
@@ -106,6 +145,40 @@ type LineDraft = {
 const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   sku: "",
   name: "",
+  description: "",
+  hsn_id: "",
+  primary_unit_id: "",
+  secondary_unit_id: "",
+  third_unit_id: "",
+  secondary_unit_quantity: "",
+  third_unit_quantity: "",
+  weight_in_grams: "",
+  base_price: "",
+  tax_percent: "",
+};
+const EMPTY_VENDOR_FORM: VendorCreateForm = {
+  firm_name: "",
+  brand_ids: [],
+  gstin: "",
+  pan: "",
+  owner_name: "",
+  phone: "",
+  alternate_phone: "",
+  email: "",
+  street: "",
+  city: "",
+  state: "",
+  pincode: "",
+  bank_account_number: "",
+  ifsc_code: "",
+  account_category_id: "",
+};
+const EMPTY_PRODUCT_FORM: ProductCreateForm = {
+  sku: "",
+  name: "",
+  brand_id: "",
+  category_id: "",
+  sub_category_id: "",
   description: "",
   hsn_id: "",
   primary_unit_id: "",
@@ -154,6 +227,13 @@ function asDecimal(value: string | number | null | undefined) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function toNullableNumber(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function makeLine(): LineDraft {
   return {
     id: crypto.randomUUID(),
@@ -170,7 +250,70 @@ function makeLine(): LineDraft {
 }
 
 type LineField = "product" | "quantity1" | "quantity2" | "quantity3" | "rateValue" | "rateUnitLevel" | "discountPercent";
-const LINE_FIELD_ORDER: LineField[] = ["product", "quantity1", "quantity2", "quantity3", "rateValue", "rateUnitLevel", "discountPercent"];
+const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "quantity1", "rateValue", "rateUnitLevel", "discountPercent"];
+const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
+const VENDOR_CREATE_FIELD_ORDER = [
+  "firm_name",
+  "gstin",
+  "pan",
+  "owner_name",
+  "phone",
+  "alternate_phone",
+  "email",
+  "street",
+  "city",
+  "state",
+  "pincode",
+  "bank_account_number",
+  "ifsc_code",
+  "account_category_id",
+] as const;
+const PRODUCT_CREATE_FIELD_ORDER = [
+  "sku",
+  "name",
+  "brand_id",
+  "category_id",
+  "sub_category_id",
+  "hsn_id",
+  "description",
+  "primary_unit_id",
+  "secondary_unit_id",
+  "secondary_unit_quantity",
+  "third_unit_id",
+  "third_unit_quantity",
+  "weight_in_grams",
+  "base_price",
+  "tax_percent",
+] as const;
+
+function getLineQuantityFields(line: LineDraft | null): LineField[] {
+  if (!line?.product) {
+    return ["quantity1"];
+  }
+  const fields: LineField[] = [];
+  if (line.product.unit_3rd_name) fields.push("quantity3");
+  if (line.product.unit_2nd_name) fields.push("quantity2");
+  fields.push("quantity1");
+  return fields;
+}
+
+function getLineFieldOrder(line: LineDraft | null): LineField[] {
+  return ["product", ...getLineQuantityFields(line), "rateValue", "rateUnitLevel", "discountPercent"];
+}
+
+function resolveFieldForLine(line: LineDraft | null, preferred: LineField): LineField {
+  const order = getLineFieldOrder(line);
+  if (order.includes(preferred)) return preferred;
+  if (preferred === "quantity3" || preferred === "quantity2" || preferred === "quantity1") {
+    return getLineQuantityFields(line)[0] ?? "quantity1";
+  }
+  const preferredIndex = LINE_FIELD_ORDER.indexOf(preferred);
+  for (let index = preferredIndex; index >= 0; index -= 1) {
+    const candidate = LINE_FIELD_ORDER[index];
+    if (order.includes(candidate)) return candidate;
+  }
+  return order[0] ?? "product";
+}
 
 function deriveTaxType(warehouseState?: string | null, vendorState?: string | null) {
   return (warehouseState || "").trim().toUpperCase() === (vendorState || "").trim().toUpperCase() ? "LOCAL" : "CENTRAL";
@@ -208,11 +351,22 @@ function computeLineAmount(line: LineDraft) {
   return Math.max(0, taxable + tax);
 }
 
+function computeLineTaxableAmount(line: LineDraft) {
+  if (!line.product) return 0;
+  const baseQty = lineBaseQuantity(line);
+  const subtotal = baseQty * lineUnitPrice(line);
+  const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+  const discountLumpsum = asDecimal(line.discountLumpsum);
+  const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
+  return Math.max(0, subtotal - discountAmount);
+}
+
 function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
   return {
     vendor_id: String(row.vendor_id ?? ""),
     vendor_name: String(row.vendor_name ?? ""),
     address_lines: Array.isArray(row.address_lines) ? row.address_lines.map((item) => String(item)) : [],
+    brand_names: asArray(row.brand_names).map((item) => String(item)),
     city: row.city ? String(row.city) : null,
     state: row.state ? String(row.state) : null,
     pincode: row.pincode ? String(row.pincode) : null,
@@ -226,11 +380,17 @@ function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
     balance: String(row.balance ?? "0"),
     balance_side: String(row.balance_side ?? "CR"),
     last_purchase_date: row.last_purchase_date ? String(row.last_purchase_date) : null,
-    last_payment_date: row.last_payment_date ? String(row.last_payment_date) : null,
-    last_bills: asArray(row.last_bills).map((bill) => ({
+  last_payment_date: row.last_payment_date ? String(row.last_payment_date) : null,
+  last_bills: asArray(row.last_bills).map((bill) => ({
       bill_number: String(bill.bill_number ?? ""),
       bill_date: String(bill.bill_date ?? ""),
       total_amount: String(bill.total_amount ?? "0"),
+    })),
+    open_challans: asArray(row.open_challans).map((challan) => ({
+      challan_id: String(challan.challan_id ?? ""),
+      reference_no: String(challan.reference_no ?? ""),
+      challan_date: challan.challan_date ? String(challan.challan_date) : null,
+      item_count: Number(challan.item_count ?? 0),
     })),
   };
 }
@@ -279,6 +439,10 @@ export function PurchaseEntryWorkspace() {
   const [receivedDateInput, setReceivedDateInput] = useState(formatDisplayDate(todayIso()));
   const [receivedDate, setReceivedDate] = useState(todayIso());
   const [paymentMode, setPaymentMode] = useState<"CREDIT" | "CASH">("CREDIT");
+  const [paymentModeOpen, setPaymentModeOpen] = useState(false);
+  const [paymentModeIndex, setPaymentModeIndex] = useState(0);
+  const [warehousePickerOpen, setWarehousePickerOpen] = useState(false);
+  const [warehouseIndex, setWarehouseIndex] = useState(0);
   const [taxType, setTaxType] = useState<"LOCAL" | "CENTRAL">("CENTRAL");
   const [freightAmount, setFreightAmount] = useState("0");
   const [notes, setNotes] = useState("");
@@ -294,7 +458,8 @@ export function PurchaseEntryWorkspace() {
   const [productIndex, setProductIndex] = useState(0);
   const [activeRow, setActiveRow] = useState(0);
   const [activeField, setActiveField] = useState<LineField>("product");
-  const [lines, setLines] = useState<LineDraft[]>([makeLine(), makeLine(), makeLine(), makeLine(), makeLine()]);
+  const [lines, setLines] = useState<LineDraft[]>([makeLine()]);
+  const [rateUnitPicker, setRateUnitPicker] = useState<{ rowIndex: number; optionIndex: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
   const [ledgerRows, setLedgerRows] = useState<LedgerEntry[]>([]);
@@ -302,23 +467,97 @@ export function PurchaseEntryWorkspace() {
   const [productEditForm, setProductEditForm] = useState<ProductEditForm>(EMPTY_PRODUCT_EDIT);
   const [hsnOptions, setHsnOptions] = useState<HsnOption[]>([]);
   const [unitOptions, setUnitOptions] = useState<UnitOption[]>([]);
+  const [brandOptions, setBrandOptions] = useState<LookupOption[]>([]);
+  const [categoryOptions, setCategoryOptions] = useState<LookupOption[]>([]);
+  const [subCategoryOptions, setSubCategoryOptions] = useState<SubCategoryOption[]>([]);
+  const [vendorCategoryOptions, setVendorCategoryOptions] = useState<AccountCategoryOption[]>([]);
+  const [vendorCreateOpen, setVendorCreateOpen] = useState(false);
+  const [productCreateOpen, setProductCreateOpen] = useState(false);
+  const [creatingVendor, setCreatingVendor] = useState(false);
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [vendorCreateForm, setVendorCreateForm] = useState<VendorCreateForm>({ ...EMPTY_VENDOR_FORM });
+  const [productCreateForm, setProductCreateForm] = useState<ProductCreateForm>({ ...EMPTY_PRODUCT_FORM });
   const billDateRef = useRef<HTMLInputElement | null>(null);
   const billNumberRef = useRef<HTMLInputElement | null>(null);
   const receivedDateRef = useRef<HTMLInputElement | null>(null);
-  const paymentModeRef = useRef<HTMLSelectElement | null>(null);
+  const paymentModeRef = useRef<HTMLButtonElement | null>(null);
+  const warehouseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const freightRef = useRef<HTMLInputElement | null>(null);
+  const notesRef = useRef<HTMLTextAreaElement | null>(null);
+  const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const vendorSearchRef = useRef<HTMLInputElement | null>(null);
   const productSearchRef = useRef<HTMLInputElement | null>(null);
   const productCellRef = useRef<HTMLButtonElement | null>(null);
   const vendorButtonRef = useRef<HTMLButtonElement | null>(null);
-  const lineRefs = useRef<Record<string, HTMLInputElement | HTMLButtonElement | HTMLSelectElement | null>>({});
+  const vendorCreateRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
+  const productCreateRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>>({});
+  const vendorCreateSaveRef = useRef<HTMLButtonElement | null>(null);
+  const productCreateSaveRef = useRef<HTMLButtonElement | null>(null);
+  const lineRefs = useRef<Record<string, HTMLInputElement | HTMLButtonElement | null>>({});
 
   const activeLine = lines[activeRow] ?? null;
 
   const setLineRef = useCallback((rowId: string, field: LineField) => {
-    return (node: HTMLInputElement | HTMLButtonElement | HTMLSelectElement | null) => {
+    return (node: HTMLInputElement | HTMLButtonElement | null) => {
       lineRefs.current[`${rowId}:${field}`] = node;
     };
   }, []);
+
+  const setVendorCreateRef = useCallback((field: string) => {
+    return (node: HTMLInputElement | HTMLSelectElement | null) => {
+      vendorCreateRefs.current[field] = node;
+    };
+  }, []);
+
+  const setProductCreateRef = useCallback((field: string) => {
+    return (node: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null) => {
+      productCreateRefs.current[field] = node;
+    };
+  }, []);
+
+  const focusVendorCreateField = useCallback((field: string) => {
+    const node = vendorCreateRefs.current[field];
+    if (node && "focus" in node) {
+      node.focus();
+      if ("select" in node && typeof node.select === "function") {
+        node.select();
+      }
+    }
+  }, []);
+
+  const focusProductCreateField = useCallback((field: string) => {
+    const node = productCreateRefs.current[field];
+    if (node && "focus" in node) {
+      node.focus();
+      if ("select" in node && typeof node.select === "function") {
+        node.select();
+      }
+    }
+  }, []);
+
+  const handleVendorCreateKeyDown = useCallback((event: ReactKeyboardEvent, field: (typeof VENDOR_CREATE_FIELD_ORDER)[number]) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const currentIndex = VENDOR_CREATE_FIELD_ORDER.indexOf(field);
+    const nextField = VENDOR_CREATE_FIELD_ORDER[currentIndex + 1];
+    if (nextField) {
+      focusVendorCreateField(nextField);
+      return;
+    }
+    vendorCreateSaveRef.current?.focus();
+  }, [focusVendorCreateField]);
+
+  const handleProductCreateKeyDown = useCallback((event: ReactKeyboardEvent, field: (typeof PRODUCT_CREATE_FIELD_ORDER)[number]) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const currentIndex = PRODUCT_CREATE_FIELD_ORDER.indexOf(field);
+    const nextField = PRODUCT_CREATE_FIELD_ORDER[currentIndex + 1];
+    if (nextField) {
+      focusProductCreateField(nextField);
+      return;
+    }
+    productCreateSaveRef.current?.focus();
+  }, [focusProductCreateField]);
 
   const focusLineField = useCallback((rowIndex: number, field: LineField) => {
     const row = lines[rowIndex];
@@ -383,6 +622,7 @@ export function PurchaseEntryWorkspace() {
         id: String(item.id ?? ""),
         name: String(item.name ?? ""),
         code: String(item.code ?? ""),
+        state: item.state ? String(item.state) : null,
       }));
       setWarehouses(warehouseItems);
       setWarehouseId(String(bootstrap.default_warehouse_id ?? warehouseItems[0]?.id ?? ""));
@@ -390,12 +630,32 @@ export function PurchaseEntryWorkspace() {
       setBillNumber(String(bootstrap.next_entry_number ?? ""));
       setHsnOptions(asArray(asObject(hsnRes).items).map((item) => ({ id: String(item.id ?? ""), hsn_code: String(item.hsn_code ?? ""), gst_percent: String(item.gst_percent ?? "0") })));
       setUnitOptions(asArray(asObject(unitRes).items).map((item) => ({ id: String(item.id ?? ""), unit_code: String(item.unit_code ?? ""), unit_name: String(item.unit_name ?? "") })));
-      const activeWarehouse = asArray(asObject(warehouseRes).items).find((item) => String(item.id ?? "") === String(bootstrap.default_warehouse_id ?? "")) ?? asArray(asObject(warehouseRes).items)[0];
-      setWarehouseState(activeWarehouse?.state ? String(activeWarehouse.state) : null);
+      const activeWarehouse = warehouseItems.find((item) => item.id === String(bootstrap.default_warehouse_id ?? "")) ?? warehouseItems[0];
+      setWarehouseState(activeWarehouse?.state ?? null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to load purchase entry");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadCreateReferences = useCallback(async () => {
+    try {
+      const [brandRes, categoryRes, subCategoryRes, vendorCategoryRes] = await Promise.all([
+        fetchBackendFresh("/masters/product-brands?page=1&page_size=200"),
+        fetchBackendFresh("/masters/product-categories?page=1&page_size=200"),
+        fetchBackendFresh("/masters/product-sub-categories?page=1&page_size=200"),
+        fetchBackendFresh("/masters/account-categories?party_type=VENDOR&page=1&page_size=200"),
+      ]);
+      setBrandOptions(asArray(asObject(brandRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
+      setCategoryOptions(asArray(asObject(categoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
+      setSubCategoryOptions(asArray(asObject(subCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? ""), category_id: item.category_id ? String(item.category_id) : undefined })));
+      setVendorCategoryOptions(asArray(asObject(vendorCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), code: String(item.code ?? ""), name: String(item.name ?? "") })));
+    } catch {
+      setBrandOptions([]);
+      setCategoryOptions([]);
+      setSubCategoryOptions([]);
+      setVendorCategoryOptions([]);
     }
   }, []);
 
@@ -409,13 +669,19 @@ export function PurchaseEntryWorkspace() {
   }, []);
 
   const searchProducts = useCallback(async (query: string) => {
+    if (!vendorSummary?.vendor_id) {
+      setProductResults([]);
+      setProductIndex(0);
+      return;
+    }
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
+    params.set("vendor_id", vendorSummary.vendor_id);
     const res = await fetchBackendFresh(`/procurement/purchase-entry/products/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapProductSummary);
     setProductResults(items);
     setProductIndex(0);
-  }, []);
+  }, [vendorSummary?.vendor_id]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -429,6 +695,10 @@ export function PurchaseEntryWorkspace() {
   }, [loading]);
 
   useEffect(() => {
+    void loadCreateReferences();
+  }, [loadCreateReferences]);
+
+  useEffect(() => {
     if (!vendorSearchOpen) return;
     void searchVendors(vendorSearch);
   }, [vendorSearchOpen, vendorSearch, searchVendors]);
@@ -437,6 +707,15 @@ export function PurchaseEntryWorkspace() {
     if (!productSearchOpen) return;
     void searchProducts(productSearch);
   }, [productSearchOpen, productSearch, searchProducts]);
+
+  useEffect(() => {
+    const selectedWarehouse = warehouses.find((warehouse) => warehouse.id === warehouseId) ?? null;
+    const nextWarehouseState = selectedWarehouse?.state ?? null;
+    setWarehouseState(nextWarehouseState);
+    if (vendorSummary) {
+      setTaxType(deriveTaxType(nextWarehouseState, vendorSummary.state) as "LOCAL" | "CENTRAL");
+    }
+  }, [vendorSummary, warehouseId, warehouses]);
 
   useEffect(() => {
     if (vendorSearchOpen) {
@@ -451,6 +730,31 @@ export function PurchaseEntryWorkspace() {
   }, [productSearchOpen]);
 
   useEffect(() => {
+    if (paymentModeOpen) {
+      setPaymentModeIndex(PAYMENT_MODE_OPTIONS.indexOf(paymentMode));
+    }
+  }, [paymentMode, paymentModeOpen]);
+
+  useEffect(() => {
+    if (warehousePickerOpen) {
+      const index = Math.max(0, warehouses.findIndex((warehouse) => warehouse.id === warehouseId));
+      setWarehouseIndex(index < 0 ? 0 : index);
+    }
+  }, [warehouseId, warehousePickerOpen, warehouses]);
+
+  useEffect(() => {
+    if (vendorCreateOpen) {
+      setTimeout(() => focusVendorCreateField("firm_name"), 0);
+    }
+  }, [focusVendorCreateField, vendorCreateOpen]);
+
+  useEffect(() => {
+    if (productCreateOpen) {
+      setTimeout(() => focusProductCreateField("sku"), 0);
+    }
+  }, [focusProductCreateField, productCreateOpen]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
         return;
@@ -461,6 +765,25 @@ export function PurchaseEntryWorkspace() {
         setTimeout(() => focusLineField(activeRow, "product"), 0);
         return;
       }
+      if (rateUnitPicker) {
+        event.preventDefault();
+        const rowIndex = rateUnitPicker.rowIndex;
+        setRateUnitPicker(null);
+        setTimeout(() => focusLineField(rowIndex, "rateUnitLevel"), 0);
+        return;
+      }
+      if (paymentModeOpen) {
+        event.preventDefault();
+        setPaymentModeOpen(false);
+        setTimeout(() => paymentModeRef.current?.focus(), 0);
+        return;
+      }
+      if (warehousePickerOpen) {
+        event.preventDefault();
+        setWarehousePickerOpen(false);
+        setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+        return;
+      }
       if (vendorSearchOpen) {
         event.preventDefault();
         setVendorSearchOpen(false);
@@ -469,7 +792,7 @@ export function PurchaseEntryWorkspace() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, productSearchOpen, vendorSearchOpen]);
+  }, [activeRow, focusLineField, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -505,7 +828,18 @@ export function PurchaseEntryWorkspace() {
   }, []);
 
   const ensureTrailingEmptyLine = useCallback(() => {
-    setLines((prev) => (prev.some((line) => line.product === null) ? prev : [...prev, makeLine()]));
+    setLines((prev) => {
+      const blankIndexes = prev.map((line, index) => ({ line, index })).filter(({ line }) => line.product === null);
+      if (!blankIndexes.length) {
+        return [...prev, makeLine()];
+      }
+      if (blankIndexes.length === 1 && blankIndexes[0].index === prev.length - 1) {
+        return prev;
+      }
+      const firstBlank = blankIndexes[0].index;
+      const next = prev.filter((_, index) => index <= firstBlank || prev[index].product !== null);
+      return next;
+    });
   }, []);
 
   const selectProduct = useCallback((product: ProductSummary) => {
@@ -518,8 +852,27 @@ export function PurchaseEntryWorkspace() {
     setProductSearchOpen(false);
     setProductSearch("");
     ensureTrailingEmptyLine();
-    setTimeout(() => focusLineField(activeRow, "quantity1"), 0);
+    setTimeout(() => focusLineField(activeRow, getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1"), 0);
   }, [activeRow, ensureTrailingEmptyLine, focusLineField, updateLine]);
+
+  const openProductSelector = useCallback(() => {
+    if (!vendorSummary?.vendor_id) {
+      toast.error("Select vendor first");
+      return;
+    }
+    setProductSearchOpen(true);
+  }, [vendorSummary?.vendor_id]);
+
+  const openPaymentModePicker = useCallback(() => {
+    setPaymentModeIndex(PAYMENT_MODE_OPTIONS.indexOf(paymentMode));
+    setPaymentModeOpen(true);
+  }, [paymentMode]);
+
+  const openWarehousePicker = useCallback(() => {
+    const currentIndex = Math.max(0, warehouses.findIndex((warehouse) => warehouse.id === warehouseId));
+    setWarehouseIndex(currentIndex < 0 ? 0 : currentIndex);
+    setWarehousePickerOpen(true);
+  }, [warehouseId, warehouses]);
 
   const openProductEdit = useCallback(async (product: ProductSummary) => {
     const full = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${product.product_id}/summary`)));
@@ -633,7 +986,7 @@ export function PurchaseEntryWorkspace() {
       });
       toast.success("Purchase bill saved");
       await showLedger();
-      setLines([makeLine(), makeLine(), makeLine(), makeLine(), makeLine()]);
+      setLines([makeLine()]);
       setNotes("");
       setFreightAmount("0");
       setActiveRow(0);
@@ -649,16 +1002,37 @@ export function PurchaseEntryWorkspace() {
 
   const moveGridFocus = useCallback((rowIndex: number, field: LineField) => {
     setActiveRow(rowIndex);
-    setActiveField(field);
-    setTimeout(() => focusLineField(rowIndex, field), 0);
-  }, [focusLineField]);
+    const resolvedField = resolveFieldForLine(lines[rowIndex] ?? null, field);
+    setActiveField(resolvedField);
+    setTimeout(() => focusLineField(rowIndex, resolvedField), 0);
+  }, [focusLineField, lines]);
 
   const navigateGridByDelta = useCallback((rowIndex: number, field: LineField, rowDelta: number, colDelta: number) => {
-    const currentCol = LINE_FIELD_ORDER.indexOf(field);
+    const currentOrder = getLineFieldOrder(lines[rowIndex] ?? null);
+    const currentCol = Math.max(0, currentOrder.indexOf(resolveFieldForLine(lines[rowIndex] ?? null, field)));
     const nextRow = Math.max(0, Math.min(lines.length - 1, rowIndex + rowDelta));
-    const nextCol = Math.max(0, Math.min(LINE_FIELD_ORDER.length - 1, currentCol + colDelta));
-    moveGridFocus(nextRow, LINE_FIELD_ORDER[nextCol]);
-  }, [lines.length, moveGridFocus]);
+    if (colDelta !== 0) {
+      const nextCol = Math.max(0, Math.min(currentOrder.length - 1, currentCol + colDelta));
+      moveGridFocus(rowIndex, currentOrder[nextCol]);
+      return;
+    }
+    moveGridFocus(nextRow, field);
+  }, [lines, moveGridFocus]);
+
+  const focusFooterField = useCallback((field: "freight" | "notes" | "save") => {
+    setTimeout(() => {
+      if (field === "freight") {
+        freightRef.current?.focus();
+        freightRef.current?.select();
+        return;
+      }
+      if (field === "notes") {
+        notesRef.current?.focus();
+        return;
+      }
+      saveButtonRef.current?.focus();
+    }, 0);
+  }, []);
 
   const handleLineFieldEnter = useCallback((event: ReactKeyboardEvent, rowIndex: number, field: LineField) => {
     if (event.key !== "Enter") {
@@ -668,23 +1042,25 @@ export function PurchaseEntryWorkspace() {
     if (field === "product") {
       setActiveRow(rowIndex);
       setActiveField("product");
-      setProductSearchOpen(true);
+      openProductSelector();
       return;
     }
-    if (field === "quantity1") {
+    if (field === "quantity3") {
       moveGridFocus(rowIndex, "quantity2");
       return;
     }
     if (field === "quantity2") {
-      moveGridFocus(rowIndex, "quantity3");
+      moveGridFocus(rowIndex, "quantity1");
       return;
     }
-    if (field === "quantity3") {
+    if (field === "quantity1") {
       moveGridFocus(rowIndex, "rateValue");
       return;
     }
     if (field === "rateValue") {
-      moveGridFocus(rowIndex, "rateUnitLevel");
+      setActiveRow(rowIndex);
+      setActiveField("rateUnitLevel");
+      setRateUnitPicker({ rowIndex, optionIndex: Math.max(0, (lines[rowIndex]?.rateUnitLevel ?? 1) - 1) });
       return;
     }
     if (field === "rateUnitLevel") {
@@ -692,12 +1068,17 @@ export function PurchaseEntryWorkspace() {
       return;
     }
     if (field === "discountPercent") {
+      const isLastFilledRow = rowIndex === lines.findLastIndex((line) => line.product !== null);
+      if (isLastFilledRow) {
+        focusFooterField("freight");
+        return;
+      }
       const nextRow = rowIndex + 1;
       setActiveRow(nextRow);
       setActiveField("product");
       setTimeout(() => focusLineField(nextRow, "product"), 0);
     }
-  }, [focusLineField, moveGridFocus]);
+  }, [focusFooterField, focusLineField, lines, moveGridFocus, openProductSelector]);
 
   const handleLineFieldKeyDown = useCallback((event: ReactKeyboardEvent, rowIndex: number, field: LineField) => {
     if (event.key === "Enter") {
@@ -715,6 +1096,11 @@ export function PurchaseEntryWorkspace() {
       return;
     }
     if (event.key === "ArrowDown") {
+      if (field === "rateUnitLevel") {
+        event.preventDefault();
+        setRateUnitPicker({ rowIndex, optionIndex: Math.max(0, (lines[rowIndex]?.rateUnitLevel ?? 1) - 1) });
+        return;
+      }
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, 1, 0);
       return;
@@ -723,7 +1109,7 @@ export function PurchaseEntryWorkspace() {
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, -1, 0);
     }
-  }, [handleLineFieldEnter, navigateGridByDelta]);
+  }, [handleLineFieldEnter, lines, navigateGridByDelta]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -745,41 +1131,44 @@ export function PurchaseEntryWorkspace() {
   }
 
   return (
-    <div className="font-mono">
-      <div className="relative overflow-hidden rounded-2xl border bg-card shadow-sm">
-        <div className="border-b bg-[#6d9187] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.24em] text-white">
+    <div className="bg-[#eef3ec] font-mono text-[#111714]">
+      <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
+        <div className="border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
           Purchase Entry Console
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="border-r">
+          <div className="border-r border-[#cad5cb]">
             {vendorSummary ? (
               <div className="grid gap-px border-b bg-border md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))]">
-                <div className="bg-background px-4 py-3">
+                <div className="bg-[#fbfcf7] px-4 py-3">
                   <div className="truncate text-lg font-semibold">{vendorSummary.vendor_name} <span className="text-primary">[{paymentMode}]</span></div>
-                  <div className="mt-1 truncate text-xs text-muted-foreground">{vendorSummary.address_lines.join(", ")}</div>
+                  <div className="mt-1 truncate text-xs text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
+                  <div className="mt-2 text-xs text-[#5b655f]">
+                    Allowed Brands: {vendorSummary.brand_names.length ? vendorSummary.brand_names.join(", ") : "None linked"}
+                  </div>
                 </div>
-                <div className="bg-background px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Balance</div>
+                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Balance</div>
                   <div className="mt-1 font-semibold">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
                 </div>
-                <div className="bg-background px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Last Purc</div>
+                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Purc</div>
                   <div className="mt-1 font-semibold">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "-"}</div>
                 </div>
-                <div className="bg-background px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Last Pay</div>
+                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Pay</div>
                   <div className="mt-1 font-semibold">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "-"}</div>
                 </div>
-                <div className="bg-background px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Month</div>
+                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Month</div>
                   <div className="mt-1 font-semibold">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
                 </div>
               </div>
             ) : null}
 
             <div className="grid gap-px bg-border md:grid-cols-12">
-              <div className="bg-background p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Date</Label>
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Date</Label>
                 <Input
                   ref={billDateRef}
                   value={billDateInput}
@@ -792,16 +1181,16 @@ export function PurchaseEntryWorkspace() {
                     }
                   }}
                   placeholder="ddmmyyyy"
-                  className="mt-2 h-11 rounded-md border-0 bg-muted text-lg font-semibold tracking-[0.18em]"
+                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
                 />
               </div>
-              <div className="bg-background p-2.5 md:col-span-4">
-                <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Party</Label>
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
                 <Button
                   ref={vendorButtonRef}
                   type="button"
                   variant="ghost"
-                  className="mt-2 h-11 w-full justify-start rounded-md border bg-muted px-3 text-left text-base font-semibold"
+                  className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
                   onClick={() => setVendorSearchOpen(true)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === "ArrowDown") {
@@ -813,12 +1202,12 @@ export function PurchaseEntryWorkspace() {
                   {vendorSummary ? vendorSummary.vendor_name : "Select vendor"}
                 </Button>
               </div>
-              <div className="bg-background p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Party No</Label>
-                <Input ref={billNumberRef} value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => e.key === "Enter" && receivedDateRef.current?.focus()} className="mt-2 h-11 rounded-md border-0 bg-muted text-base font-semibold" />
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
+                <Input ref={billNumberRef} value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => e.key === "Enter" && receivedDateRef.current?.focus()} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none" />
               </div>
-              <div className="bg-background p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Dt</Label>
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Dt</Label>
                 <Input
                   ref={receivedDateRef}
                   value={receivedDateInput}
@@ -831,78 +1220,84 @@ export function PurchaseEntryWorkspace() {
                     }
                   }}
                   placeholder="ddmmyyyy"
-                  className="mt-2 h-11 rounded-md border-0 bg-muted text-base font-semibold tracking-[0.12em]"
+                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
                 />
               </div>
-              <div className="bg-background p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</Label>
-                <select
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
+                <Button
                   ref={paymentModeRef}
-                  className="mt-2 h-11 w-full rounded-md border-0 bg-muted px-3 text-base font-semibold"
-                  value={paymentMode}
-                  onChange={(e) => setPaymentMode(e.target.value as "CREDIT" | "CASH")}
+                  type="button"
+                  variant="ghost"
+                  className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
+                  onClick={openPaymentModePicker}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    if (e.key === "Enter" || e.key === "ArrowDown") {
                       e.preventDefault();
-                      productCellRef.current?.focus();
+                      openPaymentModePicker();
                     }
                   }}
                 >
-                  <option value="CREDIT">CREDIT</option>
-                  <option value="CASH">CASH</option>
-                </select>
+                  {paymentMode}
+                </Button>
               </div>
             </div>
 
             <div className="grid gap-px border-t bg-border md:grid-cols-12">
-              <div className="bg-background p-2.5 md:col-span-3">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Station</div>
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Station</div>
                 <div className="mt-2 text-sm font-semibold">{warehouses.find((warehouse) => warehouse.id === warehouseId)?.name || "-"}</div>
               </div>
-              <div className="bg-background p-2.5 md:col-span-3">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Entry No</div>
-                <Input value={entryNumber} onChange={(e) => setEntryNumber(e.target.value)} className="mt-2 h-10 rounded-md border-0 bg-muted text-sm font-semibold" />
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
+                <Input value={entryNumber} onChange={(e) => setEntryNumber(e.target.value)} className="mt-2 h-10 rounded-sm border-0 bg-[#eef1ea] text-sm font-semibold shadow-none" />
               </div>
-              <div className="bg-background p-2.5 md:col-span-2">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Type</div>
-                <div className="mt-2 rounded-md bg-muted px-3 py-2 text-sm font-semibold">{taxType}</div>
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Type</div>
+                <div className="mt-2 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{taxType}</div>
               </div>
-              <div className="bg-background p-2.5 md:col-span-4">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Warehouse</div>
-                <select
-                  className="mt-2 h-10 w-full rounded-md border-0 bg-muted px-3 text-sm font-semibold"
-                  value={warehouseId}
-                  onChange={(e) => setWarehouseId(e.target.value)}
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</div>
+                <Button
+                  ref={warehouseButtonRef}
+                  type="button"
+                  variant="ghost"
+                  className="mt-2 h-10 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-sm font-semibold shadow-none"
+                  onClick={openWarehousePicker}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === "ArrowDown") {
+                      e.preventDefault();
+                      openWarehousePicker();
+                    }
+                  }}
                 >
-                  {warehouses.map((warehouse) => (
-                    <option key={warehouse.id} value={warehouse.id}>
-                      {warehouse.name} ({warehouse.code})
-                    </option>
-                  ))}
-                </select>
+                  {warehouses.find((warehouse) => warehouse.id === warehouseId)?.name || "-"}
+                  {warehouses.find((warehouse) => warehouse.id === warehouseId)?.code ? ` (${warehouses.find((warehouse) => warehouse.id === warehouseId)?.code})` : ""}
+                </Button>
               </div>
             </div>
 
             <div className="border-t">
               <Table>
                 <TableHeader>
-                  <TableRow className="bg-[#e6efcf] hover:bg-[#e6efcf]">
+                  <TableRow className="bg-[#e7f0cb] hover:bg-[#e7f0cb]">
                     <TableHead className="w-[44px] text-center text-sm font-semibold text-foreground">#</TableHead>
                     <TableHead className="w-[36%] text-sm font-semibold text-foreground">PRODUCT</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
+                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
+                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">UNIT</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">DISC%</TableHead>
+                    <TableHead className="text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
                     <TableHead className="text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lines.map((line, index) => (
-                    <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#e2f0ea]" : undefined, "transition-colors")}>
+                    <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors")}>
                       <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
-                        <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-muted")}>
+                        <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
                           {index + 1}
                         </span>
                       </TableCell>
@@ -917,13 +1312,13 @@ export function PurchaseEntryWorkspace() {
                           type="button"
                           variant="ghost"
                           className={cn(
-                            "h-9 w-full justify-start rounded-none px-0 text-left text-sm font-semibold",
+                            "h-9 w-full justify-start rounded-none px-0 text-left text-sm font-semibold shadow-none",
                             index === activeRow && activeField === "product" ? "bg-[#2f5d50] px-2 text-white hover:bg-[#2f5d50]" : ""
                           )}
                           onClick={() => {
                             setActiveRow(index);
                             setActiveField("product");
-                            setProductSearchOpen(true);
+                            openProductSelector();
                           }}
                           onKeyDown={(e) => {
                             handleLineFieldKeyDown(e, index, "product");
@@ -932,25 +1327,25 @@ export function PurchaseEntryWorkspace() {
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity1")} value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold", index === activeRow && activeField === "quantity1" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity2")} value={line.quantity2} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold", index === activeRow && activeField === "quantity2" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity3")} value={line.quantity3} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold", index === activeRow && activeField === "quantity3" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold", index === activeRow && activeField === "rateValue" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity3")} value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity2")} value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity1")} value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5">
-                        <select
+                        <Button
                           ref={setLineRef(line.id, "rateUnitLevel")}
-                          className={cn("h-9 w-full rounded-none border-0 bg-transparent px-2 text-center text-sm font-semibold", index === activeRow && activeField === "rateUnitLevel" ? "bg-[#2f5d50] text-white" : "")}
-                          value={line.rateUnitLevel}
+                          type="button"
+                          variant="ghost"
+                          className={cn("h-9 w-full justify-center rounded-none border-0 bg-transparent px-2 text-center text-sm font-semibold shadow-none", index === activeRow && activeField === "rateUnitLevel" ? "bg-[#2f5d50] text-white hover:bg-[#2f5d50]" : "")}
                           onFocus={() => { setActiveRow(index); setActiveField("rateUnitLevel"); }}
-                          onChange={(e) => updateLine(index, { rateUnitLevel: Number(e.target.value) as 1 | 2 | 3 })}
+                          onClick={() => setRateUnitPicker({ rowIndex: index, optionIndex: Math.max(0, line.rateUnitLevel - 1) })}
                           onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateUnitLevel")}
                         >
-                          <option value={1}>{line.product?.unit_1st_name || "1st"}</option>
-                          <option value={2} disabled={!line.product?.unit_2nd_name}>{line.product?.unit_2nd_name || "2nd"}</option>
-                          <option value={3} disabled={!line.product?.unit_3rd_name}>{line.product?.unit_3rd_name || "3rd"}</option>
-                        </select>
+                          {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
+                        </Button>
                       </TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold", index === activeRow && activeField === "discountPercent" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
                       <TableCell className="py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
                     </TableRow>
                   ))}
@@ -960,12 +1355,12 @@ export function PurchaseEntryWorkspace() {
 
             <div className="grid gap-px border-t bg-border md:grid-cols-[1.3fr_1fr]">
               <div className="grid gap-px bg-border md:grid-cols-2">
-                <div className="bg-background p-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Selected Item</div>
+                <div className="bg-[#fbfcf7] p-3 text-sm">
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
                   {activeLine?.product ? (
                     <div className="mt-2 space-y-2">
                       <div className="text-base font-semibold">{activeLine.product.name}</div>
-                      <div className="text-sm text-muted-foreground">{activeLine.product.brand || "-"}</div>
+                      <div className="text-sm text-[#5b655f]">{activeLine.product.brand || "-"}</div>
                       <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
                       <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
                       <div>SRATE: <span className="font-semibold">{Number(activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
@@ -974,11 +1369,11 @@ export function PurchaseEntryWorkspace() {
                     <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
                   )}
                 </div>
-                <div className="bg-background p-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Recent Product Bills</div>
+                <div className="bg-[#fbfcf7] p-3 text-sm">
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Recent Product Bills</div>
                   <div className="mt-2 space-y-2">
                     {activeLine?.product?.recent_bills.length ? activeLine.product.recent_bills.slice(0, 3).map((bill) => (
-                      <div key={`${bill.bill_number}-${bill.bill_date}`} className="flex items-center justify-between border-b pb-1 text-xs">
+                        <div key={`${bill.bill_number}-${bill.bill_date}`} className="flex items-center justify-between border-b border-[#dde6dc] pb-1 text-xs">
                         <span>{bill.bill_number}</span>
                         <span>{formatDisplayDate(bill.bill_date)}</span>
                         <span>{Number(bill.line_total_amount).toFixed(2)}</span>
@@ -987,36 +1382,70 @@ export function PurchaseEntryWorkspace() {
                   </div>
                 </div>
               </div>
-              <div className="bg-background p-3 text-sm">
+              <div className="bg-[#fbfcf7] p-3 text-sm">
                 <div className="grid grid-cols-2 gap-y-2">
                   <div>VALUE OF GOODS</div><div className="text-right font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
                   <div>DISCOUNT</div><div className="text-right font-semibold">{totals.discount.toFixed(2)}</div>
                   <div>GST</div><div className="text-right font-semibold">{totals.gst.toFixed(2)}</div>
                   <div className="self-center">FREIGHT</div>
-                  <div><Input className="h-9 rounded-none border-x-0 border-t-0 text-right font-semibold" value={freightAmount} onChange={(e) => setFreightAmount(e.target.value)} /></div>
+                  <div>
+                    <Input
+                      ref={freightRef}
+                      className="h-9 rounded-none border-x-0 border-t-0 bg-transparent text-right font-semibold shadow-none"
+                      value={freightAmount}
+                      onChange={(e) => setFreightAmount(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          focusFooterField("notes");
+                        } else if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
+                          if (lastFilledRow >= 0) {
+                            focusLineField(lastFilledRow, "discountPercent");
+                          }
+                        }
+                      }}
+                    />
+                  </div>
                   <div className="pt-2 text-base font-semibold">FINAL BILL</div><div className="pt-2 text-right text-2xl font-bold">{totals.finalAmount.toFixed(2)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
-                  <Button onClick={() => void saveBill()} disabled={saving}>{saving ? "Saving..." : "Save Bill"}</Button>
+                  <Button ref={saveButtonRef} className="rounded-sm" onClick={() => void saveBill()} disabled={saving}>{saving ? "Saving..." : "Save Bill"}</Button>
                   <Button variant="outline" onClick={() => void showLedger()} disabled={!vendorSummary}>Ledger</Button>
                   {activeLine?.product ? <Button variant="outline" onClick={() => void openProductEdit(activeLine.product!)}>Edit Product</Button> : null}
                 </div>
                 <div className="mt-4">
                   <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Narration</Label>
-                  <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="mt-2 rounded-none border-x-0 border-t-0" />
+                  <Textarea
+                    ref={notesRef}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    rows={3}
+                    className="mt-2 rounded-none border-x-0 border-t-0 bg-transparent shadow-none"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        focusFooterField("save");
+                      } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        focusFooterField("freight");
+                      }
+                    }}
+                  />
                 </div>
               </div>
             </div>
           </div>
 
           <div className="grid gap-px bg-border">
-            <div className="bg-background p-4 text-sm">
-              <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Party History</div>
+            <div className="bg-[#fbfcf7] p-4 text-sm">
+              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party History</div>
               {vendorSummary ? (
                 <div className="space-y-3">
                   <div>
                     <div className="text-base font-semibold">{vendorSummary.vendor_name}</div>
-                    <div className="mt-1 text-muted-foreground">{vendorSummary.address_lines.join(", ")}</div>
+                    <div className="mt-1 text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div>Annual</div><div className="text-right font-semibold">{Number(vendorSummary.annual_purchase_amount).toFixed(2)}</div>
@@ -1028,7 +1457,7 @@ export function PurchaseEntryWorkspace() {
                     <div>Area / Route</div><div className="text-right font-semibold">{vendorSummary.area || "-"} / {vendorSummary.route || "-"}</div>
                   </div>
                   <div className="border-t pt-3">
-                    <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Last 3 Bills</div>
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Last 3 Bills</div>
                     <div className="space-y-2">
                       {vendorSummary.last_bills.map((bill) => (
                         <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
@@ -1039,13 +1468,25 @@ export function PurchaseEntryWorkspace() {
                       ))}
                     </div>
                   </div>
+                  <div className="border-t pt-3">
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Available Challans</div>
+                    <div className="space-y-2">
+                      {vendorSummary.open_challans.length ? vendorSummary.open_challans.map((challan) => (
+                        <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
+                          <span>{challan.reference_no}</span>
+                          <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                          <span className="text-right font-semibold">{challan.item_count} items</span>
+                        </div>
+                      )) : <div className="text-xs text-muted-foreground">No open challans.</div>}
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="text-muted-foreground">Select vendor to view history.</div>
               )}
             </div>
-            <div className="bg-background p-4 text-sm">
-              <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Product Context</div>
+            <div className="bg-[#fbfcf7] p-4 text-sm">
+              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Product Context</div>
               {activeLine?.product ? (
                 <div className="space-y-3 text-xs">
                   <div className="rounded-lg border bg-muted/40 p-3">
@@ -1085,6 +1526,134 @@ export function PurchaseEntryWorkspace() {
         </div>
       </div>
 
+      <Dialog open={paymentModeOpen} onOpenChange={setPaymentModeOpen}>
+        <DialogContent className="max-w-sm border-0 bg-card p-0 font-mono">
+          <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Mode</DialogTitle>
+          </DialogHeader>
+          <div className="p-2">
+            {PAYMENT_MODE_OPTIONS.map((option, index) => (
+              <button
+                key={option}
+                type="button"
+                className={cn("flex w-full items-center justify-between px-3 py-3 text-left text-sm font-semibold", index === paymentModeIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted")}
+                onMouseEnter={() => setPaymentModeIndex(index)}
+                onClick={() => {
+                  setPaymentMode(option);
+                  setPaymentModeOpen(false);
+                  setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setPaymentModeIndex((prev) => (prev + 1) % PAYMENT_MODE_OPTIONS.length);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setPaymentModeIndex((prev) => (prev - 1 + PAYMENT_MODE_OPTIONS.length) % PAYMENT_MODE_OPTIONS.length);
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    setPaymentMode(option);
+                    setPaymentModeOpen(false);
+                    setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+                  }
+                }}
+                autoFocus={index === paymentModeIndex}
+              >
+                <span>{option}</span>
+                {paymentMode === option ? <span>Selected</span> : null}
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={rateUnitPicker !== null} onOpenChange={(open) => !open && setRateUnitPicker(null)}>
+        <DialogContent className="max-w-sm border-0 bg-card p-0 font-mono">
+          <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Unit</DialogTitle>
+          </DialogHeader>
+          <div className="p-2">
+            {(rateUnitPicker ? [
+              { level: 1 as const, label: lines[rateUnitPicker.rowIndex]?.product?.unit_1st_name || "1st", disabled: false },
+              { level: 2 as const, label: lines[rateUnitPicker.rowIndex]?.product?.unit_2nd_name || "2nd", disabled: !lines[rateUnitPicker.rowIndex]?.product?.unit_2nd_name },
+              { level: 3 as const, label: lines[rateUnitPicker.rowIndex]?.product?.unit_3rd_name || "3rd", disabled: !lines[rateUnitPicker.rowIndex]?.product?.unit_3rd_name },
+            ].filter((option) => !option.disabled) : []).map((option, index, options) => (
+              <button
+                key={option.level}
+                type="button"
+                className={cn("flex w-full items-center justify-between px-3 py-3 text-left text-sm font-semibold", rateUnitPicker?.optionIndex === index ? "bg-[#2f5d50] text-white" : "hover:bg-muted")}
+                onMouseEnter={() => setRateUnitPicker((prev) => prev ? { ...prev, optionIndex: index } : prev)}
+                onClick={() => {
+                  if (!rateUnitPicker) return;
+                  updateLine(rateUnitPicker.rowIndex, { rateUnitLevel: option.level });
+                  setRateUnitPicker(null);
+                  setTimeout(() => focusLineField(rateUnitPicker.rowIndex, "discountPercent"), 0);
+                }}
+                onKeyDown={(e) => {
+                  if (!rateUnitPicker) return;
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setRateUnitPicker((prev) => prev ? { ...prev, optionIndex: (prev.optionIndex + 1) % options.length } : prev);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setRateUnitPicker((prev) => prev ? { ...prev, optionIndex: (prev.optionIndex - 1 + options.length) % options.length } : prev);
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    updateLine(rateUnitPicker.rowIndex, { rateUnitLevel: option.level });
+                    setRateUnitPicker(null);
+                    setTimeout(() => focusLineField(rateUnitPicker.rowIndex, "discountPercent"), 0);
+                  }
+                }}
+                autoFocus={rateUnitPicker?.optionIndex === index}
+              >
+                <span>{option.label}</span>
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={warehousePickerOpen} onOpenChange={setWarehousePickerOpen}>
+        <DialogContent className="max-w-md border-0 bg-card p-0 font-mono">
+          <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Warehouse</DialogTitle>
+          </DialogHeader>
+          <div className="p-2">
+            {warehouses.map((warehouse, index) => (
+              <button
+                key={warehouse.id}
+                type="button"
+                className={cn("flex w-full items-center justify-between px-3 py-3 text-left text-sm font-semibold", warehouseIndex === index ? "bg-[#2f5d50] text-white" : "hover:bg-muted")}
+                onMouseEnter={() => setWarehouseIndex(index)}
+                onClick={() => {
+                  setWarehouseId(warehouse.id);
+                  setWarehousePickerOpen(false);
+                  setTimeout(() => productCellRef.current?.focus(), 0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setWarehouseIndex((prev) => (prev + 1) % warehouses.length);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setWarehouseIndex((prev) => (prev - 1 + warehouses.length) % warehouses.length);
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    setWarehouseId(warehouse.id);
+                    setWarehousePickerOpen(false);
+                    setTimeout(() => productCellRef.current?.focus(), 0);
+                  }
+                }}
+                autoFocus={warehouseIndex === index}
+              >
+                <span>{warehouse.name}</span>
+                <span>{warehouse.code}</span>
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="mt-3 rounded-2xl border bg-card px-4 py-2 text-xs text-muted-foreground">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 font-mono">
           <span><span className="font-semibold text-foreground">Enter</span> move next</span>
@@ -1100,7 +1669,10 @@ export function PurchaseEntryWorkspace() {
           <div className="flex min-h-0 flex-col border-r">
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
               <span>Vendor Selector</span>
-              <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setVendorSearchOpen(false)}>Esc</Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setVendorCreateOpen(true)}>+ Add Vendor</Button>
+                <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setVendorSearchOpen(false)}>Esc</Button>
+              </div>
             </div>
             <div className="border-b bg-background p-3">
               <Input
@@ -1162,6 +1734,7 @@ export function PurchaseEntryWorkspace() {
                   <div>Phone</div><div className="text-right font-semibold">{vendorResults[vendorIndex].phone || "-"}</div>
                   <div>Area</div><div className="text-right font-semibold">{vendorResults[vendorIndex].area || "-"}</div>
                   <div>Route</div><div className="text-right font-semibold">{vendorResults[vendorIndex].route || "-"}</div>
+                  <div>Brands</div><div className="text-right font-semibold">{vendorResults[vendorIndex].brand_names.length ? vendorResults[vendorIndex].brand_names.join(", ") : "None linked"}</div>
                   <div>Monthly Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].monthly_purchase_amount).toFixed(2)}</div>
                   <div>Annual Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].annual_purchase_amount).toFixed(2)}</div>
                   <div>Last Purchase</div><div className="text-right font-semibold">{vendorResults[vendorIndex].last_purchase_date ? formatDisplayDate(vendorResults[vendorIndex].last_purchase_date) : "-"}</div>
@@ -1179,6 +1752,18 @@ export function PurchaseEntryWorkspace() {
                     ))}
                   </div>
                 </div>
+                <div className="mt-4 rounded-lg border bg-background p-4">
+                  <div className="mb-3 text-xs uppercase tracking-[0.18em] text-muted-foreground">Available Challans</div>
+                  <div className="space-y-2">
+                    {vendorResults[vendorIndex].open_challans.length ? vendorResults[vendorIndex].open_challans.map((challan) => (
+                      <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
+                        <span>{challan.reference_no}</span>
+                        <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                        <span className="text-right font-semibold">{challan.item_count} items</span>
+                      </div>
+                    )) : <div className="text-xs text-muted-foreground">No open challans.</div>}
+                  </div>
+                </div>
               </>
             ) : <div className="text-muted-foreground">No vendor selected.</div>}
           </div>
@@ -1190,7 +1775,10 @@ export function PurchaseEntryWorkspace() {
           <div className="flex min-h-0 flex-col border-r">
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
               <span>Product Selector</span>
-              <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setProductSearchOpen(false)}>Esc</Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setProductCreateOpen(true)}>+ Add Product</Button>
+                <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setProductSearchOpen(false)}>Esc</Button>
+              </div>
             </div>
             <div className="border-b bg-background p-3">
               <Input
@@ -1321,6 +1909,134 @@ export function PurchaseEntryWorkspace() {
             <div className="space-y-1"><Label>Base Price</Label><Input value={productEditForm.base_price} onChange={(e) => setProductEditForm((prev) => ({ ...prev, base_price: e.target.value }))} /></div>
           </div>
           <div className="flex justify-end"><Button onClick={() => void saveProductEdit()}>Save Product</Button></div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={vendorCreateOpen} onOpenChange={setVendorCreateOpen}>
+        <DialogContent className="max-h-[88vh] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-4xl">
+          <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Vendor</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setVendorCreateRef("firm_name")} value={vendorCreateForm.firm_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "firm_name")} /></div>
+            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} /></div>
+            <div className="space-y-1"><Label>PAN</Label><Input ref={setVendorCreateRef("pan")} value={vendorCreateForm.pan} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pan")} /></div>
+            <div className="space-y-1"><Label>Owner Name</Label><Input ref={setVendorCreateRef("owner_name")} value={vendorCreateForm.owner_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "owner_name")} /></div>
+            <div className="space-y-1"><Label>Phone</Label><Input ref={setVendorCreateRef("phone")} value={vendorCreateForm.phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "phone")} /></div>
+            <div className="space-y-1"><Label>Alternate Phone</Label><Input ref={setVendorCreateRef("alternate_phone")} value={vendorCreateForm.alternate_phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "alternate_phone")} /></div>
+            <div className="space-y-1"><Label>Email</Label><Input ref={setVendorCreateRef("email")} value={vendorCreateForm.email} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "email")} /></div>
+            <div className="space-y-1 md:col-span-2"><Label>Street</Label><Input ref={setVendorCreateRef("street")} value={vendorCreateForm.street} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "street")} /></div>
+            <div className="space-y-1"><Label>City</Label><Input ref={setVendorCreateRef("city")} value={vendorCreateForm.city} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "city")} /></div>
+            <div className="space-y-1"><Label>State</Label><Input ref={setVendorCreateRef("state")} value={vendorCreateForm.state} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "state")} /></div>
+            <div className="space-y-1"><Label>Pincode</Label><Input ref={setVendorCreateRef("pincode")} value={vendorCreateForm.pincode} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pincode")} /></div>
+            <div className="space-y-1"><Label>Bank Account Number</Label><Input ref={setVendorCreateRef("bank_account_number")} value={vendorCreateForm.bank_account_number} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "bank_account_number")} /></div>
+            <div className="space-y-1"><Label>IFSC Code</Label><Input ref={setVendorCreateRef("ifsc_code")} value={vendorCreateForm.ifsc_code} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "ifsc_code")} /></div>
+            <div className="space-y-1"><Label>Account Category</Label><select ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select></div>
+            <div className="space-y-2 md:col-span-2">
+              <Label>Brands</Label>
+              <div className="grid max-h-40 gap-2 overflow-y-auto rounded-md border p-3 md:grid-cols-2">
+                {brandOptions.map((brand) => (
+                  <label key={brand.id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={vendorCreateForm.brand_ids.includes(brand.id)} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, brand_ids: e.target.checked ? [...prev.brand_ids, brand.id] : prev.brand_ids.filter((id) => id !== brand.id) }))} />
+                    <span>{brand.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button ref={vendorCreateSaveRef} disabled={creatingVendor || !vendorCreateForm.firm_name.trim()} onClick={async () => {
+              setCreatingVendor(true);
+              try {
+                const created = asObject(await postBackend("/masters/vendors", {
+                  firm_name: vendorCreateForm.firm_name.trim(),
+                  gstin: vendorCreateForm.gstin.trim() || null,
+                  pan: vendorCreateForm.pan.trim() || null,
+                  owner_name: vendorCreateForm.owner_name.trim() || null,
+                  phone: vendorCreateForm.phone.trim() || null,
+                  alternate_phone: vendorCreateForm.alternate_phone.trim() || null,
+                  email: vendorCreateForm.email.trim() || null,
+                  street: vendorCreateForm.street.trim() || null,
+                  city: vendorCreateForm.city.trim() || null,
+                  state: vendorCreateForm.state.trim() || null,
+                  pincode: vendorCreateForm.pincode.trim() || null,
+                  bank_account_number: vendorCreateForm.bank_account_number.trim() || null,
+                  ifsc_code: vendorCreateForm.ifsc_code.trim() || null,
+                  account_category_id: vendorCreateForm.account_category_id || null,
+                  brand_ids: vendorCreateForm.brand_ids,
+                }));
+                const createdSummary = mapVendorSummary(asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${String(created.id ?? "")}/summary`)));
+                setVendorCreateOpen(false);
+                setVendorCreateForm({ ...EMPTY_VENDOR_FORM });
+                setVendorSummary(createdSummary);
+                setVendorSearchOpen(false);
+                toast.success("Vendor created");
+                setTimeout(() => billNumberRef.current?.focus(), 0);
+              } catch (error) {
+                toast.error(error instanceof Error ? error.message : "Failed to create vendor");
+              } finally {
+                setCreatingVendor(false);
+              }
+            }}>{creatingVendor ? "Saving..." : "Save Vendor"}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={productCreateOpen} onOpenChange={setProductCreateOpen}>
+        <DialogContent className="max-h-[88vh] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-5xl">
+          <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Product</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1"><Label>SKU *</Label><Input ref={setProductCreateRef("sku")} value={productCreateForm.sku} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sku: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sku")} /></div>
+            <div className="space-y-1"><Label>Name *</Label><Input ref={setProductCreateRef("name")} value={productCreateForm.name} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, name: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "name")} /></div>
+            <div className="space-y-1"><Label>Brand</Label><select ref={setProductCreateRef("brand_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.brand_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, brand_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "brand_id")}><option value="">Select brand</option>{brandOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
+            <div className="space-y-1"><Label>Category</Label><select ref={setProductCreateRef("category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, category_id: e.target.value, sub_category_id: "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "category_id")}><option value="">Select category</option>{categoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
+            <div className="space-y-1"><Label>Sub Category</Label><select ref={setProductCreateRef("sub_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.sub_category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sub_category_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sub_category_id")}><option value="">Select sub category</option>{(productCreateForm.category_id ? subCategoryOptions.filter((option) => !option.category_id || option.category_id === productCreateForm.category_id) : subCategoryOptions).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
+            <div className="space-y-1"><Label>HSN</Label><select ref={setProductCreateRef("hsn_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.hsn_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, hsn_id: e.target.value, tax_percent: hsnOptions.find((item) => item.id === e.target.value)?.gst_percent || prev.tax_percent }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "hsn_id")}><option value="">Select HSN</option>{hsnOptions.map((option) => <option key={option.id} value={option.id}>{option.hsn_code} ({option.gst_percent}%)</option>)}</select></div>
+            <div className="space-y-1 md:col-span-2"><Label>Description</Label><Textarea ref={setProductCreateRef("description")} value={productCreateForm.description} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, description: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "description")} /></div>
+            <div className="space-y-1"><Label>Primary Unit *</Label><select ref={setProductCreateRef("primary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.primary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "primary_unit_id")}><option value="">Select primary unit</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
+            <div className="space-y-1"><Label>Secondary Unit</Label><select ref={setProductCreateRef("secondary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.secondary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_id: e.target.value, third_unit_id: e.target.value ? prev.third_unit_id : "", secondary_unit_quantity: e.target.value ? prev.secondary_unit_quantity : "", third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_id")}><option value="">Optional</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
+            {productCreateForm.secondary_unit_id ? <div className="space-y-1"><Label>How many primary units in second unit</Label><Input ref={setProductCreateRef("secondary_unit_quantity")} value={productCreateForm.secondary_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_quantity")} /></div> : null}
+            <div className="space-y-1"><Label>Third Unit</Label><select ref={setProductCreateRef("third_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.third_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_id: e.target.value, third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_id")}><option value="">{productCreateForm.secondary_unit_id ? "Optional" : "Select secondary unit first"}</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
+            {productCreateForm.third_unit_id ? <div className="space-y-1"><Label>How many second units in third unit</Label><Input ref={setProductCreateRef("third_unit_quantity")} value={productCreateForm.third_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_quantity")} /></div> : null}
+            <div className="space-y-1"><Label>Weight in grams</Label><Input ref={setProductCreateRef("weight_in_grams")} value={productCreateForm.weight_in_grams} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "weight_in_grams")} /></div>
+            <div className="space-y-1"><Label>Base Price *</Label><Input ref={setProductCreateRef("base_price")} value={productCreateForm.base_price} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, base_price: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "base_price")} /></div>
+            <div className="space-y-1"><Label>GST / Tax % *</Label><Input ref={setProductCreateRef("tax_percent")} value={productCreateForm.tax_percent} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, tax_percent: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "tax_percent")} /></div>
+          </div>
+          <div className="flex justify-end">
+            <Button ref={productCreateSaveRef} disabled={creatingProduct || !productCreateForm.sku.trim() || !productCreateForm.name.trim() || !productCreateForm.primary_unit_id || !productCreateForm.base_price.trim() || !productCreateForm.tax_percent.trim()} onClick={async () => {
+              setCreatingProduct(true);
+              try {
+                const created = asObject(await postBackend("/masters/products", {
+                  sku: productCreateForm.sku.trim(),
+                  name: productCreateForm.name.trim(),
+                  brand_id: productCreateForm.brand_id || null,
+                  category_id: productCreateForm.category_id || null,
+                  sub_category_id: productCreateForm.sub_category_id || null,
+                  description: productCreateForm.description.trim() || null,
+                  hsn_id: productCreateForm.hsn_id || null,
+                  primary_unit_id: productCreateForm.primary_unit_id || null,
+                  secondary_unit_id: productCreateForm.secondary_unit_id || null,
+                  third_unit_id: productCreateForm.third_unit_id || null,
+                  secondary_unit_quantity: productCreateForm.secondary_unit_id ? toNullableNumber(productCreateForm.secondary_unit_quantity) : null,
+                  third_unit_quantity: productCreateForm.third_unit_id ? toNullableNumber(productCreateForm.third_unit_quantity) : null,
+                  weight_in_grams: toNullableNumber(productCreateForm.weight_in_grams),
+                  base_price: Number(productCreateForm.base_price || "0"),
+                  tax_percent: Number(productCreateForm.tax_percent || "0"),
+                }));
+                const createdSummary = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${String(created.id ?? "")}/summary`)));
+                setProductCreateOpen(false);
+                setProductCreateForm({ ...EMPTY_PRODUCT_FORM });
+                selectProduct(createdSummary);
+                toast.success("Product created");
+              } catch (error) {
+                toast.error(error instanceof Error ? error.message : "Failed to create product");
+              } finally {
+                setCreatingProduct(false);
+              }
+            }}>{creatingProduct ? "Saving..." : "Save Product"}</Button>
+          </div>
         </DialogContent>
       </Dialog>
 

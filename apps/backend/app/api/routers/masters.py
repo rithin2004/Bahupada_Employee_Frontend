@@ -33,6 +33,7 @@ from app.models.entities import (
     ProductCategory,
     ProductSubCategory,
     Product,
+    VendorBrand,
     Permission,
     PortalScope,
     Rack,
@@ -309,6 +310,63 @@ async def _apply_product_reference_fields(db: AsyncSession, data: dict) -> dict:
     return data
 
 
+async def _sync_vendor_brands(db: AsyncSession, vendor_id: uuid.UUID, brand_ids: list[uuid.UUID] | None) -> tuple[list[str], list[str]]:
+    if brand_ids is None:
+        existing_rows = (
+            await db.execute(
+                select(VendorBrand, ProductBrand.name)
+                .join(ProductBrand, ProductBrand.id == VendorBrand.brand_id)
+                .where(VendorBrand.vendor_id == vendor_id, VendorBrand.is_active.is_(True))
+            )
+        ).all()
+        return [str(row[0].brand_id) for row in existing_rows], [str(row[1] or "") for row in existing_rows]
+
+    normalized_ids: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    for brand_id in brand_ids:
+        if brand_id in seen:
+            continue
+        await _require_active_lookup(db, ProductBrand, brand_id, "brand_ids")
+        normalized_ids.append(brand_id)
+        seen.add(brand_id)
+
+    existing_rows = (
+        await db.execute(select(VendorBrand).where(VendorBrand.vendor_id == vendor_id))
+    ).scalars().all()
+    existing_by_brand = {row.brand_id: row for row in existing_rows}
+
+    for index, brand_id in enumerate(normalized_ids):
+        row = existing_by_brand.get(brand_id)
+        if row is None:
+            db.add(
+                VendorBrand(
+                    vendor_id=vendor_id,
+                    brand_id=brand_id,
+                    is_primary=index == 0,
+                    is_active=True,
+                )
+            )
+        else:
+            row.is_active = True
+            row.is_primary = index == 0
+
+    for brand_id, row in existing_by_brand.items():
+        if brand_id not in seen:
+            row.is_active = False
+            row.is_primary = False
+
+    await db.flush()
+    linked_rows = (
+        await db.execute(
+            select(VendorBrand.brand_id, ProductBrand.name)
+            .join(ProductBrand, ProductBrand.id == VendorBrand.brand_id)
+            .where(VendorBrand.vendor_id == vendor_id, VendorBrand.is_active.is_(True))
+            .order_by(VendorBrand.is_primary.desc(), ProductBrand.name.asc())
+        )
+    ).all()
+    return [str(row[0]) for row in linked_rows], [str(row[1] or "") for row in linked_rows]
+
+
 @router.post("/companies")
 async def create_company(payload: CompanyCreate, db: AsyncSession = Depends(get_db)):
     obj = Company(**payload.model_dump())
@@ -400,14 +458,20 @@ async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_
 async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db)):
     await _require_account_category(db, payload.account_category_id, party_type="VENDOR")
     data = payload.model_dump()
+    brand_ids = data.pop("brand_ids", [])
     if not (data.get("firm_name") or "").strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="firm_name is required")
     data["name"] = data["firm_name"]
     obj = Vendor(**data)
     db.add(obj)
+    await db.flush()
+    linked_brand_ids, linked_brand_names = await _sync_vendor_brands(db, obj.id, brand_ids)
     await db.commit()
     await db.refresh(obj)
-    return obj
+    response = jsonable_encoder(obj)
+    response["brand_ids"] = linked_brand_ids
+    response["brand_names"] = linked_brand_names
+    return response
 
 
 @router.post("/customer-documents/upload", dependencies=[Depends(require_permission("customers", "update"))])
@@ -923,32 +987,7 @@ async def list_vendors(
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = (
-        select(
-            Vendor.id.label("id"),
-            Vendor.name.label("name"),
-            Vendor.firm_name.label("firm_name"),
-            Vendor.gstin.label("gstin"),
-            Vendor.pan.label("pan"),
-            Vendor.owner_name.label("owner_name"),
-            Vendor.phone.label("phone"),
-            Vendor.alternate_phone.label("alternate_phone"),
-            Vendor.email.label("email"),
-            Vendor.street.label("street"),
-            Vendor.city.label("city"),
-            Vendor.state.label("state"),
-            Vendor.pincode.label("pincode"),
-            Vendor.bank_account_number.label("bank_account_number"),
-            Vendor.ifsc_code.label("ifsc_code"),
-            Vendor.account_category_id.label("account_category_id"),
-            AccountCategory.name.label("account_category_name"),
-            Vendor.is_active.label("is_active"),
-            Vendor.created_at.label("created_at"),
-        )
-        .select_from(Vendor)
-        .outerjoin(AccountCategory, AccountCategory.id == Vendor.account_category_id)
-        .where(Vendor.is_active.is_(True))
-    )
+    stmt = select(Vendor).where(Vendor.is_active.is_(True))
     if search and search.strip():
         q = f"%{search.strip()}%"
         stmt = stmt.where(
@@ -963,8 +1002,60 @@ async def list_vendors(
     stmt = stmt.order_by(Vendor.created_at.desc())
     total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = (await db.execute(total_stmt)).scalar_one()
-    result = await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))
-    items = [dict(row) for row in result.mappings().all()]
+    vendors = (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    vendor_ids = [vendor.id for vendor in vendors]
+    account_categories: dict[uuid.UUID, str] = {}
+    if vendor_ids:
+        account_rows = (
+            await db.execute(
+                select(Vendor.id, AccountCategory.name)
+                .select_from(Vendor)
+                .outerjoin(AccountCategory, AccountCategory.id == Vendor.account_category_id)
+                .where(Vendor.id.in_(vendor_ids))
+            )
+        ).all()
+        account_categories = {row[0]: str(row[1] or "") for row in account_rows}
+    brand_rows = (
+        await db.execute(
+            select(VendorBrand.vendor_id, VendorBrand.brand_id, ProductBrand.name)
+            .join(ProductBrand, ProductBrand.id == VendorBrand.brand_id)
+            .where(VendorBrand.vendor_id.in_(vendor_ids), VendorBrand.is_active.is_(True))
+            .order_by(VendorBrand.is_primary.desc(), ProductBrand.name.asc())
+        )
+    ).all() if vendor_ids else []
+    brand_map: dict[uuid.UUID, dict[str, list[str]]] = {}
+    for vendor_id, brand_id, brand_name in brand_rows:
+        entry = brand_map.setdefault(vendor_id, {"brand_ids": [], "brand_names": []})
+        entry["brand_ids"].append(str(brand_id))
+        entry["brand_names"].append(str(brand_name or ""))
+    items = []
+    for vendor in vendors:
+        brand_entry = brand_map.get(vendor.id, {"brand_ids": [], "brand_names": []})
+        items.append(
+            {
+                "id": str(vendor.id),
+                "name": vendor.name,
+                "firm_name": vendor.firm_name,
+                "gstin": vendor.gstin,
+                "pan": vendor.pan,
+                "owner_name": vendor.owner_name,
+                "phone": vendor.phone,
+                "alternate_phone": vendor.alternate_phone,
+                "email": vendor.email,
+                "street": vendor.street,
+                "city": vendor.city,
+                "state": vendor.state,
+                "pincode": vendor.pincode,
+                "bank_account_number": vendor.bank_account_number,
+                "ifsc_code": vendor.ifsc_code,
+                "account_category_id": str(vendor.account_category_id) if vendor.account_category_id else None,
+                "account_category_name": account_categories.get(vendor.id, ""),
+                "brand_ids": brand_entry["brand_ids"],
+                "brand_names": brand_entry["brand_names"],
+                "is_active": vendor.is_active,
+                "created_at": vendor.created_at,
+            }
+        )
     total_pages = (total + page_size - 1) // page_size if total > 0 else 0
     return {
         "items": jsonable_encoder(items),
@@ -1667,15 +1758,20 @@ async def patch_vendor(vendor_id: str, payload: VendorUpdate, db: AsyncSession =
 
     obj = await _get_or_404(db, Vendor, uuid.UUID(vendor_id), "Vendor")
     patch_data = payload.model_dump(exclude_unset=True)
+    brand_ids = patch_data.pop("brand_ids", None)
     if "account_category_id" in patch_data:
         await _require_account_category(db, patch_data["account_category_id"], party_type="VENDOR")
     if "firm_name" in patch_data and patch_data["firm_name"] is not None:
         patch_data["name"] = patch_data["firm_name"]
     for key, value in patch_data.items():
         setattr(obj, key, value)
+    linked_brand_ids, linked_brand_names = await _sync_vendor_brands(db, obj.id, brand_ids)
     await db.commit()
     await db.refresh(obj)
-    return obj
+    response = jsonable_encoder(obj)
+    response["brand_ids"] = linked_brand_ids
+    response["brand_names"] = linked_brand_names
+    return response
 
 
 @router.patch("/account-categories/{category_id}", dependencies=[Depends(require_permission("credit-debit-notes", "update"))])
