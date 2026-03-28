@@ -36,6 +36,7 @@ class PurchaseBillItemIn(BaseModel):
     unit_2nd_id: uuid.UUID | None = None
     unit_3rd_id: uuid.UUID | None = None
     base_quantity: Decimal | None = None
+    mrp: Decimal | None = None
     rate_value: Decimal | None = None
     rate_unit_level: int | None = None
     discount_percent: Decimal | None = None

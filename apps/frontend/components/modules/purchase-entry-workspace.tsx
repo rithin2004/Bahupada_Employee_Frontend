@@ -135,6 +135,7 @@ type LineDraft = {
   quantity1: string;
   quantity2: string;
   quantity3: string;
+  mrp: string;
   rateValue: string;
   rateUnitLevel: 1 | 2 | 3;
   discountPercent: string;
@@ -241,6 +242,7 @@ function makeLine(): LineDraft {
     quantity1: "",
     quantity2: "",
     quantity3: "",
+    mrp: "",
     rateValue: "",
     rateUnitLevel: 1,
     discountPercent: "",
@@ -249,8 +251,8 @@ function makeLine(): LineDraft {
   };
 }
 
-type LineField = "product" | "quantity1" | "quantity2" | "quantity3" | "rateValue" | "rateUnitLevel" | "discountPercent";
-const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "quantity1", "rateValue", "rateUnitLevel", "discountPercent"];
+type LineField = "product" | "quantity1" | "quantity2" | "quantity3" | "mrp" | "rateValue" | "rateUnitLevel" | "discountPercent";
+const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "quantity1", "mrp", "rateValue", "rateUnitLevel", "discountPercent"];
 const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
 const VENDOR_CREATE_FIELD_ORDER = [
   "firm_name",
@@ -298,7 +300,7 @@ function getLineQuantityFields(line: LineDraft | null): LineField[] {
 }
 
 function getLineFieldOrder(line: LineDraft | null): LineField[] {
-  return ["product", ...getLineQuantityFields(line), "rateValue", "rateUnitLevel", "discountPercent"];
+  return ["product", ...getLineQuantityFields(line), "mrp", "rateValue", "rateUnitLevel", "discountPercent"];
 }
 
 function resolveFieldForLine(line: LineDraft | null, preferred: LineField): LineField {
@@ -478,8 +480,10 @@ export function PurchaseEntryWorkspace() {
   const [vendorCreateForm, setVendorCreateForm] = useState<VendorCreateForm>({ ...EMPTY_VENDOR_FORM });
   const [productCreateForm, setProductCreateForm] = useState<ProductCreateForm>({ ...EMPTY_PRODUCT_FORM });
   const billDateRef = useRef<HTMLInputElement | null>(null);
+  const billDatePickerRef = useRef<HTMLInputElement | null>(null);
   const billNumberRef = useRef<HTMLInputElement | null>(null);
   const receivedDateRef = useRef<HTMLInputElement | null>(null);
+  const receivedDatePickerRef = useRef<HTMLInputElement | null>(null);
   const paymentModeRef = useRef<HTMLButtonElement | null>(null);
   const warehouseButtonRef = useRef<HTMLButtonElement | null>(null);
   const freightRef = useRef<HTMLInputElement | null>(null);
@@ -845,6 +849,7 @@ export function PurchaseEntryWorkspace() {
   const selectProduct = useCallback((product: ProductSummary) => {
     updateLine(activeRow, {
       product,
+      mrp: product.mrp ? Number(product.mrp).toFixed(2) : "0.00",
       rateValue: product.latest_rate_value || product.cost_price || "0",
       rateUnitLevel: (product.latest_rate_unit_level as 1 | 2 | 3 | null) ?? 1,
       discountPercent: product.latest_discount_percent || "0",
@@ -975,6 +980,7 @@ export function PurchaseEntryWorkspace() {
           unit_2nd_id: line.product?.unit_2nd_id,
           unit_3rd_id: line.product?.unit_3rd_id,
           base_quantity: lineBaseQuantity(line),
+          mrp: Number(line.mrp || 0),
           damaged_quantity: 0,
           unit_price: lineUnitPrice(line),
           rate_value: Number(line.rateValue || 0),
@@ -1054,6 +1060,10 @@ export function PurchaseEntryWorkspace() {
       return;
     }
     if (field === "quantity1") {
+      moveGridFocus(rowIndex, "mrp");
+      return;
+    }
+    if (field === "mrp") {
       moveGridFocus(rowIndex, "rateValue");
       return;
     }
@@ -1079,6 +1089,20 @@ export function PurchaseEntryWorkspace() {
       setTimeout(() => focusLineField(nextRow, "product"), 0);
     }
   }, [focusFooterField, focusLineField, lines, moveGridFocus, openProductSelector]);
+
+  const applyBillDateFromPicker = useCallback((iso: string) => {
+    if (!iso) return;
+    setBillDate(iso);
+    setBillDateInput(formatDisplayDate(iso));
+    setTimeout(() => setVendorSearchOpen(true), 0);
+  }, []);
+
+  const applyReceivedDateFromPicker = useCallback((iso: string) => {
+    if (!iso) return;
+    setReceivedDate(iso);
+    setReceivedDateInput(formatDisplayDate(iso));
+    setTimeout(() => paymentModeRef.current?.focus(), 0);
+  }, []);
 
   const handleLineFieldKeyDown = useCallback((event: ReactKeyboardEvent, rowIndex: number, field: LineField) => {
     if (event.key === "Enter") {
@@ -1168,21 +1192,48 @@ export function PurchaseEntryWorkspace() {
 
             <div className="grid gap-px bg-border md:grid-cols-12">
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Date</Label>
-                <Input
-                  ref={billDateRef}
-                  value={billDateInput}
-                  onChange={(e) => setBillDateInput(e.target.value)}
-                  onFocus={() => setActiveField("product")}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void confirmDate(billDateInput, setBillDate, setBillDateInput, () => setVendorSearchOpen(true));
-                    }
-                  }}
-                  placeholder="ddmmyyyy"
-                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
-                />
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Purchase Date</Label>
+                <div className="mt-2 flex gap-2">
+                  <Input
+                    ref={billDateRef}
+                    value={billDateInput}
+                    onChange={(e) => setBillDateInput(e.target.value)}
+                    onFocus={() => setActiveField("product")}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void confirmDate(billDateInput, setBillDate, setBillDateInput, () => setVendorSearchOpen(true));
+                      }
+                    }}
+                    placeholder="ddmmyyyy"
+                    className="h-11 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-11 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    onClick={() => {
+                      const node = billDatePickerRef.current;
+                      if (!node) return;
+                      if (typeof node.showPicker === "function") {
+                        node.showPicker();
+                      } else {
+                        node.click();
+                      }
+                    }}
+                  >
+                    Date
+                  </Button>
+                  <input
+                    ref={billDatePickerRef}
+                    type="date"
+                    value={billDate}
+                    onChange={(e) => applyBillDateFromPicker(e.target.value)}
+                    className="sr-only"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                  />
+                </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
@@ -1207,21 +1258,48 @@ export function PurchaseEntryWorkspace() {
                 <Input ref={billNumberRef} value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => e.key === "Enter" && receivedDateRef.current?.focus()} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none" />
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Dt</Label>
-                <Input
-                  ref={receivedDateRef}
-                  value={receivedDateInput}
-                  onChange={(e) => setReceivedDateInput(e.target.value)}
-                  onFocus={() => setActiveField("product")}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void confirmDate(receivedDateInput, setReceivedDate, setReceivedDateInput, () => paymentModeRef.current?.focus());
-                    }
-                  }}
-                  placeholder="ddmmyyyy"
-                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
-                />
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
+                <div className="mt-2 flex gap-2">
+                  <Input
+                    ref={receivedDateRef}
+                    value={receivedDateInput}
+                    onChange={(e) => setReceivedDateInput(e.target.value)}
+                    onFocus={() => setActiveField("product")}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void confirmDate(receivedDateInput, setReceivedDate, setReceivedDateInput, () => paymentModeRef.current?.focus());
+                      }
+                    }}
+                    placeholder="ddmmyyyy"
+                    className="h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-11 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    onClick={() => {
+                      const node = receivedDatePickerRef.current;
+                      if (!node) return;
+                      if (typeof node.showPicker === "function") {
+                        node.showPicker();
+                      } else {
+                        node.click();
+                      }
+                    }}
+                  >
+                    Date
+                  </Button>
+                  <input
+                    ref={receivedDatePickerRef}
+                    type="date"
+                    value={receivedDate}
+                    onChange={(e) => applyReceivedDateFromPicker(e.target.value)}
+                    className="sr-only"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                  />
+                </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
@@ -1250,7 +1328,7 @@ export function PurchaseEntryWorkspace() {
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
                 <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
-                <Input value={entryNumber} onChange={(e) => setEntryNumber(e.target.value)} className="mt-2 h-10 rounded-sm border-0 bg-[#eef1ea] text-sm font-semibold shadow-none" />
+                <div className="mt-2 h-10 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{entryNumber}</div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Type</div>
@@ -1286,6 +1364,7 @@ export function PurchaseEntryWorkspace() {
                     <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
+                    <TableHead className="text-center text-sm font-semibold text-foreground">MRP</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">UNIT</TableHead>
                     <TableHead className="text-center text-sm font-semibold text-foreground">DISC%</TableHead>
@@ -1330,6 +1409,7 @@ export function PurchaseEntryWorkspace() {
                       <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity3")} value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity2")} value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity1")} value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5">
                         <Button
@@ -1361,9 +1441,9 @@ export function PurchaseEntryWorkspace() {
                     <div className="mt-2 space-y-2">
                       <div className="text-base font-semibold">{activeLine.product.name}</div>
                       <div className="text-sm text-[#5b655f]">{activeLine.product.brand || "-"}</div>
-                      <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
-                      <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
-                      <div>SRATE: <span className="font-semibold">{Number(activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
+                    <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
+                    <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
+                    <div>SRATE: <span className="font-semibold">{Number(activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
                     </div>
                   ) : (
                     <div className="mt-2 text-muted-foreground">Select product to view detail.</div>

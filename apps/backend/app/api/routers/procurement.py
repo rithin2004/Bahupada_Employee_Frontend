@@ -432,6 +432,9 @@ async def _create_purchase_bill_internal(
         product = await db.get(Product, item.product_id)
         if product is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        pricing_row = (
+            await db.execute(select(Pricing).where(Pricing.product_id == product.id))
+        ).scalar_one_or_none()
 
         qty1 = Decimal(item.quantity_1st or 0)
         qty2 = Decimal(item.quantity_2nd or 0)
@@ -462,6 +465,22 @@ async def _create_purchase_bill_internal(
         tax_percent = Decimal(product.tax_percent or 0)
         line_tax_amount = Decimal(item.line_tax_amount or (taxable_amount * tax_percent / Decimal("100")))
         line_total_amount = Decimal(item.line_total_amount or (taxable_amount + line_tax_amount))
+
+        if item.mrp is not None:
+            next_mrp = Decimal(item.mrp or 0)
+            if pricing_row is None:
+                pricing_row = Pricing(
+                    product_id=product.id,
+                    mrp=next_mrp,
+                    cost_price=Decimal(product.base_price or 0),
+                    a_class_price=Decimal("0"),
+                    b_class_price=Decimal("0"),
+                    c_class_price=Decimal("0"),
+                    is_active=True,
+                )
+                db.add(pricing_row)
+            else:
+                pricing_row.mrp = next_mrp
 
         subtotal += taxable_amount
         gst_total += line_tax_amount
