@@ -27,6 +27,7 @@ type VendorRow = {
   firm_name: string;
   brand_ids: string[];
   brand_names: string[];
+  purchase_type: string;
   gstin: string;
   pan: string;
   owner_name: string;
@@ -60,6 +61,7 @@ const DEFAULT_PAGE_SIZE = 50;
 const EMPTY_CREATE_FORM = {
   firm_name: "",
   brand_ids: [] as string[],
+  purchase_type: "CENTRAL",
   gstin: "",
   pan: "",
   owner_name: "",
@@ -87,6 +89,7 @@ function mapRow(row: Record<string, unknown>): VendorRow {
     firm_name: String(row.firm_name ?? ""),
     brand_ids: asArray(row.brand_ids).map((item) => String(item)),
     brand_names: asArray(row.brand_names).map((item) => String(item)),
+    purchase_type: String(row.purchase_type ?? ""),
     gstin: String(row.gstin ?? ""),
     pan: String(row.pan ?? ""),
     owner_name: String(row.owner_name ?? ""),
@@ -291,6 +294,7 @@ export function VendorsAdminEditor() {
         bank_account_number: selected.bank_account_number || null,
         ifsc_code: selected.ifsc_code || null,
         account_category_id: selected.account_category_id || null,
+        purchase_type: selected.purchase_type || null,
         brand_ids: selected.brand_ids,
         is_active: selected.is_active,
       });
@@ -318,6 +322,7 @@ export function VendorsAdminEditor() {
     try {
       await postBackend("/masters/vendors", {
         firm_name: createForm.firm_name.trim(),
+        purchase_type: createForm.purchase_type || null,
         gstin: createForm.gstin.trim() || null,
         pan: createForm.pan.trim() || null,
         owner_name: createForm.owner_name.trim() || null,
@@ -477,6 +482,17 @@ export function VendorsAdminEditor() {
                 <div className="space-y-1 md:col-span-2">
                   <Label>Firm Name</Label>
                   <Input value={createForm.firm_name} onChange={(e) => setCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Type</Label>
+                  <select
+                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                    value={createForm.purchase_type}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, purchase_type: e.target.value }))}
+                  >
+                    <option value="CENTRAL">CENTRAL</option>
+                    <option value="LOCAL">LOCAL</option>
+                  </select>
                 </div>
                 <div className="space-y-1">
                   <Label>GSTIN</Label>
@@ -649,6 +665,7 @@ export function VendorsAdminEditor() {
                 <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
               </TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Firm Name</TableHead>
+              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Type</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">GSTIN</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Phone</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Brands</TableHead>
@@ -695,6 +712,7 @@ export function VendorsAdminEditor() {
                     />
                   </TableCell>
                   <TableCell>{row.firm_name || "-"}</TableCell>
+                  <TableCell>{row.purchase_type || "-"}</TableCell>
                   <TableCell>{row.gstin || "-"}</TableCell>
                   <TableCell>{row.phone || "-"}</TableCell>
                   <TableCell>{row.brand_names.length ? row.brand_names.join(", ") : "-"}</TableCell>
@@ -721,6 +739,17 @@ export function VendorsAdminEditor() {
                             <div className="space-y-1 md:col-span-2">
                               <Label>Firm Name</Label>
                               <Input value={selected.firm_name} onChange={(e) => updateSelected("firm_name", e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Type</Label>
+                              <select
+                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                value={selected.purchase_type}
+                                onChange={(e) => updateSelected("purchase_type", e.target.value)}
+                              >
+                                <option value="CENTRAL">CENTRAL</option>
+                                <option value="LOCAL">LOCAL</option>
+                              </select>
                             </div>
                             <div className="space-y-1">
                               <Label>GSTIN</Label>

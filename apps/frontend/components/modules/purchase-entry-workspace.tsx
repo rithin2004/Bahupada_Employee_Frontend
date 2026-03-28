@@ -22,6 +22,7 @@ type VendorSummary = {
   vendor_name: string;
   address_lines: string[];
   brand_names: string[];
+  purchase_type: "LOCAL" | "CENTRAL" | null;
   city: string | null;
   state: string | null;
   pincode: string | null;
@@ -97,6 +98,7 @@ type HsnOption = { id: string; hsn_code: string; gst_percent: string };
 type VendorCreateForm = {
   firm_name: string;
   brand_ids: string[];
+  purchase_type: "LOCAL" | "CENTRAL";
   gstin: string;
   pan: string;
   owner_name: string;
@@ -160,6 +162,7 @@ const EMPTY_PRODUCT_EDIT: ProductEditForm = {
 const EMPTY_VENDOR_FORM: VendorCreateForm = {
   firm_name: "",
   brand_ids: [],
+  purchase_type: "CENTRAL",
   gstin: "",
   pan: "",
   owner_name: "",
@@ -256,6 +259,7 @@ const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "qua
 const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
 const VENDOR_CREATE_FIELD_ORDER = [
   "firm_name",
+  "purchase_type",
   "gstin",
   "pan",
   "owner_name",
@@ -369,6 +373,7 @@ function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
     vendor_name: String(row.vendor_name ?? ""),
     address_lines: Array.isArray(row.address_lines) ? row.address_lines.map((item) => String(item)) : [],
     brand_names: asArray(row.brand_names).map((item) => String(item)),
+    purchase_type: row.purchase_type === "LOCAL" ? "LOCAL" : row.purchase_type === "CENTRAL" ? "CENTRAL" : null,
     city: row.city ? String(row.city) : null,
     state: row.state ? String(row.state) : null,
     pincode: row.pincode ? String(row.pincode) : null,
@@ -673,19 +678,13 @@ export function PurchaseEntryWorkspace() {
   }, []);
 
   const searchProducts = useCallback(async (query: string) => {
-    if (!vendorSummary?.vendor_id) {
-      setProductResults([]);
-      setProductIndex(0);
-      return;
-    }
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    params.set("vendor_id", vendorSummary.vendor_id);
     const res = await fetchBackendFresh(`/procurement/purchase-entry/products/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapProductSummary);
     setProductResults(items);
     setProductIndex(0);
-  }, [vendorSummary?.vendor_id]);
+  }, []);
 
   useEffect(() => {
     void loadBootstrap();
@@ -717,7 +716,7 @@ export function PurchaseEntryWorkspace() {
     const nextWarehouseState = selectedWarehouse?.state ?? null;
     setWarehouseState(nextWarehouseState);
     if (vendorSummary) {
-      setTaxType(deriveTaxType(nextWarehouseState, vendorSummary.state) as "LOCAL" | "CENTRAL");
+      setTaxType((vendorSummary.purchase_type || deriveTaxType(nextWarehouseState, vendorSummary.state)) as "LOCAL" | "CENTRAL");
     }
   }, [vendorSummary, warehouseId, warehouses]);
 
@@ -817,7 +816,7 @@ export function PurchaseEntryWorkspace() {
 
   const selectVendor = useCallback((vendor: VendorSummary) => {
     setVendorSummary(vendor);
-    setTaxType(deriveTaxType(warehouseState, vendor.state) as "LOCAL" | "CENTRAL");
+    setTaxType((vendor.purchase_type || deriveTaxType(warehouseState, vendor.state)) as "LOCAL" | "CENTRAL");
     setVendorSearchOpen(false);
     setVendorSearch("");
     setTimeout(() => billNumberRef.current?.focus(), 0);
@@ -1169,6 +1168,9 @@ export function PurchaseEntryWorkspace() {
                   <div className="mt-1 truncate text-xs text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
                   <div className="mt-2 text-xs text-[#5b655f]">
                     Allowed Brands: {vendorSummary.brand_names.length ? vendorSummary.brand_names.join(", ") : "None linked"}
+                  </div>
+                  <div className="mt-1 text-xs text-[#5b655f]">
+                    Vendor Type: {vendorSummary.purchase_type || "Not set"}
                   </div>
                 </div>
                 <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
@@ -1534,6 +1536,7 @@ export function PurchaseEntryWorkspace() {
                     <div>Last Purc</div><div className="text-right font-semibold">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "-"}</div>
                     <div>Last Pay</div><div className="text-right font-semibold">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "-"}</div>
                     <div>GSTIN</div><div className="text-right font-semibold">{vendorSummary.gstin || "-"}</div>
+                    <div>Type</div><div className="text-right font-semibold">{vendorSummary.purchase_type || "-"}</div>
                     <div>Area / Route</div><div className="text-right font-semibold">{vendorSummary.area || "-"} / {vendorSummary.route || "-"}</div>
                   </div>
                   <div className="border-t pt-3">
@@ -1999,6 +2002,7 @@ export function PurchaseEntryWorkspace() {
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setVendorCreateRef("firm_name")} value={vendorCreateForm.firm_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "firm_name")} /></div>
+            <div className="space-y-1"><Label>Type</Label><select ref={setVendorCreateRef("purchase_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.purchase_type} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, purchase_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select></div>
             <div className="space-y-1"><Label>GSTIN</Label><Input ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} /></div>
             <div className="space-y-1"><Label>PAN</Label><Input ref={setVendorCreateRef("pan")} value={vendorCreateForm.pan} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pan")} /></div>
             <div className="space-y-1"><Label>Owner Name</Label><Input ref={setVendorCreateRef("owner_name")} value={vendorCreateForm.owner_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "owner_name")} /></div>
@@ -2030,6 +2034,7 @@ export function PurchaseEntryWorkspace() {
               try {
                 const created = asObject(await postBackend("/masters/vendors", {
                   firm_name: vendorCreateForm.firm_name.trim(),
+                  purchase_type: vendorCreateForm.purchase_type,
                   gstin: vendorCreateForm.gstin.trim() || null,
                   pan: vendorCreateForm.pan.trim() || null,
                   owner_name: vendorCreateForm.owner_name.trim() || null,

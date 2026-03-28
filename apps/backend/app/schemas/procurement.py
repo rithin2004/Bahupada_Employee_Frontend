@@ -77,6 +77,7 @@ class PurchaseEntryVendorSummary(BaseModel):
     vendor_name: str
     address_lines: list[str]
     brand_names: list[str] = []
+    purchase_type: str | None = None
     city: str | None = None
     state: str | None = None
     pincode: str | None = None

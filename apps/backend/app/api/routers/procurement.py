@@ -247,6 +247,7 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
         vendor_name=vendor.firm_name or vendor.name,
         address_lines=address_lines,
         brand_names=[str(name) for name in brand_names],
+        purchase_type=vendor.purchase_type,
         city=vendor.city,
         state=vendor.state,
         pincode=vendor.pincode,
@@ -395,7 +396,7 @@ async def _create_purchase_bill_internal(
     vendor = await db.get(Vendor, vendor_id)
     warehouse = await db.get(Warehouse, warehouse_id)
 
-    derived_tax_type = payload.tax_type or _derive_tax_type(
+    derived_tax_type = payload.tax_type or vendor.purchase_type or _derive_tax_type(
         warehouse_state=warehouse.state if warehouse else None,
         vendor_gstin=vendor.gstin if vendor else None,
         vendor_state=vendor.state if vendor else None,

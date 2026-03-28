@@ -135,6 +135,7 @@ const LIST_PAGE_SIZE = 50;
 const EMPTY_INLINE_VENDOR_FORM = {
   firm_name: "",
   brand_ids: [] as string[],
+  purchase_type: "CENTRAL",
   gstin: "",
   pan: "",
   owner_name: "",
@@ -416,9 +417,10 @@ function isMissingBearerTokenError(error: unknown) {
 type ProcurementCreateFlowProps = {
   initialTab?: "challan" | "bill";
   hideTabs?: boolean;
+  hideBillCreateButton?: boolean;
 };
 
-export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false }: ProcurementCreateFlowProps = {}) {
+export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false, hideBillCreateButton = false }: ProcurementCreateFlowProps = {}) {
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [canReadPurchase, setCanReadPurchase] = useState(false);
   const [canWritePurchase, setCanWritePurchase] = useState(false);
@@ -810,6 +812,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
       const created = asObject(
         await postBackend("/masters/vendors", {
           firm_name: newVendorForm.firm_name.trim(),
+          purchase_type: newVendorForm.purchase_type || null,
           gstin: newVendorForm.gstin.trim() || null,
           pan: newVendorForm.pan.trim() || null,
           owner_name: newVendorForm.owner_name.trim() || null,
@@ -1365,6 +1368,13 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                                     />
                                   </div>
                                   <div className="space-y-1">
+                                    <Label>Type</Label>
+                                    <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={newVendorForm.purchase_type} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, purchase_type: e.target.value }))}>
+                                      <option value="CENTRAL">CENTRAL</option>
+                                      <option value="LOCAL">LOCAL</option>
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1">
                                     <Label>GSTIN</Label>
                                     <Input
                                       value={newVendorForm.gstin}
@@ -1892,7 +1902,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   className="md:w-80"
                 />
                 <Dialog open={showNewBill} onOpenChange={(open) => setShowNewBill(canWritePurchase ? open : false)}>
-                  {canWritePurchase ? (
+                  {canWritePurchase && !hideBillCreateButton ? (
                     <DialogTrigger asChild>
                       <Button>Create New</Button>
                     </DialogTrigger>
@@ -2040,6 +2050,13 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                                         value={newVendorForm.firm_name}
                                         onChange={(e) => setNewVendorForm((prev) => ({ ...prev, firm_name: e.target.value }))}
                                       />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label>Type</Label>
+                                      <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={newVendorForm.purchase_type} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, purchase_type: e.target.value }))}>
+                                        <option value="CENTRAL">CENTRAL</option>
+                                        <option value="LOCAL">LOCAL</option>
+                                      </select>
                                     </div>
                                     <div className="space-y-1">
                                       <Label>GSTIN</Label>

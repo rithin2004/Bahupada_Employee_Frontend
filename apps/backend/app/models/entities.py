@@ -530,6 +530,7 @@ class Vendor(Base, TimestampMixin):
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     state: Mapped[str | None] = mapped_column(String(100), nullable=True)
     pincode: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    purchase_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bank_account_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     ifsc_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     account_category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("account_categories.id"), nullable=True)

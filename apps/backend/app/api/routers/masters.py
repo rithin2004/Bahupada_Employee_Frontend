@@ -1046,6 +1046,7 @@ async def list_vendors(
                 "city": vendor.city,
                 "state": vendor.state,
                 "pincode": vendor.pincode,
+                "purchase_type": vendor.purchase_type,
                 "bank_account_number": vendor.bank_account_number,
                 "ifsc_code": vendor.ifsc_code,
                 "account_category_id": str(vendor.account_category_id) if vendor.account_category_id else None,

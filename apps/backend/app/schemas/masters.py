@@ -1,6 +1,7 @@
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -135,6 +136,7 @@ class ProductCreate(StrictModel):
 class VendorCreate(StrictModel):
     firm_name: str
     brand_ids: list[uuid.UUID] = Field(default_factory=list)
+    purchase_type: Literal["LOCAL", "CENTRAL"] | None = None
     gstin: str | None = None
     pan: str | None = None
     owner_name: str | None = None
@@ -284,6 +286,7 @@ class WarehouseUpdate(BaseModel):
 class VendorUpdate(BaseModel):
     firm_name: str | None = None
     brand_ids: list[uuid.UUID] | None = None
+    purchase_type: Literal["LOCAL", "CENTRAL"] | None = None
     gstin: str | None = None
     pan: str | None = None
     owner_name: str | None = None

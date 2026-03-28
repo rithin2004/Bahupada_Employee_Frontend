@@ -7,7 +7,6 @@ import { AppShell } from "@/components/layout/app-shell";
 import { ProcurementCreateFlow } from "@/components/modules/procurement-create-flow";
 import { PurchaseEntryWorkspace } from "@/components/modules/purchase-entry-workspace";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default function AdminPurchasePage() {
@@ -39,37 +38,32 @@ export default function AdminPurchasePage() {
             </TabsContent>
 
             <TabsContent value="bill" className="mt-4">
-              {showPurchaseEntry ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h1 className="text-lg font-semibold">Create Purchase Bill</h1>
-                      <p className="text-sm text-muted-foreground">
-                        Keyboard-first purchase bill workflow.
-                      </p>
+              <div className="space-y-4">
+                {showPurchaseEntry ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h1 className="text-lg font-semibold">Create Purchase Bill</h1>
+                        <p className="text-sm text-muted-foreground">
+                          Keyboard-first purchase bill workflow.
+                        </p>
+                      </div>
+                      <Button variant="outline" onClick={() => setShowPurchaseEntry(false)}>
+                        Back To Purchase Bills
+                      </Button>
                     </div>
-                    <Button variant="outline" onClick={() => setShowPurchaseEntry(false)}>
-                      Back To Purchase Bills
-                    </Button>
+                    <PurchaseEntryWorkspace />
                   </div>
-                  <PurchaseEntryWorkspace />
-                </div>
-              ) : (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Purchase Bill</CardTitle>
-                    <CardDescription>
-                      Open the bill workspace only when you want to create a purchase bill.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                    <p className="text-sm text-muted-foreground">
-                      Existing purchase-bill creation stays behind the button instead of opening immediately.
-                    </p>
+                ) : null}
+
+                {!showPurchaseEntry ? (
+                  <div className="flex items-center justify-end">
                     <Button onClick={() => setShowPurchaseEntry(true)}>Create Purchase Bill</Button>
-                  </CardContent>
-                </Card>
-              )}
+                  </div>
+                ) : null}
+
+                <ProcurementCreateFlow initialTab="bill" hideTabs hideBillCreateButton />
+              </div>
             </TabsContent>
           </Tabs>
         </div>
