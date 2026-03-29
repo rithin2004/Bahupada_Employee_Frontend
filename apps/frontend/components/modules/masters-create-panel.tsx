@@ -97,7 +97,6 @@ export function MastersCreatePanel() {
     secondary_unit_quantity: "",
     third_unit_quantity: "",
     weight_in_grams: "",
-    base_price: "0",
     tax_percent: "0",
   });
 
@@ -228,7 +227,6 @@ export function MastersCreatePanel() {
         secondary_unit_quantity: toNumber(productForm.secondary_unit_quantity),
         third_unit_quantity: toNumber(productForm.third_unit_quantity),
         weight_in_grams: toNumber(productForm.weight_in_grams),
-        base_price: toNumber(productForm.base_price),
         tax_percent: toNumber(productForm.tax_percent),
       });
       await postBackend("/masters/products", payload);
@@ -246,7 +244,6 @@ export function MastersCreatePanel() {
         secondary_unit_quantity: "",
         third_unit_quantity: "",
         weight_in_grams: "",
-        base_price: "0",
         tax_percent: "0",
       });
       setFeedback("Product created.");
@@ -507,10 +504,6 @@ export function MastersCreatePanel() {
                 <div className="space-y-1">
                   <Label>Weight (grams)</Label>
                   <Input value={productForm.weight_in_grams} onChange={(e) => setProductForm((p) => ({ ...p, weight_in_grams: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Base Price *</Label>
-                  <Input value={productForm.base_price} onChange={(e) => setProductForm((p) => ({ ...p, base_price: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <Label>Tax Percent *</Label>

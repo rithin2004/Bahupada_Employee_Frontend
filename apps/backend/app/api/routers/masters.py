@@ -604,7 +604,6 @@ async def list_products(
             Product.weight_in_grams.label("weight_in_grams"),
             Product.is_bundle.label("is_bundle"),
             Product.bundle_price_override.label("bundle_price_override"),
-            Product.base_price.label("base_price"),
             Product.tax_percent.label("tax_percent"),
             Product.unit.label("unit"),
             Product.is_active.label("is_active"),

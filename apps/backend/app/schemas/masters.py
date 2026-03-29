@@ -129,7 +129,6 @@ class ProductCreate(StrictModel):
     weight_in_grams: Decimal | None = None
     is_bundle: bool = False
     bundle_price_override: Decimal | None = None
-    base_price: Decimal
     tax_percent: Decimal
 
 
@@ -200,7 +199,6 @@ class ProductUpdate(BaseModel):
     weight_in_grams: Decimal | None = None
     is_bundle: bool | None = None
     bundle_price_override: Decimal | None = None
-    base_price: Decimal | None = None
     tax_percent: Decimal | None = None
     is_active: bool | None = None
 

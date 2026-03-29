@@ -473,7 +473,7 @@ async def _create_purchase_bill_internal(
                 pricing_row = Pricing(
                     product_id=product.id,
                     mrp=next_mrp,
-                    cost_price=Decimal(product.base_price or 0),
+                    cost_price=Decimal(item.unit_price or 0),
                     a_class_price=Decimal("0"),
                     b_class_price=Decimal("0"),
                     c_class_price=Decimal("0"),
@@ -773,6 +773,7 @@ async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
                 "id": str(bill.id),
                 "bill_number": bill.bill_number,
                 "bill_date": str(bill.bill_date),
+                "vendor_id": str(bill.vendor_id) if bill.vendor_id else None,
                 "status": bill.status,
                 "posted": bill.posted,
                 "challan_id": str(bill.purchase_challan_id) if bill.purchase_challan_id else None,
@@ -781,6 +782,7 @@ async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
                 "warehouse_name": warehouse.name if warehouse else "",
                 "entry_mode": "challan" if challan else "direct",
                 "item_count": len(item_count),
+                "total_amount": str(bill.total_amount or "0"),
             }
         )
     return response
@@ -811,7 +813,6 @@ async def list_stock_snapshot(
             Product.sku.label("sku"),
             Product.name.label("product_name"),
             Product.unit.label("unit"),
-            Product.base_price.label("base_price"),
             Warehouse.id.label("warehouse_id"),
             Warehouse.code.label("warehouse_code"),
             Warehouse.name.label("warehouse_name"),

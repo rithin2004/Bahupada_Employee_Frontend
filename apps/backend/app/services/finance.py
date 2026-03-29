@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
     AccountCategory,
+    BalanceSide,
     CreditNote,
     Customer,
     DebitNote,
@@ -21,9 +22,13 @@ from app.models.entities import (
     Payment,
     PaymentAllocation,
     PurchaseBill,
+    PurchaseBillPaymentAllocation,
     PurchaseBillItem,
     SalesFinalInvoice,
     SalesOrder,
+    SelfAccount,
+    Transaction,
+    TransactionDirection,
     Vendor,
     VoucherStatus,
 )
@@ -36,6 +41,8 @@ async def record_payment(
     mode: str,
     reference_type: str,
     reference_id,
+    self_account_id=None,
+    payment_date_value: date | None = None,
 ) -> Payment:
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero")
@@ -47,7 +54,8 @@ async def record_payment(
         payment_mode=mode,
         reference_type=reference_type,
         reference_id=reference_id,
-        payment_date=date.today(),
+        self_account_id=self_account_id,
+        payment_date=payment_date_value or date.today(),
     )
     session.add(payment)
 
@@ -58,7 +66,7 @@ async def record_payment(
             credit=Decimal("0"),
             reference_type="payment",
             reference_id=payment.id,
-            entry_date=date.today(),
+            entry_date=payment.payment_date,
         )
     )
     session.add(
@@ -68,7 +76,22 @@ async def record_payment(
             credit=amount,
             reference_type="payment",
             reference_id=payment.id,
-            entry_date=date.today(),
+            entry_date=payment.payment_date,
+        )
+    )
+
+    session.add(
+        Transaction(
+            transaction_date=payment.payment_date or date.today(),
+            direction=TransactionDirection.INCOMING,
+            amount=amount,
+            payment_mode=mode,
+            description=f"Customer payment {reference_type}",
+            reference_type="payment",
+            reference_id=payment.id,
+            party_type=PartyType.CUSTOMER,
+            party_id=customer_id,
+            self_account_id=self_account_id,
         )
     )
 
@@ -186,7 +209,7 @@ async def post_vendor_purchase_bill_payable(session: AsyncSession, bill: Purchas
     if amount <= 0:
         raise ValueError("Purchase bill amount must be positive to post payable")
 
-    return await post_party_ledger_entry(
+    entry = await post_party_ledger_entry(
         session,
         party_type=PartyType.VENDOR,
         party_id=bill.vendor_id,
@@ -199,6 +222,21 @@ async def post_vendor_purchase_bill_payable(session: AsyncSession, bill: Purchas
         admin_debit=Decimal("0"),
         admin_credit=amount,
     )
+    session.add(
+        Transaction(
+            transaction_date=bill.bill_date,
+            direction=TransactionDirection.OUTGOING,
+            amount=amount,
+            payment_mode=None,
+            description=f"Purchase Bill {bill.bill_number}",
+            reference_type="purchase_bill",
+            reference_id=bill.id,
+            party_type=PartyType.VENDOR,
+            party_id=bill.vendor_id,
+            self_account_id=None,
+        )
+    )
+    return entry
 
 
 async def post_customer_sales_invoice_receivable(session: AsyncSession, final_invoice: SalesFinalInvoice) -> PartyLedgerEntry:
@@ -213,7 +251,7 @@ async def post_customer_sales_invoice_receivable(session: AsyncSession, final_in
     if amount <= 0:
         raise ValueError("Sales final invoice amount must be positive to post receivable")
 
-    return await post_party_ledger_entry(
+    entry = await post_party_ledger_entry(
         session,
         party_type=PartyType.CUSTOMER,
         party_id=order.customer_id,
@@ -226,6 +264,21 @@ async def post_customer_sales_invoice_receivable(session: AsyncSession, final_in
         admin_debit=amount,
         admin_credit=Decimal("0"),
     )
+    session.add(
+        Transaction(
+            transaction_date=final_invoice.invoice_date,
+            direction=TransactionDirection.INCOMING,
+            amount=amount,
+            payment_mode=None,
+            description=f"Sales Invoice {final_invoice.invoice_number}",
+            reference_type="sales_final_invoice",
+            reference_id=final_invoice.id,
+            party_type=PartyType.CUSTOMER,
+            party_id=order.customer_id,
+            self_account_id=None,
+        )
+    )
+    return entry
 
 
 async def record_party_payment(
@@ -235,10 +288,12 @@ async def record_party_payment(
     party_id,
     amount: Decimal,
     direction: PaymentFlowDirection,
+    self_account_id=None,
     payment_mode: str | None = None,
     payment_date_value: date | None = None,
     reference_no: str | None = None,
     note: str | None = None,
+    purchase_bill_allocations: list[dict] | None = None,
 ) -> PartyLedgerPayment:
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero")
@@ -259,6 +314,7 @@ async def record_party_payment(
 
     payment_row = PartyLedgerPayment(
         account_id=account.id,
+        self_account_id=self_account_id,
         direction=direction,
         amount=amount,
         payment_mode=payment_mode,
@@ -295,9 +351,144 @@ async def record_party_payment(
         admin_credit=admin_credit,
     )
 
+    transaction_description = (
+        f"{'Vendor payment' if party_type == PartyType.VENDOR else 'Customer receipt'}"
+        f"{f' {reference_no}' if reference_no else ''}"
+    )
+    if note:
+        transaction_description = f"{transaction_description} - {note}"
+    session.add(
+        Transaction(
+            transaction_date=payment_row.payment_date,
+            direction=TransactionDirection.OUTGOING if direction == PaymentFlowDirection.OUTGOING else TransactionDirection.INCOMING,
+            amount=amount,
+            payment_mode=payment_mode,
+            description=transaction_description,
+            reference_type="party_ledger_payment",
+            reference_id=payment_row.id,
+            party_type=party_type,
+            party_id=party_id,
+            self_account_id=self_account_id,
+        )
+    )
+
+    if party_type == PartyType.VENDOR and purchase_bill_allocations:
+        allocated_total = Decimal("0")
+        for allocation in purchase_bill_allocations:
+            allocated_amount = Decimal(allocation["allocated_amount"])
+            if allocated_amount <= 0:
+                raise ValueError("Allocated amount must be greater than zero")
+            bill = await session.get(PurchaseBill, allocation["purchase_bill_id"])
+            if bill is None or bill.deleted_at is not None:
+                raise ValueError("Purchase bill not found")
+            if bill.vendor_id != party_id:
+                raise ValueError("Purchase bill does not belong to selected vendor")
+            session.add(
+                PurchaseBillPaymentAllocation(
+                    party_ledger_payment_id=payment_row.id,
+                    purchase_bill_id=bill.id,
+                    allocated_amount=allocated_amount,
+                )
+            )
+            allocated_total += allocated_amount
+        if allocated_total > amount:
+            raise ValueError("Purchase bill allocations exceed payment amount")
+
     await session.commit()
     await session.refresh(payment_row)
     return payment_row
+
+
+async def create_self_account(session: AsyncSession, payload) -> SelfAccount:
+    opening_side = BalanceSide(payload.opening_balance_side.upper())
+    row = SelfAccount(
+        name=payload.name.strip(),
+        account_type=payload.account_type.strip() if payload.account_type else None,
+        opening_balance=payload.opening_balance,
+        opening_balance_side=opening_side,
+        opening_balance_date=payload.opening_balance_date,
+        note=payload.note,
+        is_active=payload.is_active,
+    )
+    session.add(row)
+    await session.flush()
+    if Decimal(payload.opening_balance or Decimal("0")) > 0:
+        session.add(
+            Transaction(
+                transaction_date=payload.opening_balance_date,
+                direction=TransactionDirection.INCOMING if opening_side == BalanceSide.DR else TransactionDirection.OUTGOING,
+                amount=Decimal(payload.opening_balance),
+                payment_mode=None,
+                description=f"Opening balance for {row.name}",
+                reference_type="self_account_opening_balance",
+                reference_id=row.id,
+                party_type=None,
+                party_id=None,
+                self_account_id=row.id,
+            )
+        )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def list_self_accounts(session: AsyncSession) -> list[SelfAccount]:
+    return (
+        await session.execute(select(SelfAccount).where(SelfAccount.is_active.is_(True)).order_by(SelfAccount.name.asc()))
+    ).scalars().all()
+
+
+async def get_self_account_statement(session: AsyncSession, self_account_id) -> dict:
+    account = await session.get(SelfAccount, self_account_id)
+    if account is None:
+        raise ValueError("Self account not found")
+
+    rows = (
+        await session.execute(
+            select(Transaction)
+            .where(Transaction.self_account_id == self_account_id)
+            .order_by(Transaction.transaction_date.asc(), Transaction.created_at.asc())
+        )
+    ).scalars().all()
+
+    running = Decimal("0")
+    items = []
+    for row in rows:
+        signed = Decimal(row.amount or 0)
+        if row.direction == TransactionDirection.OUTGOING:
+            running -= signed
+        else:
+            running += signed
+        items.append(
+            {
+                "entry_id": row.id,
+                "entry_date": row.transaction_date,
+                "description": row.description or row.reference_type,
+                "reference_type": row.reference_type,
+                "reference_id": row.reference_id,
+                "admin_debit": signed if row.direction == TransactionDirection.INCOMING else Decimal("0"),
+                "admin_credit": signed if row.direction == TransactionDirection.OUTGOING else Decimal("0"),
+                "counterparty_debit": Decimal("0"),
+                "counterparty_credit": Decimal("0"),
+                "running_balance": abs(running),
+                "balance_side": "DR" if running >= 0 else "CR",
+            }
+        )
+
+    total_incoming = sum((Decimal(row.amount) for row in rows if row.direction == TransactionDirection.INCOMING), Decimal("0"))
+    total_outgoing = sum((Decimal(row.amount) for row in rows if row.direction == TransactionDirection.OUTGOING), Decimal("0"))
+
+    return {
+        "account_id": account.id,
+        "party_type": "SELF",
+        "party_id": account.id,
+        "party_name": account.name,
+        "items": items,
+        "total_debit": total_incoming,
+        "total_credit": total_outgoing,
+        "balance": abs(running),
+        "balance_side": "DR" if running >= 0 else "CR",
+    }
 
 
 async def list_party_ledger_accounts(

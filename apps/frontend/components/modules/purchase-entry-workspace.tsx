@@ -89,7 +89,6 @@ type ProductEditForm = {
   secondary_unit_quantity: string;
   third_unit_quantity: string;
   weight_in_grams: string;
-  base_price: string;
   tax_percent: string;
 };
 
@@ -127,7 +126,6 @@ type ProductCreateForm = {
   secondary_unit_quantity: string;
   third_unit_quantity: string;
   weight_in_grams: string;
-  base_price: string;
   tax_percent: string;
 };
 
@@ -156,7 +154,6 @@ const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   secondary_unit_quantity: "",
   third_unit_quantity: "",
   weight_in_grams: "",
-  base_price: "",
   tax_percent: "",
 };
 const EMPTY_VENDOR_FORM: VendorCreateForm = {
@@ -191,7 +188,6 @@ const EMPTY_PRODUCT_FORM: ProductCreateForm = {
   secondary_unit_quantity: "",
   third_unit_quantity: "",
   weight_in_grams: "",
-  base_price: "",
   tax_percent: "",
 };
 
@@ -288,7 +284,6 @@ const PRODUCT_CREATE_FIELD_ORDER = [
   "third_unit_id",
   "third_unit_quantity",
   "weight_in_grams",
-  "base_price",
   "tax_percent",
 ] as const;
 
@@ -323,6 +318,14 @@ function resolveFieldForLine(line: LineDraft | null, preferred: LineField): Line
 
 function deriveTaxType(warehouseState?: string | null, vendorState?: string | null) {
   return (warehouseState || "").trim().toUpperCase() === (vendorState || "").trim().toUpperCase() ? "LOCAL" : "CENTRAL";
+}
+
+function derivePurchaseTypeFromGstin(gstin: string) {
+  const normalized = gstin.trim().toUpperCase();
+  if (normalized.length < 2) {
+    return "CENTRAL" as const;
+  }
+  return normalized.startsWith("37") ? "LOCAL" as const : "CENTRAL" as const;
 }
 
 function lineBaseQuantity(line: LineDraft) {
@@ -480,6 +483,16 @@ export function PurchaseEntryWorkspace() {
   const [vendorCategoryOptions, setVendorCategoryOptions] = useState<AccountCategoryOption[]>([]);
   const [vendorCreateOpen, setVendorCreateOpen] = useState(false);
   const [productCreateOpen, setProductCreateOpen] = useState(false);
+  const [quickCreateType, setQuickCreateType] = useState<"" | "brand" | "category" | "subCategory" | "unit" | "hsn">("");
+  const [quickCreating, setQuickCreating] = useState(false);
+  const [quickName, setQuickName] = useState("");
+  const [quickCode, setQuickCode] = useState("");
+  const [quickDescription, setQuickDescription] = useState("");
+  const [quickGst, setQuickGst] = useState("0");
+  const [quickCategoryId, setQuickCategoryId] = useState("");
+  const [vendorCategoryCreateOpen, setVendorCategoryCreateOpen] = useState(false);
+  const [creatingVendorCategory, setCreatingVendorCategory] = useState(false);
+  const [vendorCategoryForm, setVendorCategoryForm] = useState({ code: "", name: "", description: "" });
   const [creatingVendor, setCreatingVendor] = useState(false);
   const [creatingProduct, setCreatingProduct] = useState(false);
   const [vendorCreateForm, setVendorCreateForm] = useState<VendorCreateForm>({ ...EMPTY_VENDOR_FORM });
@@ -891,7 +904,6 @@ export function PurchaseEntryWorkspace() {
       secondary_unit_quantity: full.conv_2_to_1 || "",
       third_unit_quantity: full.conv_3_to_2 || "",
       weight_in_grams: full.stock_base_quantity ? "" : "",
-      base_price: full.cost_price,
       tax_percent: full.tax_percent,
     });
     setProductEditOpen(true);
@@ -911,7 +923,6 @@ export function PurchaseEntryWorkspace() {
         secondary_unit_quantity: productEditForm.secondary_unit_id ? Number(productEditForm.secondary_unit_quantity || 0) : null,
         third_unit_quantity: productEditForm.third_unit_id ? Number(productEditForm.third_unit_quantity || 0) : null,
         weight_in_grams: productEditForm.weight_in_grams ? Number(productEditForm.weight_in_grams) : null,
-        base_price: Number(productEditForm.base_price || 0),
         tax_percent: Number(productEditForm.tax_percent || 0),
       });
       const refreshed = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${activeLine.product.product_id}/summary`)));
@@ -920,6 +931,71 @@ export function PurchaseEntryWorkspace() {
       toast.success("Product updated");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update product");
+    }
+  }
+
+  async function quickCreateProductMaster() {
+    if (!quickCreateType) {
+      return;
+    }
+    setQuickCreating(true);
+    try {
+      if (quickCreateType === "brand") {
+        await postBackend("/masters/product-brands", { name: quickName.trim() });
+      } else if (quickCreateType === "category") {
+        await postBackend("/masters/product-categories", { name: quickName.trim() });
+      } else if (quickCreateType === "subCategory") {
+        await postBackend("/masters/product-sub-categories", {
+          name: quickName.trim(),
+          category_id: quickCategoryId || null,
+        });
+      } else if (quickCreateType === "unit") {
+        await postBackend("/masters/units", { unit_code: quickCode.trim(), unit_name: quickName.trim() });
+      } else if (quickCreateType === "hsn") {
+        await postBackend("/masters/hsn", {
+          hsn_code: quickCode.trim(),
+          description: quickDescription.trim() || null,
+          gst_percent: Number(quickGst || "0"),
+        });
+      }
+      await loadCreateReferences();
+      setQuickCreateType("");
+      setQuickName("");
+      setQuickCode("");
+      setQuickDescription("");
+      setQuickGst("0");
+      setQuickCategoryId("");
+      toast.success("Master created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create master");
+    } finally {
+      setQuickCreating(false);
+    }
+  }
+
+  async function createInlineVendorCategory() {
+    if (!vendorCategoryForm.code.trim() || !vendorCategoryForm.name.trim()) {
+      toast.error("Category code and name are required");
+      return;
+    }
+    setCreatingVendorCategory(true);
+    try {
+      const created = asObject(await postBackend("/masters/account-categories", {
+        code: vendorCategoryForm.code.trim(),
+        name: vendorCategoryForm.name.trim(),
+        party_type: "VENDOR",
+        description: vendorCategoryForm.description.trim() || null,
+        is_active: true,
+      }));
+      await loadCreateReferences();
+      setVendorCreateForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
+      setVendorCategoryForm({ code: "", name: "", description: "" });
+      setVendorCategoryCreateOpen(false);
+      toast.success("Account category created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create account category");
+    } finally {
+      setCreatingVendorCategory(false);
     }
   }
 
@@ -1989,7 +2065,6 @@ export function PurchaseEntryWorkspace() {
             </div>
             <div className="space-y-1"><Label>1 third = ? second</Label><Input value={productEditForm.third_unit_quantity} onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} /></div>
             <div className="space-y-1"><Label>Weight in grams</Label><Input value={productEditForm.weight_in_grams} onChange={(e) => setProductEditForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} /></div>
-            <div className="space-y-1"><Label>Base Price</Label><Input value={productEditForm.base_price} onChange={(e) => setProductEditForm((prev) => ({ ...prev, base_price: e.target.value }))} /></div>
           </div>
           <div className="flex justify-end"><Button onClick={() => void saveProductEdit()}>Save Product</Button></div>
         </DialogContent>
@@ -2003,7 +2078,7 @@ export function PurchaseEntryWorkspace() {
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setVendorCreateRef("firm_name")} value={vendorCreateForm.firm_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "firm_name")} /></div>
             <div className="space-y-1"><Label>Type</Label><select ref={setVendorCreateRef("purchase_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.purchase_type} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, purchase_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select></div>
-            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} /></div>
+            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} /></div>
             <div className="space-y-1"><Label>PAN</Label><Input ref={setVendorCreateRef("pan")} value={vendorCreateForm.pan} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pan")} /></div>
             <div className="space-y-1"><Label>Owner Name</Label><Input ref={setVendorCreateRef("owner_name")} value={vendorCreateForm.owner_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "owner_name")} /></div>
             <div className="space-y-1"><Label>Phone</Label><Input ref={setVendorCreateRef("phone")} value={vendorCreateForm.phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "phone")} /></div>
@@ -2015,7 +2090,13 @@ export function PurchaseEntryWorkspace() {
             <div className="space-y-1"><Label>Pincode</Label><Input ref={setVendorCreateRef("pincode")} value={vendorCreateForm.pincode} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pincode")} /></div>
             <div className="space-y-1"><Label>Bank Account Number</Label><Input ref={setVendorCreateRef("bank_account_number")} value={vendorCreateForm.bank_account_number} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "bank_account_number")} /></div>
             <div className="space-y-1"><Label>IFSC Code</Label><Input ref={setVendorCreateRef("ifsc_code")} value={vendorCreateForm.ifsc_code} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "ifsc_code")} /></div>
-            <div className="space-y-1"><Label>Account Category</Label><select ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select></div>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <Label>Account Category</Label>
+                <Button type="button" variant="outline" size="sm" onClick={() => setVendorCategoryCreateOpen(true)}>+ Add Account Category</Button>
+              </div>
+              <select ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
+            </div>
             <div className="space-y-2 md:col-span-2">
               <Label>Brands</Label>
               <div className="grid max-h-40 gap-2 overflow-y-auto rounded-md border p-3 md:grid-cols-2">
@@ -2075,22 +2156,21 @@ export function PurchaseEntryWorkspace() {
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-1"><Label>SKU *</Label><Input ref={setProductCreateRef("sku")} value={productCreateForm.sku} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sku: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sku")} /></div>
             <div className="space-y-1"><Label>Name *</Label><Input ref={setProductCreateRef("name")} value={productCreateForm.name} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, name: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "name")} /></div>
-            <div className="space-y-1"><Label>Brand</Label><select ref={setProductCreateRef("brand_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.brand_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, brand_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "brand_id")}><option value="">Select brand</option>{brandOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
-            <div className="space-y-1"><Label>Category</Label><select ref={setProductCreateRef("category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, category_id: e.target.value, sub_category_id: "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "category_id")}><option value="">Select category</option>{categoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
-            <div className="space-y-1"><Label>Sub Category</Label><select ref={setProductCreateRef("sub_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.sub_category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sub_category_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sub_category_id")}><option value="">Select sub category</option>{(productCreateForm.category_id ? subCategoryOptions.filter((option) => !option.category_id || option.category_id === productCreateForm.category_id) : subCategoryOptions).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
-            <div className="space-y-1"><Label>HSN</Label><select ref={setProductCreateRef("hsn_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.hsn_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, hsn_id: e.target.value, tax_percent: hsnOptions.find((item) => item.id === e.target.value)?.gst_percent || prev.tax_percent }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "hsn_id")}><option value="">Select HSN</option>{hsnOptions.map((option) => <option key={option.id} value={option.id}>{option.hsn_code} ({option.gst_percent}%)</option>)}</select></div>
+            <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Brand</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("brand")}>+ Add Brand</Button></div><select ref={setProductCreateRef("brand_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.brand_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, brand_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "brand_id")}><option value="">Select brand</option>{brandOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
+            <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Category</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("category")}>+ Add Category</Button></div><select ref={setProductCreateRef("category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, category_id: e.target.value, sub_category_id: "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "category_id")}><option value="">Select category</option>{categoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
+            <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Sub Category</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("subCategory")}>+ Add Sub Category</Button></div><select ref={setProductCreateRef("sub_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.sub_category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sub_category_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sub_category_id")}><option value="">Select sub category</option>{(productCreateForm.category_id ? subCategoryOptions.filter((option) => !option.category_id || option.category_id === productCreateForm.category_id) : subCategoryOptions).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
+            <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>HSN</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("hsn")}>+ Add HSN</Button></div><select ref={setProductCreateRef("hsn_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.hsn_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, hsn_id: e.target.value, tax_percent: hsnOptions.find((item) => item.id === e.target.value)?.gst_percent || prev.tax_percent }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "hsn_id")}><option value="">Select HSN</option>{hsnOptions.map((option) => <option key={option.id} value={option.id}>{option.hsn_code} ({option.gst_percent}%)</option>)}</select></div>
             <div className="space-y-1 md:col-span-2"><Label>Description</Label><Textarea ref={setProductCreateRef("description")} value={productCreateForm.description} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, description: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "description")} /></div>
-            <div className="space-y-1"><Label>Primary Unit *</Label><select ref={setProductCreateRef("primary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.primary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "primary_unit_id")}><option value="">Select primary unit</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
+            <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Primary Unit *</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("unit")}>+ Add Unit</Button></div><select ref={setProductCreateRef("primary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.primary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "primary_unit_id")}><option value="">Select primary unit</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
             <div className="space-y-1"><Label>Secondary Unit</Label><select ref={setProductCreateRef("secondary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.secondary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_id: e.target.value, third_unit_id: e.target.value ? prev.third_unit_id : "", secondary_unit_quantity: e.target.value ? prev.secondary_unit_quantity : "", third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_id")}><option value="">Optional</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
             {productCreateForm.secondary_unit_id ? <div className="space-y-1"><Label>How many primary units in second unit</Label><Input ref={setProductCreateRef("secondary_unit_quantity")} value={productCreateForm.secondary_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_quantity")} /></div> : null}
             <div className="space-y-1"><Label>Third Unit</Label><select ref={setProductCreateRef("third_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.third_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_id: e.target.value, third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_id")}><option value="">{productCreateForm.secondary_unit_id ? "Optional" : "Select secondary unit first"}</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
             {productCreateForm.third_unit_id ? <div className="space-y-1"><Label>How many second units in third unit</Label><Input ref={setProductCreateRef("third_unit_quantity")} value={productCreateForm.third_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_quantity")} /></div> : null}
             <div className="space-y-1"><Label>Weight in grams</Label><Input ref={setProductCreateRef("weight_in_grams")} value={productCreateForm.weight_in_grams} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "weight_in_grams")} /></div>
-            <div className="space-y-1"><Label>Base Price *</Label><Input ref={setProductCreateRef("base_price")} value={productCreateForm.base_price} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, base_price: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "base_price")} /></div>
             <div className="space-y-1"><Label>GST / Tax % *</Label><Input ref={setProductCreateRef("tax_percent")} value={productCreateForm.tax_percent} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, tax_percent: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "tax_percent")} /></div>
           </div>
           <div className="flex justify-end">
-            <Button ref={productCreateSaveRef} disabled={creatingProduct || !productCreateForm.sku.trim() || !productCreateForm.name.trim() || !productCreateForm.primary_unit_id || !productCreateForm.base_price.trim() || !productCreateForm.tax_percent.trim()} onClick={async () => {
+            <Button ref={productCreateSaveRef} disabled={creatingProduct || !productCreateForm.sku.trim() || !productCreateForm.name.trim() || !productCreateForm.primary_unit_id || !productCreateForm.tax_percent.trim()} onClick={async () => {
               setCreatingProduct(true);
               try {
                 const created = asObject(await postBackend("/masters/products", {
@@ -2107,7 +2187,6 @@ export function PurchaseEntryWorkspace() {
                   secondary_unit_quantity: productCreateForm.secondary_unit_id ? toNullableNumber(productCreateForm.secondary_unit_quantity) : null,
                   third_unit_quantity: productCreateForm.third_unit_id ? toNullableNumber(productCreateForm.third_unit_quantity) : null,
                   weight_in_grams: toNullableNumber(productCreateForm.weight_in_grams),
-                  base_price: Number(productCreateForm.base_price || "0"),
                   tax_percent: Number(productCreateForm.tax_percent || "0"),
                 }));
                 const createdSummary = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${String(created.id ?? "")}/summary`)));
@@ -2121,6 +2200,112 @@ export function PurchaseEntryWorkspace() {
                 setCreatingProduct(false);
               }
             }}>{creatingProduct ? "Saving..." : "Save Product"}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={quickCreateType !== ""} onOpenChange={(open) => !open && setQuickCreateType("")}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {quickCreateType === "brand"
+                ? "Add Brand"
+                : quickCreateType === "category"
+                  ? "Add Category"
+                  : quickCreateType === "subCategory"
+                    ? "Add Sub Category"
+                    : quickCreateType === "unit"
+                      ? "Add Unit"
+                      : "Add HSN"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3">
+            {quickCreateType === "unit" || quickCreateType === "hsn" ? (
+              <div className="space-y-1">
+                <Label>{quickCreateType === "unit" ? "Code" : "HSN Number"}</Label>
+                <Input value={quickCode} onChange={(e) => setQuickCode(e.target.value)} />
+              </div>
+            ) : null}
+            {quickCreateType !== "hsn" ? (
+              <div className="space-y-1">
+                <Label>{quickCreateType === "unit" ? "Unit Name" : "Name"}</Label>
+                <Input value={quickName} onChange={(e) => setQuickName(e.target.value)} />
+              </div>
+            ) : null}
+            {quickCreateType === "subCategory" ? (
+              <div className="space-y-1">
+                <Label>Category</Label>
+                <select
+                  className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={quickCategoryId}
+                  onChange={(e) => setQuickCategoryId(e.target.value)}
+                >
+                  <option value="">Optional</option>
+                  {categoryOptions.map((option) => (
+                    <option key={option.id} value={option.id}>{option.name}</option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            {quickCreateType === "hsn" ? (
+              <>
+                <div className="space-y-1">
+                  <Label>Description</Label>
+                  <Input value={quickDescription} onChange={(e) => setQuickDescription(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>GST %</Label>
+                  <Input value={quickGst} onChange={(e) => setQuickGst(e.target.value)} />
+                </div>
+              </>
+            ) : null}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setQuickCreateType("")}>Cancel</Button>
+            <Button
+              type="button"
+              onClick={() => void quickCreateProductMaster()}
+              disabled={
+                quickCreating ||
+                ((quickCreateType === "brand" || quickCreateType === "category" || quickCreateType === "subCategory" || quickCreateType === "unit") &&
+                  !quickName.trim()) ||
+                ((quickCreateType === "unit" || quickCreateType === "hsn") && !quickCode.trim())
+              }
+            >
+              {quickCreating ? "Creating..." : "Create"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={vendorCategoryCreateOpen} onOpenChange={setVendorCategoryCreateOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Vendor Account Category</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="space-y-1">
+              <Label>Code *</Label>
+              <Input value={vendorCategoryForm.code} onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, code: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Name *</Label>
+              <Input value={vendorCategoryForm.name} onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, name: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Description</Label>
+              <Input value={vendorCategoryForm.description} onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, description: e.target.value }))} />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setVendorCategoryCreateOpen(false)}>Cancel</Button>
+            <Button
+              type="button"
+              onClick={() => void createInlineVendorCategory()}
+              disabled={creatingVendorCategory || !vendorCategoryForm.code.trim() || !vendorCategoryForm.name.trim()}
+            >
+              {creatingVendorCategory ? "Adding..." : "Add Account Category"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -29,6 +29,7 @@ type LookupOption = { id: string; name: string };
 type SubCategoryOption = LookupOption & { category_id?: string };
 type UnitOption = { id: string; unit_code: string; unit_name: string };
 type HsnOption = { id: string; hsn_code: string; gst_percent: string };
+type AccountCategoryOption = { id: string; code: string; name: string };
 
 type ProductForm = {
   sku: string;
@@ -44,7 +45,6 @@ type ProductForm = {
   secondary_unit_quantity: string;
   third_unit_quantity: string;
   weight_in_grams: string;
-  base_price: string;
   tax_percent: string;
 };
 
@@ -148,6 +148,7 @@ const EMPTY_INLINE_VENDOR_FORM = {
   pincode: "",
   bank_account_number: "",
   ifsc_code: "",
+  account_category_id: "",
 };
 
 const EMPTY_INLINE_WAREHOUSE_FORM = {
@@ -175,7 +176,6 @@ const EMPTY_PRODUCT_FORM: ProductForm = {
   secondary_unit_quantity: "",
   third_unit_quantity: "",
   weight_in_grams: "",
-  base_price: "",
   tax_percent: "",
 };
 
@@ -207,9 +207,16 @@ function buildProductPayload(form: ProductForm) {
     secondary_unit_quantity: form.secondary_unit_id ? toNullableNumber(form.secondary_unit_quantity) : null,
     third_unit_quantity: form.third_unit_id ? toNullableNumber(form.third_unit_quantity) : null,
     weight_in_grams: toNullableNumber(form.weight_in_grams),
-    base_price: Number(form.base_price || "0"),
     tax_percent: Number(form.tax_percent || "0"),
   };
+}
+
+function derivePurchaseTypeFromGstin(gstin: string) {
+  const normalized = gstin.trim().toUpperCase();
+  if (normalized.length < 2) {
+    return "CENTRAL" as const;
+  }
+  return normalized.startsWith("37") ? "LOCAL" as const : "CENTRAL" as const;
 }
 
 function SelectField({
@@ -391,10 +398,6 @@ function ProductFormFields({
         <Input value={form.weight_in_grams} onChange={(e) => setForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} />
       </div>
       <div className="space-y-1">
-        <Label>Base Price *</Label>
-        <Input value={form.base_price} onChange={(e) => setForm((prev) => ({ ...prev, base_price: e.target.value }))} />
-      </div>
-      <div className="space-y-1">
         <Label>GST / Tax % *</Label>
         <Input value={form.tax_percent} onChange={(e) => setForm((prev) => ({ ...prev, tax_percent: e.target.value }))} />
         {selectedHsn ? <p className="text-xs text-muted-foreground">Auto-filled from HSN {selectedHsn.hsn_code}.</p> : null}
@@ -483,6 +486,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [subCategories, setSubCategories] = useState<SubCategoryOption[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
   const [hsnOptions, setHsnOptions] = useState<HsnOption[]>([]);
+  const [accountCategories, setAccountCategories] = useState<AccountCategoryOption[]>([]);
   const [quickCreateType, setQuickCreateType] = useState<"" | "brand" | "category" | "subCategory" | "unit" | "hsn">("");
   const [quickName, setQuickName] = useState("");
   const [quickCode, setQuickCode] = useState("");
@@ -490,15 +494,19 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [quickGst, setQuickGst] = useState("0");
   const [quickCategoryId, setQuickCategoryId] = useState("");
   const [quickCreating, setQuickCreating] = useState(false);
+  const [openVendorCategoryDialog, setOpenVendorCategoryDialog] = useState(false);
+  const [creatingVendorCategory, setCreatingVendorCategory] = useState(false);
+  const [vendorCategoryForm, setVendorCategoryForm] = useState({ code: "", name: "", description: "" });
 
   async function loadMasters() {
     if (!hasAdminAccessToken() || !canReadPurchase) {
       return;
     }
     try {
-      const [vendorsRes, warehousesRes] = await Promise.all([
+      const [vendorsRes, warehousesRes, accountCategoriesRes] = await Promise.all([
         fetchBackend("/masters/vendors?page=1&page_size=100"),
         fetchBackend("/masters/warehouses?page=1&page_size=100"),
+        fetchBackendFresh("/masters/account-categories?party_type=VENDOR&page=1&page_size=200"),
       ]);
       setVendors(
         asArray(asObject(vendorsRes).items)
@@ -515,6 +523,13 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
             label: `${String(row.name ?? "Warehouse")} (${String(row.code ?? "-")})`,
           }))
           .filter((row) => row.id)
+      );
+      setAccountCategories(
+        asArray(asObject(accountCategoriesRes).items).map((item) => ({
+          id: asText(item.id),
+          code: asText(item.code),
+          name: asText(item.name),
+        }))
       );
     } catch (error) {
       if (isMissingBearerTokenError(error)) {
@@ -825,6 +840,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           pincode: newVendorForm.pincode.trim() || null,
           bank_account_number: newVendorForm.bank_account_number.trim() || null,
           ifsc_code: newVendorForm.ifsc_code.trim() || null,
+          account_category_id: newVendorForm.account_category_id || null,
           brand_ids: newVendorForm.brand_ids,
         })
       );
@@ -952,6 +968,37 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     }
   }
 
+  async function createInlineVendorCategory() {
+    if (!canWritePurchase) {
+      return;
+    }
+    if (!vendorCategoryForm.code.trim() || !vendorCategoryForm.name.trim()) {
+      toast.error("Category code and name are required.", { duration: 5000 });
+      return;
+    }
+    setCreatingVendorCategory(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/account-categories", {
+          code: vendorCategoryForm.code.trim(),
+          name: vendorCategoryForm.name.trim(),
+          party_type: "VENDOR",
+          description: vendorCategoryForm.description.trim() || null,
+          is_active: true,
+        })
+      );
+      await loadMasters();
+      setNewVendorForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
+      setVendorCategoryForm({ code: "", name: "", description: "" });
+      setOpenVendorCategoryDialog(false);
+      toast.success("Account category created.", { duration: 4000 });
+    } catch (error) {
+      toast.error(`Category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingVendorCategory(false);
+    }
+  }
+
   async function createInlineProduct() {
     if (!canWritePurchase) {
       return;
@@ -960,7 +1007,6 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
       !newProductForm.sku.trim() ||
       !newProductForm.name.trim() ||
       !newProductForm.primary_unit_id ||
-      !newProductForm.base_price.trim() ||
       !newProductForm.tax_percent.trim()
     ) {
       return;
@@ -1378,7 +1424,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                                     <Label>GSTIN</Label>
                                     <Input
                                       value={newVendorForm.gstin}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, gstin: e.target.value }))}
+                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))}
                                     />
                                   </div>
                                   <div className="space-y-1">
@@ -1459,6 +1505,48 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                                       value={newVendorForm.ifsc_code}
                                       onChange={(e) => setNewVendorForm((prev) => ({ ...prev, ifsc_code: e.target.value }))}
                                     />
+                                  </div>
+                                  <div className="space-y-1 md:col-span-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Label>Account Category</Label>
+                                      <Button type="button" variant="outline" size="sm" onClick={() => setOpenVendorCategoryDialog(true)}>
+                                        + Add Account Category
+                                      </Button>
+                                    </div>
+                                    <select
+                                      className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
+                                      value={(newVendorForm as typeof newVendorForm & { account_category_id?: string }).account_category_id || ""}
+                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
+                                    >
+                                      <option value="">Optional</option>
+                                      {accountCategories.map((category) => (
+                                        <option key={category.id} value={category.id}>
+                                          {category.code} - {category.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div className="space-y-2 md:col-span-2">
+                                    <Label>Linked Brands</Label>
+                                    <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
+                                      {brands.length ? brands.map((brand) => (
+                                        <label key={brand.id} className="flex items-center gap-2 text-sm">
+                                          <input
+                                            type="checkbox"
+                                            checked={newVendorForm.brand_ids.includes(brand.id)}
+                                            onChange={(e) =>
+                                              setNewVendorForm((prev) => ({
+                                                ...prev,
+                                                brand_ids: e.target.checked
+                                                  ? [...prev.brand_ids, brand.id]
+                                                  : prev.brand_ids.filter((id) => id !== brand.id),
+                                              }))
+                                            }
+                                          />
+                                          {brand.name}
+                                        </label>
+                                      )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
+                                    </div>
                                   </div>
                                 </div>
                                 <div className="pt-2">
@@ -2062,7 +2150,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                                       <Label>GSTIN</Label>
                                       <Input
                                         value={newVendorForm.gstin}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, gstin: e.target.value }))}
+                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))}
                                       />
                                     </div>
                                     <div className="space-y-1">
@@ -2117,6 +2205,26 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                                   <div className="space-y-1 md:col-span-2">
                                     <Label>IFSC Code</Label>
                                     <Input value={newVendorForm.ifsc_code} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} />
+                                  </div>
+                                  <div className="space-y-1 md:col-span-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Label>Account Category</Label>
+                                      <Button type="button" variant="outline" size="sm" onClick={() => setOpenVendorCategoryDialog(true)}>
+                                        + Add Account Category
+                                      </Button>
+                                    </div>
+                                    <select
+                                      className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
+                                      value={(newVendorForm as typeof newVendorForm & { account_category_id?: string }).account_category_id || ""}
+                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
+                                    >
+                                      <option value="">Optional</option>
+                                      {accountCategories.map((category) => (
+                                        <option key={category.id} value={category.id}>
+                                          {category.code} - {category.name}
+                                        </option>
+                                      ))}
+                                    </select>
                                   </div>
                                   <div className="space-y-2 md:col-span-2">
                                     <Label>Linked Brands</Label>
@@ -2512,7 +2620,6 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
               !newProductForm.sku.trim() ||
               !newProductForm.name.trim() ||
               !newProductForm.primary_unit_id ||
-              !newProductForm.base_price.trim() ||
               !newProductForm.tax_percent.trim()
             }
           >
@@ -2585,6 +2692,49 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
             }
           >
             {quickCreating ? "Saving..." : "Create"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={openVendorCategoryDialog} onOpenChange={setOpenVendorCategoryDialog}>
+      <DialogContent className="w-[92vw] max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>Add Vendor Account Category</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <div className="space-y-1">
+            <Label>Code *</Label>
+            <Input
+              value={vendorCategoryForm.code}
+              onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, code: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>Name *</Label>
+            <Input
+              value={vendorCategoryForm.name}
+              onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, name: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>Description</Label>
+            <Input
+              value={vendorCategoryForm.description}
+              onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, description: e.target.value }))}
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => setOpenVendorCategoryDialog(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={createInlineVendorCategory}
+            disabled={creatingVendorCategory || !vendorCategoryForm.code.trim() || !vendorCategoryForm.name.trim()}
+          >
+            {creatingVendorCategory ? "Adding..." : "Add Account Category"}
           </Button>
         </div>
       </DialogContent>

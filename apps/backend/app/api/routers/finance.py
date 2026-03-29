@@ -22,23 +22,29 @@ from app.schemas.finance import (
     PaymentAllocationOut,
     PaymentCreate,
     PaymentOut,
+    PurchaseBillPaymentAllocationOut,
+    SelfAccountCreate,
+    SelfAccountOut,
     TrialBalanceResponse,
 )
 from app.services.finance import (
     allocate_payment_to_invoice,
     create_journal_entry,
+    create_self_account,
     customer_aging,
     customer_outstanding_breakdown,
     customer_statement,
     get_party_ledger_statement,
+    get_self_account_statement,
     ledger_summary,
+    list_self_accounts,
     list_party_ledger_accounts,
     record_party_payment,
     record_payment,
     trial_balance,
 )
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
-from app.models.entities import PartyType, PaymentFlowDirection
+from app.models.entities import PartyType, PaymentFlowDirection, PurchaseBillPaymentAllocation
 
 router = APIRouter()
 
@@ -63,6 +69,8 @@ async def create_payment(
             payload.mode,
             payload.reference_type,
             payload.reference_id,
+            self_account_id=payload.self_account_id,
+            payment_date_value=payload.payment_date,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -259,12 +267,49 @@ async def create_party_ledger_payment(
             party_id=payload.party_id,
             amount=payload.amount,
             direction=resolved_direction,
+            self_account_id=payload.self_account_id,
             payment_mode=payload.payment_mode,
             payment_date_value=payload.payment_date,
             reference_no=payload.reference_no,
             note=payload.note,
+            purchase_bill_allocations=[
+                {"purchase_bill_id": row.purchase_bill_id, "allocated_amount": row.allocated_amount}
+                for row in payload.purchase_bill_allocations
+            ],
         )
         return jsonable_encoder(payment)
     except ValueError as exc:
         code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
+@router.get("/party-ledger/payments/{payment_id}/purchase-bill-allocations", response_model=list[PurchaseBillPaymentAllocationOut], dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
+async def list_purchase_bill_payment_allocations(payment_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+
+    return (
+        await db.execute(
+            select(PurchaseBillPaymentAllocation).where(PurchaseBillPaymentAllocation.party_ledger_payment_id == payment_id)
+        )
+    ).scalars().all()
+
+
+@router.post("/self-accounts", response_model=SelfAccountOut, dependencies=[Depends(require_permission("credit-debit-notes", "create"))])
+async def create_self_account_endpoint(payload: SelfAccountCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        return await create_self_account(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/self-accounts", response_model=list[SelfAccountOut], dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
+async def list_self_accounts_endpoint(db: AsyncSession = Depends(get_db)):
+    return await list_self_accounts(db)
+
+
+@router.get("/self-accounts/{self_account_id}/statement", response_model=PartyLedgerStatementResponse, dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
+async def get_self_account_statement_endpoint(self_account_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    try:
+        return await get_self_account_statement(db, self_account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

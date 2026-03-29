@@ -146,6 +146,16 @@ class PaymentFlowDirection(str, Enum):
     OUTGOING = "OUTGOING"
 
 
+class BalanceSide(str, Enum):
+    DR = "DR"
+    CR = "CR"
+
+
+class TransactionDirection(str, Enum):
+    INCOMING = "INCOMING"
+    OUTGOING = "OUTGOING"
+
+
 class Company(Base, TimestampMixin):
     __tablename__ = "companies"
 
@@ -433,7 +443,6 @@ class Product(Base, TimestampMixin):
     unit: Mapped[str] = mapped_column(String(30))
     is_bundle: Mapped[bool] = mapped_column(Boolean, default=False)
     bundle_price_override: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
-    base_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
     tax_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -1300,6 +1309,7 @@ class Payment(Base, TimestampMixin):
     reference_type: Mapped[str] = mapped_column(String(40), nullable=False)
     reference_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"), nullable=False)
+    self_account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("self_accounts.id"), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     payment_mode: Mapped[str | None] = mapped_column(String(30), nullable=True)
     mode: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -1358,6 +1368,7 @@ class PartyLedgerPayment(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("party_ledger_accounts.id"), nullable=False)
+    self_account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("self_accounts.id"), nullable=True)
     direction: Mapped[PaymentFlowDirection] = mapped_column(
         SQLEnum(PaymentFlowDirection, name="payment_flow_direction"),
         nullable=False,
@@ -1367,6 +1378,58 @@ class PartyLedgerPayment(Base, TimestampMixin):
     payment_date: Mapped[date] = mapped_column(Date, nullable=False)
     reference_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SelfAccount(Base, TimestampMixin):
+    __tablename__ = "self_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    account_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    opening_balance: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
+    opening_balance_side: Mapped[BalanceSide] = mapped_column(
+        SQLEnum(BalanceSide, name="balance_side"),
+        default=BalanceSide.DR,
+        nullable=False,
+    )
+    opening_balance_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Transaction(Base, TimestampMixin):
+    __tablename__ = "transactions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    direction: Mapped[TransactionDirection] = mapped_column(
+        SQLEnum(TransactionDirection, name="transaction_direction"),
+        nullable=False,
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    payment_mode: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    reference_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    party_type: Mapped[PartyType | None] = mapped_column(SQLEnum(PartyType, name="transaction_party_type"), nullable=True)
+    party_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    self_account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("self_accounts.id"), nullable=True)
+
+
+class PurchaseBillPaymentAllocation(Base, TimestampMixin):
+    __tablename__ = "purchase_bill_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint(
+            "party_ledger_payment_id",
+            "purchase_bill_id",
+            name="uq_purchase_bill_payment_allocation",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    party_ledger_payment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("party_ledger_payments.id"), nullable=False)
+    purchase_bill_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_bills.id"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
 
 
 class CreditNote(Base, TimestampMixin):
@@ -1442,6 +1505,13 @@ Index("idx_payments_customer_created", Payment.customer_id, Payment.created_at.d
 Index("idx_payments_customer_date", Payment.customer_id, Payment.payment_date.desc())
 Index("idx_payment_allocations_payment", PaymentAllocation.payment_id)
 Index("idx_payment_allocations_invoice", PaymentAllocation.sales_final_invoice_id)
+Index("idx_self_accounts_active_name", SelfAccount.is_active, SelfAccount.name.asc())
+Index("idx_transactions_date_direction", Transaction.transaction_date.desc(), Transaction.direction)
+Index("idx_transactions_reference", Transaction.reference_type, Transaction.reference_id)
+Index("idx_transactions_party", Transaction.party_type, Transaction.party_id, Transaction.transaction_date.desc())
+Index("idx_transactions_self_account", Transaction.self_account_id, Transaction.transaction_date.desc())
+Index("idx_purchase_bill_payment_alloc_payment", PurchaseBillPaymentAllocation.party_ledger_payment_id)
+Index("idx_purchase_bill_payment_alloc_bill", PurchaseBillPaymentAllocation.purchase_bill_id)
 Index("idx_sales_final_invoices_delivery_status", SalesFinalInvoice.delivery_status, SalesFinalInvoice.created_at.desc())
 Index("idx_invoice_assignment_batches_wh_status", InvoiceAssignmentBatch.warehouse_id, InvoiceAssignmentBatch.status, InvoiceAssignmentBatch.created_at.desc())
 Index("idx_invoice_assignment_batch_invoices_status", InvoiceAssignmentBatchInvoice.status, InvoiceAssignmentBatchInvoice.created_at.desc())

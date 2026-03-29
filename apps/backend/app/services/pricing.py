@@ -93,4 +93,4 @@ async def resolve_price_for_customer(
     if pricing_row is not None and Decimal(pricing_row.mrp) > 0:
         return _quantize(pricing_row.mrp), "MRP_BASE"
 
-    return _quantize(product.base_price), "PRODUCT_BASE"
+    return Decimal("0.0000"), "NO_PRICE"

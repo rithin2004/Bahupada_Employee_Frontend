@@ -199,7 +199,6 @@ async def import_products() -> None:
 
         for sku, row in inventory_rows.items():
             stock_row = stock_lookup.get(sku, {})
-            base_price = _first_decimal(stock_row.get("base_price"), row.get("rate_a"), row.get("taxable_value"), Decimal("0"))
             tax_percent = _first_decimal(stock_row.get("tax_percent"), row.get("tax_percent"), Decimal("0"))
             values = {
                 "sku": sku,
@@ -210,7 +209,6 @@ async def import_products() -> None:
                 "sub_category": stock_row.get("sub_category"),
                 "hsn_id": hsn_id_by_code.get(stock_row.get("hsn_code")) if stock_row.get("hsn_code") else None,
                 "unit": "PCS",
-                "base_price": base_price,
                 "tax_percent": tax_percent,
                 "is_active": True,
             }
@@ -244,10 +242,10 @@ async def import_products() -> None:
             inventory_row = inventory_rows[sku]
             stock_row = stock_lookup.get(sku, {})
             mrp = _first_decimal(inventory_row.get("mrp"), stock_row.get("mrp"), Decimal("0")) or Decimal("0")
-            cost_price = _first_decimal(inventory_row.get("taxable_value"), stock_row.get("taxable_value"), product.base_price) or Decimal(
+            cost_price = _first_decimal(inventory_row.get("taxable_value"), stock_row.get("taxable_value"), inventory_row.get("rate_a"), Decimal("0")) or Decimal(
                 "0"
             )
-            a_price = _first_decimal(stock_row.get("base_price"), inventory_row.get("rate_a"), product.base_price) or Decimal("0")
+            a_price = _first_decimal(stock_row.get("base_price"), inventory_row.get("rate_a"), cost_price) or Decimal("0")
             b_price = _first_decimal(stock_row.get("b_class_price"), inventory_row.get("rate_b"), a_price) or Decimal("0")
             c_price = _first_decimal(stock_row.get("c_class_price"), mrp, b_price) or Decimal("0")
 

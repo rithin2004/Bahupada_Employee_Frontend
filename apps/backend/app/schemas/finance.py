@@ -11,6 +11,8 @@ class PaymentCreate(BaseModel):
     mode: str
     reference_type: str
     reference_id: uuid.UUID | None = None
+    self_account_id: uuid.UUID | None = None
+    payment_date: date | None = None
 
 
 class PaymentOut(BaseModel):
@@ -18,6 +20,7 @@ class PaymentOut(BaseModel):
 
     id: uuid.UUID
     customer_id: uuid.UUID
+    self_account_id: uuid.UUID | None
     amount: Decimal
     mode: str
     payment_mode: str | None
@@ -126,6 +129,20 @@ class PaymentAllocationOut(BaseModel):
     allocated_amount: Decimal
 
 
+class PurchaseBillPaymentAllocationCreate(BaseModel):
+    purchase_bill_id: uuid.UUID
+    allocated_amount: Decimal
+
+
+class PurchaseBillPaymentAllocationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    party_ledger_payment_id: uuid.UUID
+    purchase_bill_id: uuid.UUID
+    allocated_amount: Decimal
+
+
 class PartyLedgerAccountSummary(BaseModel):
     account_id: uuid.UUID
     party_type: str
@@ -178,7 +195,58 @@ class PartyLedgerPaymentCreate(BaseModel):
     party_id: uuid.UUID
     amount: Decimal
     direction: str
+    self_account_id: uuid.UUID | None = None
     payment_mode: str | None = None
     payment_date: date | None = None
     reference_no: str | None = None
     note: str | None = None
+    purchase_bill_allocations: list[PurchaseBillPaymentAllocationCreate] = []
+
+
+class SelfAccountCreate(BaseModel):
+    name: str
+    account_type: str | None = None
+    opening_balance: Decimal = Decimal("0")
+    opening_balance_side: str = "DR"
+    opening_balance_date: date
+    note: str | None = None
+    is_active: bool = True
+
+
+class SelfAccountUpdate(BaseModel):
+    name: str | None = None
+    account_type: str | None = None
+    opening_balance: Decimal | None = None
+    opening_balance_side: str | None = None
+    opening_balance_date: date | None = None
+    note: str | None = None
+    is_active: bool | None = None
+
+
+class SelfAccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    account_type: str | None
+    opening_balance: Decimal
+    opening_balance_side: str
+    opening_balance_date: date
+    note: str | None
+    is_active: bool
+
+
+class TransactionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    transaction_date: date
+    direction: str
+    amount: Decimal
+    payment_mode: str | None
+    description: str | None
+    reference_type: str
+    reference_id: uuid.UUID | None
+    party_type: str | None
+    party_id: uuid.UUID | None
+    self_account_id: uuid.UUID | None

@@ -42,7 +42,6 @@ type ProductForm = {
   secondary_unit_quantity: string;
   third_unit_quantity: string;
   weight_in_grams: string;
-  base_price: string;
   tax_percent: string;
 };
 
@@ -70,7 +69,6 @@ const EMPTY_FORM: ProductForm = {
   secondary_unit_quantity: "",
   third_unit_quantity: "",
   weight_in_grams: "",
-  base_price: "",
   tax_percent: "",
 };
 
@@ -103,7 +101,6 @@ function mapRow(row: Record<string, unknown>): ProductRow {
     secondary_unit_quantity: asText(row.secondary_unit_quantity),
     third_unit_quantity: asText(row.third_unit_quantity),
     weight_in_grams: asText(row.weight_in_grams),
-    base_price: asText(row.base_price),
     tax_percent: asText(row.tax_percent),
     brand: asText(row.brand),
     category: asText(row.category),
@@ -127,7 +124,6 @@ function buildPayload(form: ProductForm) {
     secondary_unit_quantity: form.secondary_unit_id ? toNullableNumber(form.secondary_unit_quantity) : null,
     third_unit_quantity: form.third_unit_id ? toNullableNumber(form.third_unit_quantity) : null,
     weight_in_grams: toNullableNumber(form.weight_in_grams),
-    base_price: Number(form.base_price || "0"),
     tax_percent: Number(form.tax_percent || "0"),
   };
 }
@@ -147,7 +143,6 @@ function productRowToForm(row: ProductRow): ProductForm {
     secondary_unit_quantity: row.secondary_unit_quantity,
     third_unit_quantity: row.third_unit_quantity,
     weight_in_grams: row.weight_in_grams,
-    base_price: row.base_price,
     tax_percent: row.tax_percent,
   };
 }
@@ -332,10 +327,6 @@ function ProductFormFields({
         <Input value={form.weight_in_grams} onChange={(e) => setForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} />
       </div>
       <div className="space-y-1">
-        <Label>Base Price *</Label>
-        <Input value={form.base_price} onChange={(e) => setForm((prev) => ({ ...prev, base_price: e.target.value }))} />
-      </div>
-      <div className="space-y-1">
         <Label>GST / Tax % *</Label>
         <Input value={form.tax_percent} onChange={(e) => setForm((prev) => ({ ...prev, tax_percent: e.target.value }))} />
         {selectedHsn ? <p className="text-xs text-muted-foreground">Auto-filled from HSN {selectedHsn.hsn_code}.</p> : null}
@@ -507,7 +498,7 @@ export function ProductsAdminEditor() {
     if (!canWriteProducts) {
       return;
     }
-    if (!createForm.sku.trim() || !createForm.name.trim() || !createForm.primary_unit_id || !createForm.base_price.trim() || !createForm.tax_percent.trim()) {
+    if (!createForm.sku.trim() || !createForm.name.trim() || !createForm.primary_unit_id || !createForm.tax_percent.trim()) {
       return;
     }
     setCreating(true);
@@ -691,7 +682,6 @@ export function ProductsAdminEditor() {
                     !createForm.sku.trim() ||
                     !createForm.name.trim() ||
                     !createForm.primary_unit_id ||
-                    !createForm.base_price.trim() ||
                     !createForm.tax_percent.trim()
                   }
                 >
@@ -782,7 +772,6 @@ export function ProductsAdminEditor() {
                 <TableHead>Primary Unit</TableHead>
                 <TableHead>Secondary</TableHead>
                 <TableHead>Third</TableHead>
-                <TableHead>Base Price</TableHead>
                 <TableHead>GST %</TableHead>
                 <TableHead>HSN</TableHead>
                 <TableHead>Description</TableHead>
@@ -807,7 +796,6 @@ export function ProductsAdminEditor() {
                   <TableCell>{row.unit || "-"}</TableCell>
                   <TableCell>{row.secondary_unit_quantity || "-"}</TableCell>
                   <TableCell>{row.third_unit_quantity || "-"}</TableCell>
-                  <TableCell>{row.base_price || "0"}</TableCell>
                   <TableCell>{row.tax_percent || "0"}</TableCell>
                   <TableCell>{hsnOptions.find((item) => item.id === row.hsn_id)?.hsn_code || "-"}</TableCell>
                   <TableCell className="max-w-[220px] truncate">{row.description || "-"}</TableCell>
