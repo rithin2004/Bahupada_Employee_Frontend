@@ -27,6 +27,7 @@ from app.models.entities import (
     ProductSubCategory,
     PurchaseBill,
     PurchaseBillItem,
+    PurchaseBillPaymentAllocation,
     PurchaseChallan,
     PurchaseChallanItem,
     PurchaseExpiry,
@@ -38,6 +39,7 @@ from app.models.entities import (
     ReorderLog,
     StockMovement,
     StockMoveType,
+    Transaction,
     Unit,
     Vendor,
     VendorBrand,
@@ -48,6 +50,7 @@ from app.models.entities import (
 )
 from app.schemas.procurement import (
     PurchaseBillCreate,
+    PurchaseBillUpdate,
     PurchaseEntryBootstrap,
     PurchaseEntryProductSummary,
     PurchaseEntryVendorSummary,
@@ -357,6 +360,7 @@ def _rate_per_base_unit(rate_value: Decimal, rate_unit_level: int | None, conv_2
 async def _create_purchase_bill_internal(
     db: AsyncSession,
     payload: PurchaseBillCreate,
+    existing_bill: PurchaseBill | None = None,
 ) -> PurchaseBill:
     challan = None
     vendor_id = payload.vendor_id
@@ -401,27 +405,47 @@ async def _create_purchase_bill_internal(
         vendor_gstin=vendor.gstin if vendor else None,
         vendor_state=vendor.state if vendor else None,
     )
-    bill = PurchaseBill(
-        purchase_challan_id=payload.challan_id,
-        vendor_id=vendor_id,
-        warehouse_id=warehouse_id,
-        rack_id=rack_id,
-        bill_number=payload.bill_number,
-        bill_date=payload.bill_date,
-        received_date=payload.received_date,
-        payment_mode=(payload.payment_mode or "CREDIT").upper(),
-        tax_type=derived_tax_type,
-        freight_amount=Decimal(payload.freight_amount or 0),
-        entry_number=payload.entry_number or _purchase_entry_number(),
-        notes=payload.notes,
-        subtotal=Decimal("0"),
-        gst_amount=Decimal("0"),
-        total_amount=Decimal("0"),
-        status=VoucherStatus.POSTED.value,
-        posted=True,
-    )
-    db.add(bill)
-    await db.flush()
+    if existing_bill is None:
+        bill = PurchaseBill(
+            purchase_challan_id=payload.challan_id,
+            vendor_id=vendor_id,
+            warehouse_id=warehouse_id,
+            rack_id=rack_id,
+            bill_number=payload.bill_number,
+            bill_date=payload.bill_date,
+            received_date=payload.received_date,
+            payment_mode=(payload.payment_mode or "CREDIT").upper(),
+            tax_type=derived_tax_type,
+            freight_amount=Decimal(payload.freight_amount or 0),
+            entry_number=payload.entry_number or _purchase_entry_number(),
+            notes=payload.notes,
+            subtotal=Decimal("0"),
+            gst_amount=Decimal("0"),
+            total_amount=Decimal("0"),
+            status=VoucherStatus.POSTED.value,
+            posted=True,
+        )
+        db.add(bill)
+        await db.flush()
+    else:
+        bill = existing_bill
+        bill.purchase_challan_id = payload.challan_id
+        bill.vendor_id = vendor_id
+        bill.warehouse_id = warehouse_id
+        bill.rack_id = rack_id
+        bill.bill_number = payload.bill_number
+        bill.bill_date = payload.bill_date
+        bill.received_date = payload.received_date
+        bill.payment_mode = (payload.payment_mode or "CREDIT").upper()
+        bill.tax_type = derived_tax_type
+        bill.freight_amount = Decimal(payload.freight_amount or 0)
+        bill.entry_number = payload.entry_number or bill.entry_number or _purchase_entry_number()
+        bill.notes = payload.notes
+        bill.subtotal = Decimal("0")
+        bill.gst_amount = Decimal("0")
+        bill.total_amount = Decimal("0")
+        bill.status = VoucherStatus.POSTED.value
+        bill.posted = True
 
     subtotal = Decimal("0")
     gst_total = Decimal("0")
@@ -628,6 +652,78 @@ async def _create_purchase_bill_internal(
     return bill
 
 
+async def _reverse_purchase_bill_effects(db: AsyncSession, bill: PurchaseBill) -> None:
+    allocation_exists = (
+        await db.execute(
+            select(PurchaseBillPaymentAllocation.id).where(PurchaseBillPaymentAllocation.purchase_bill_id == bill.id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if allocation_exists is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot edit a purchase bill with linked payment allocations",
+        )
+
+    movements = (
+        await db.execute(
+            select(StockMovement).where(
+                StockMovement.reference_id == bill.id,
+                StockMovement.reference_type.in_(
+                    ["purchase_bill", "purchase_bill_adjust", "purchase_bill_damage", "purchase_bill_shortage"]
+                ),
+            )
+        )
+    ).scalars().all()
+
+    for movement in movements:
+        batch = (
+            await db.execute(
+                select(InventoryBatch).where(
+                    InventoryBatch.warehouse_id == movement.warehouse_id,
+                    InventoryBatch.product_id == movement.product_id,
+                    InventoryBatch.batch_no == movement.batch_no,
+                )
+            )
+        ).scalar_one_or_none()
+        if batch is not None:
+            qty = Decimal(movement.quantity or 0)
+            if movement.move_type == StockMoveType.IN:
+                batch.available_quantity = Decimal(batch.available_quantity or 0) - qty
+            elif movement.move_type == StockMoveType.OUT:
+                batch.available_quantity = Decimal(batch.available_quantity or 0) + qty
+            elif movement.move_type == StockMoveType.ADJUST:
+                batch.damaged_quantity = Decimal(batch.damaged_quantity or 0) - qty
+        await db.delete(movement)
+
+    bill_items = (
+        await db.execute(select(PurchaseBillItem).where(PurchaseBillItem.purchase_bill_id == bill.id))
+    ).scalars().all()
+    for item in bill_items:
+        await db.delete(item)
+
+    party_entries = (
+        await db.execute(
+            select(PartyLedgerEntry).where(
+                PartyLedgerEntry.reference_type == "purchase_bill",
+                PartyLedgerEntry.reference_id == bill.id,
+            )
+        )
+    ).scalars().all()
+    for entry in party_entries:
+        await db.delete(entry)
+
+    transactions = (
+        await db.execute(
+            select(Transaction).where(
+                Transaction.reference_type == "purchase_bill",
+                Transaction.reference_id == bill.id,
+            )
+        )
+    ).scalars().all()
+    for transaction in transactions:
+        await db.delete(transaction)
+
+
 @router.post("/purchase-challans", dependencies=[Depends(require_permission("purchase", "create"))])
 async def create_purchase_challan(
     payload: PurchaseChallanCreate,
@@ -788,6 +884,50 @@ async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
     return response
 
 
+@router.get("/purchase-bills/{purchase_bill_id}", dependencies=[Depends(require_permission("purchase", "read"))])
+async def get_purchase_bill(purchase_bill_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    bill = await db.get(PurchaseBill, purchase_bill_id)
+    if bill is None or bill.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase bill not found")
+
+    challan = await db.get(PurchaseChallan, bill.purchase_challan_id) if bill.purchase_challan_id else None
+    items = (
+        await db.execute(
+            select(PurchaseBillItem).where(PurchaseBillItem.purchase_bill_id == bill.id).order_by(PurchaseBillItem.id.asc())
+        )
+    ).scalars().all()
+
+    item_rows: list[dict] = []
+    for item in items:
+        product = await db.get(Product, item.product_id)
+        item_rows.append(
+            {
+                "id": str(item.id),
+                "product_id": str(item.product_id),
+                "sku": product.sku if product else "",
+                "name": product.name if product else "",
+                "batch_no": item.batch_no,
+                "expiry_date": str(item.expiry_date) if item.expiry_date else "",
+                "quantity": str(item.quantity or 0),
+                "damaged_quantity": str(item.damaged_quantity or 0),
+                "unit_price": str(item.unit_price or 0),
+            }
+        )
+
+    return {
+        "id": str(bill.id),
+        "bill_number": bill.bill_number,
+        "bill_date": str(bill.bill_date),
+        "vendor_id": str(bill.vendor_id) if bill.vendor_id else None,
+        "warehouse_id": str(bill.warehouse_id) if bill.warehouse_id else None,
+        "rack_id": str(bill.rack_id) if bill.rack_id else None,
+        "challan_id": str(bill.purchase_challan_id) if bill.purchase_challan_id else None,
+        "challan_reference_no": challan.reference_no if challan else "",
+        "entry_mode": "challan" if challan else "direct",
+        "items": item_rows,
+    }
+
+
 @router.get("/stock-snapshot", dependencies=[Depends(require_permission("stock", "read"))])
 async def list_stock_snapshot(
     page: int = Query(1, ge=1),
@@ -936,6 +1076,56 @@ async def create_purchase_bill(
         db, idempotency_key, "procurement:create_purchase_bill", req_hash, replay_code or 201, response
     )
     return response
+
+
+@router.patch("/purchase-bills/{purchase_bill_id}", dependencies=[Depends(require_permission("purchase", "update"))])
+async def update_purchase_bill(
+    purchase_bill_id: uuid.UUID,
+    payload: PurchaseBillUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    bill = await db.get(PurchaseBill, purchase_bill_id)
+    if bill is None or bill.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase bill not found")
+
+    try:
+        await _reverse_purchase_bill_effects(db, bill)
+        await db.flush()
+        await _create_purchase_bill_internal(db, payload, existing_bill=bill)
+        await db.flush()
+        await post_vendor_purchase_bill_payable(db, bill)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await db.commit()
+    await db.refresh(bill)
+    return jsonable_encoder(bill)
+
+
+@router.delete("/purchase-bills/{purchase_bill_id}", dependencies=[Depends(require_permission("purchase", "delete"))])
+async def delete_purchase_bill(
+    purchase_bill_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    bill = await db.get(PurchaseBill, purchase_bill_id)
+    if bill is None or bill.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase bill not found")
+
+    try:
+        await _reverse_purchase_bill_effects(db, bill)
+        bill.deleted_at = datetime.now(timezone.utc)
+        bill.status = VoucherStatus.CANCELLED.value
+        bill.posted = False
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+
+    return {"id": str(bill.id), "deleted": True}
 
 
 @router.get("/purchase-entry/bootstrap", dependencies=[Depends(require_permission("purchase", "read"))], response_model=PurchaseEntryBootstrap)

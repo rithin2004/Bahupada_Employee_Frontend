@@ -133,6 +133,8 @@ class CustomerPendingSalesOrderItem(BaseModel):
     quantity: Decimal
     unit_price: Decimal
     selling_price: Decimal | None = None
+    discount_percent: Decimal | None = None
+    is_free_item: bool = False
 
 
 class CustomerPendingSalesOrderSummary(BaseModel):
@@ -141,6 +143,48 @@ class CustomerPendingSalesOrderSummary(BaseModel):
     warehouse_id: uuid.UUID
     warehouse_name: str
     source: str
+    source_label: str | None = None
     status: str
     created_at: str
     items: list[CustomerPendingSalesOrderItem]
+
+
+class SalesEntryPendingCustomer(BaseModel):
+    sales_order_id: uuid.UUID
+    customer_id: uuid.UUID
+    customer_name: str
+    warehouse_id: uuid.UUID
+    invoice_number: str | None = None
+    source: str
+    source_label: str | None = None
+    status: str
+    created_at: str
+
+
+class SalesEntryRecentInvoice(BaseModel):
+    invoice_number: str
+    invoice_date: date
+    total_amount: Decimal
+
+
+class SalesEntryRecentReceipt(BaseModel):
+    payment_date: date
+    amount: Decimal
+    mode: str | None = None
+
+
+class SalesEntryCustomerSummary(BaseModel):
+    customer_id: uuid.UUID
+    customer_name: str
+    address_lines: list[str]
+    gstin: str | None = None
+    phone: str | None = None
+    route_name: str | None = None
+    annual_sales_amount: Decimal
+    monthly_sales_amount: Decimal
+    balance: Decimal
+    balance_side: str
+    last_sale_date: date | None = None
+    last_receipt_date: date | None = None
+    recent_invoices: list[SalesEntryRecentInvoice]
+    recent_receipts: list[SalesEntryRecentReceipt]

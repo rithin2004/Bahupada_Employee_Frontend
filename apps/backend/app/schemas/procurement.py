@@ -72,6 +72,10 @@ class PurchaseBillCreate(BaseModel):
         return self
 
 
+class PurchaseBillUpdate(PurchaseBillCreate):
+    pass
+
+
 class PurchaseEntryVendorSummary(BaseModel):
     vendor_id: uuid.UUID
     vendor_name: str

@@ -29,10 +29,14 @@ from app.models.entities import (
     EmployeeRole,
     HSNMaster,
     Pricing,
+    PurchaseBillItem,
+    PurchaseChallanItem,
     ProductBrand,
     ProductCategory,
     ProductSubCategory,
     Product,
+    SalesFinalInvoiceItem,
+    StockMovement,
     VendorBrand,
     Permission,
     PortalScope,
@@ -308,6 +312,35 @@ async def _apply_product_reference_fields(db: AsyncSession, data: dict) -> dict:
     data["sub_category"] = getattr(sub_category, "name", None)
     data["display_name"] = data.get("name")
     return data
+
+
+async def _product_has_transactions(db: AsyncSession, product_id: uuid.UUID) -> bool:
+    checks = [
+        select(PurchaseBillItem.id).where(PurchaseBillItem.product_id == product_id).limit(1),
+        select(PurchaseChallanItem.id).where(PurchaseChallanItem.product_id == product_id).limit(1),
+        select(SalesFinalInvoiceItem.id).where(SalesFinalInvoiceItem.product_id == product_id).limit(1),
+        select(StockMovement.id).where(StockMovement.product_id == product_id).limit(1),
+    ]
+    for stmt in checks:
+        if (await db.execute(stmt)).scalar_one_or_none() is not None:
+            return True
+    return False
+
+
+async def _product_ids_with_transactions(db: AsyncSession, product_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    if not product_ids:
+        return set()
+    locked: set[uuid.UUID] = set()
+    sources = [
+        select(PurchaseBillItem.product_id).where(PurchaseBillItem.product_id.in_(product_ids)),
+        select(PurchaseChallanItem.product_id).where(PurchaseChallanItem.product_id.in_(product_ids)),
+        select(SalesFinalInvoiceItem.product_id).where(SalesFinalInvoiceItem.product_id.in_(product_ids)),
+        select(StockMovement.product_id).where(StockMovement.product_id.in_(product_ids)),
+    ]
+    for stmt in sources:
+        rows = (await db.execute(stmt)).scalars().all()
+        locked.update(rows)
+    return locked
 
 
 async def _sync_vendor_brands(db: AsyncSession, vendor_id: uuid.UUID, brand_ids: list[uuid.UUID] | None) -> tuple[list[str], list[str]]:
@@ -644,18 +677,23 @@ async def list_products(
 
     if not use_cursor_mode:
         if ranking is not None:
-            stmt = base_stmt.order_by(ranking.asc(), Product.created_at.desc())
+            stmt = base_stmt.order_by(ranking.asc(), Product.name.asc(), Product.created_at.desc())
         else:
-            stmt = base_stmt.order_by(Product.created_at.desc())
+            stmt = base_stmt.order_by(Product.name.asc(), Product.created_at.desc())
         total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
         total = (await db.execute(total_stmt)).scalar_one()
         rows = (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))).mappings().all()
+        locked_ids = await _product_ids_with_transactions(
+            db,
+            [uuid.UUID(str(row["id"])) for row in rows if row.get("id")],
+        )
         items = []
         for row in rows:
             item = dict(row)
             item["brand"] = item.get("brand_name") or item.get("brand")
             item["category"] = item.get("category_name") or item.get("category")
             item["sub_category"] = item.get("sub_category_name") or item.get("sub_category")
+            item["conversion_locked"] = uuid.UUID(str(item["id"])) in locked_ids if item.get("id") else False
             items.append(item)
         total_pages = (total + page_size - 1) // page_size if total > 0 else 0
         return {
@@ -673,9 +711,9 @@ async def list_products(
         cursor_created_at, cursor_id = _decode_products_cursor(cursor)
 
     if ranking is not None:
-        stmt = base_stmt.order_by(ranking.asc(), Product.created_at.desc(), Product.id.desc())
+        stmt = base_stmt.order_by(ranking.asc(), Product.name.asc(), Product.created_at.desc(), Product.id.desc())
     else:
-        stmt = base_stmt.order_by(Product.created_at.desc(), Product.id.desc())
+        stmt = base_stmt.order_by(Product.name.asc(), Product.created_at.desc(), Product.id.desc())
     if cursor_created_at and cursor_id:
         stmt = stmt.where(
             or_(
@@ -698,12 +736,17 @@ async def list_products(
         last = items[-1]
         next_cursor = _encode_products_cursor(last["created_at"], str(last["id"]))
 
+    locked_ids = await _product_ids_with_transactions(
+        db,
+        [uuid.UUID(str(row["id"])) for row in items if row.get("id")],
+    )
     serialized_items = []
     for row in items:
         item = dict(row)
         item["brand"] = item.get("brand_name") or item.get("brand")
         item["category"] = item.get("category_name") or item.get("category")
         item["sub_category"] = item.get("sub_category_name") or item.get("sub_category")
+        item["conversion_locked"] = uuid.UUID(str(item["id"])) in locked_ids if item.get("id") else False
         serialized_items.append(item)
 
     return {
@@ -998,7 +1041,7 @@ async def list_vendors(
                 Vendor.phone.ilike(q),
             )
         )
-    stmt = stmt.order_by(Vendor.created_at.desc())
+    stmt = stmt.order_by(func.coalesce(Vendor.firm_name, Vendor.name).asc(), Vendor.created_at.desc())
     total_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = (await db.execute(total_stmt)).scalar_one()
     vendors = (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))).scalars().all()
@@ -1567,7 +1610,10 @@ async def _upsert_customer_credentials(
 async def get_product(product_id: str, db: AsyncSession = Depends(get_db)):
     import uuid
 
-    return await _get_or_404(db, Product, uuid.UUID(product_id), "Product")
+    obj = await _get_or_404(db, Product, uuid.UUID(product_id), "Product")
+    response = jsonable_encoder(obj)
+    response["conversion_locked"] = await _product_has_transactions(db, obj.id)
+    return response
 
 
 @router.patch("/products/{product_id}", dependencies=[Depends(require_permission("products", "update"))])
@@ -1576,6 +1622,33 @@ async def patch_product(product_id: str, payload: ProductUpdate, db: AsyncSessio
 
     obj = await _get_or_404(db, Product, uuid.UUID(product_id), "Product")
     patch_data = payload.model_dump(exclude_unset=True)
+    conversion_fields = {
+        "primary_unit_id",
+        "secondary_unit_id",
+        "third_unit_id",
+        "secondary_unit_quantity",
+        "third_unit_quantity",
+    }
+    conversion_change_requested = False
+    if any(key in patch_data for key in conversion_fields):
+        current_secondary_qty = obj.conv_2_to_1
+        current_third_qty = obj.conv_3_to_2
+        requested_secondary_qty = patch_data.get("secondary_unit_quantity", current_secondary_qty)
+        requested_third_qty = patch_data.get("third_unit_quantity", current_third_qty)
+        conversion_change_requested = any(
+            (
+                patch_data.get("primary_unit_id", obj.primary_unit_id) != obj.primary_unit_id,
+                patch_data.get("secondary_unit_id", obj.secondary_unit_id) != obj.secondary_unit_id,
+                patch_data.get("third_unit_id", obj.third_unit_id) != obj.third_unit_id,
+                requested_secondary_qty != current_secondary_qty,
+                requested_third_qty != current_third_qty,
+            )
+        )
+    if conversion_change_requested and await _product_has_transactions(db, obj.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Product unit conversion cannot be edited after transactions exist",
+        )
     if any(
         key in patch_data
         for key in (

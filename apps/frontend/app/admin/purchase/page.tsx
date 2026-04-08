@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 export default function AdminPurchasePage() {
   const [activeTab, setActiveTab] = useState<"challan" | "bill">("challan");
   const [showPurchaseEntry, setShowPurchaseEntry] = useState(false);
+  const [billListRefreshKey, setBillListRefreshKey] = useState(0);
 
   return (
     <PortalAuthGate portal="ADMIN">
@@ -52,7 +53,13 @@ export default function AdminPurchasePage() {
                         Back To Purchase Bills
                       </Button>
                     </div>
-                    <PurchaseEntryWorkspace />
+                    <PurchaseEntryWorkspace
+                      onSaved={() => {
+                        setShowPurchaseEntry(false);
+                        setActiveTab("bill");
+                        setBillListRefreshKey((prev) => prev + 1);
+                      }}
+                    />
                   </div>
                 ) : null}
 
@@ -62,7 +69,7 @@ export default function AdminPurchasePage() {
                   </div>
                 ) : null}
 
-                <ProcurementCreateFlow initialTab="bill" hideTabs hideBillCreateButton />
+                <ProcurementCreateFlow key={`bill-list-${billListRefreshKey}`} initialTab="bill" hideTabs hideBillCreateButton />
               </div>
             </TabsContent>
           </Tabs>

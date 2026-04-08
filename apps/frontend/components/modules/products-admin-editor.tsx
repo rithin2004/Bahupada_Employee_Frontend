@@ -4,7 +4,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,6 +51,7 @@ type ProductRow = ProductForm & {
   category: string;
   sub_category: string;
   unit: string;
+  conversion_locked: boolean;
 };
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -106,6 +107,7 @@ function mapRow(row: Record<string, unknown>): ProductRow {
     category: asText(row.category),
     sub_category: asText(row.sub_category),
     unit: asText(row.unit),
+    conversion_locked: Boolean(row.conversion_locked),
   };
 }
 
@@ -152,14 +154,16 @@ function SelectField({
   onChange,
   options,
   placeholder,
+  disabled = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   options: { id: string; label: string }[];
   placeholder: string;
+  disabled?: boolean;
 }) {
   return (
-    <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>
+    <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
       <option value="">{placeholder}</option>
       {options.map((option) => (
         <option key={option.id} value={option.id}>
@@ -180,6 +184,7 @@ function ProductFormFields({
   hsnOptions,
   onQuickCreate,
   canQuickCreate = true,
+  conversionLocked = false,
 }: {
   form: ProductForm;
   setForm: Dispatch<SetStateAction<ProductForm>>;
@@ -190,6 +195,7 @@ function ProductFormFields({
   hsnOptions: HsnOption[];
   onQuickCreate: (type: "brand" | "category" | "subCategory" | "unit" | "hsn") => void;
   canQuickCreate?: boolean;
+  conversionLocked?: boolean;
 }) {
   const filteredSubCategories = form.category_id ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id) : subCategories;
   const selectedHsn = hsnOptions.find((item) => item.id === form.hsn_id) ?? null;
@@ -279,6 +285,7 @@ function ProductFormFields({
           onChange={(value) => setForm((prev) => ({ ...prev, primary_unit_id: value }))}
           options={units.map((item) => ({ id: item.id, label: `${item.unit_code} - ${item.unit_name}` }))}
           placeholder="Select primary unit"
+          disabled={conversionLocked}
         />
       </div>
       <div className="space-y-1">
@@ -296,6 +303,7 @@ function ProductFormFields({
           }
           options={units.map((item) => ({ id: item.id, label: `${item.unit_code} - ${item.unit_name}` }))}
           placeholder="Optional"
+          disabled={conversionLocked}
         />
       </div>
       {form.secondary_unit_id ? (
@@ -304,6 +312,7 @@ function ProductFormFields({
           <Input
             value={form.secondary_unit_quantity}
             onChange={(e) => setForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))}
+            disabled={conversionLocked}
           />
         </div>
       ) : null}
@@ -314,12 +323,18 @@ function ProductFormFields({
           onChange={(value) => setForm((prev) => ({ ...prev, third_unit_id: value, third_unit_quantity: value ? prev.third_unit_quantity : "" }))}
           options={units.map((item) => ({ id: item.id, label: `${item.unit_code} - ${item.unit_name}` }))}
           placeholder={form.secondary_unit_id ? "Optional" : "Select secondary unit first"}
+          disabled={conversionLocked}
         />
       </div>
       {form.third_unit_id ? (
         <div className="space-y-1">
           <Label>How many second units in third unit</Label>
-          <Input value={form.third_unit_quantity} onChange={(e) => setForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} />
+          <Input value={form.third_unit_quantity} onChange={(e) => setForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} disabled={conversionLocked} />
+        </div>
+      ) : null}
+      {conversionLocked ? (
+        <div className="md:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Unit conversion is locked because this product already has transactions.
         </div>
       ) : null}
       <div className="space-y-1">
@@ -379,7 +394,7 @@ export function ProductsAdminEditor() {
       if (searchText.trim()) {
         params.set("search", searchText.trim());
       }
-      const response = asObject(await fetchBackend(`/masters/products?${params.toString()}`));
+      const response = asObject(await fetchBackendFresh(`/masters/products?${params.toString()}`));
       setProducts(asArray(response.items).map(mapRow));
       setCurrentPage(Number(response.page ?? page));
       setTotalPages(Number(response.total_pages ?? 0));
@@ -672,6 +687,7 @@ export function ProductsAdminEditor() {
                 hsnOptions={hsnOptions}
                 onQuickCreate={(type) => setQuickCreateType(type)}
                 canQuickCreate={canWriteProducts}
+                conversionLocked={false}
               />
               <DialogFooter>
                 <Button
@@ -813,17 +829,18 @@ export function ProductsAdminEditor() {
                           <DialogTitle>Edit Product</DialogTitle>
                           <DialogDescription>Without changes, Save stays disabled.</DialogDescription>
                         </DialogHeader>
-                        <ProductFormFields
-                          form={editForm}
-                          setForm={setEditForm}
-                          brands={brands}
-                          categories={categories}
-                          subCategories={subCategories}
-                          units={units}
-                          hsnOptions={hsnOptions}
-                          onQuickCreate={(type) => setQuickCreateType(type)}
-                          canQuickCreate={canWriteProducts}
-                        />
+                          <ProductFormFields
+                            form={editForm}
+                            setForm={setEditForm}
+                            brands={brands}
+                            categories={categories}
+                            subCategories={subCategories}
+                            units={units}
+                            hsnOptions={hsnOptions}
+                            onQuickCreate={(type) => setQuickCreateType(type)}
+                            canQuickCreate={canWriteProducts}
+                            conversionLocked={Boolean(selected?.conversion_locked)}
+                          />
                         <DialogFooter>
                           <Button
                             onClick={saveProduct}

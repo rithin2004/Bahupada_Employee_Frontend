@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, fetchBackendFresh, fetchPortalMe, postBackend, readPortalSession } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend, readPortalSession } from "@/lib/backend-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -87,13 +87,27 @@ type PurchaseBillSummary = {
   id: string;
   bill_number: string;
   bill_date: string;
+  vendor_id: string | null;
   status: string;
   posted: boolean;
+  challan_id: string | null;
   challan_reference_no: string;
   vendor_name: string;
   warehouse_name: string;
   entry_mode: "challan" | "direct";
   item_count: number;
+};
+
+type PurchaseBillDetail = {
+  id: string;
+  bill_number: string;
+  bill_date: string;
+  vendor_id: string | null;
+  warehouse_id: string | null;
+  rack_id: string | null;
+  challan_id: string | null;
+  entry_mode: "challan" | "direct";
+  items: BillItemDraft[];
 };
 
 function createReferenceNo() {
@@ -450,6 +464,10 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [billPage, setBillPage] = useState(1);
   const [showNewChallan, setShowNewChallan] = useState(false);
   const [showNewBill, setShowNewBill] = useState(false);
+  const [editingBillId, setEditingBillId] = useState("");
+  const [billDialogMode, setBillDialogMode] = useState<"create" | "edit" | "view">("create");
+  const [loadingEditBillId, setLoadingEditBillId] = useState("");
+  const [deletingBillId, setDeletingBillId] = useState("");
   const [showVendorCreate, setShowVendorCreate] = useState(false);
   const [showWarehouseCreate, setShowWarehouseCreate] = useState(false);
   const [showRackCreate, setShowRackCreate] = useState(false);
@@ -730,14 +748,16 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     }
     setLoadingBills(true);
     try {
-      const res = asArray(await fetchBackend("/procurement/purchase-bills"));
+      const res = asArray(await fetchBackendFresh("/procurement/purchase-bills"));
       setBills(
         res.map((row) => ({
           id: String(row.id ?? ""),
           bill_number: String(row.bill_number ?? ""),
           bill_date: String(row.bill_date ?? ""),
+          vendor_id: row.vendor_id ? String(row.vendor_id) : null,
           status: String(row.status ?? ""),
           posted: Boolean(row.posted ?? false),
+          challan_id: row.challan_id ? String(row.challan_id) : null,
           challan_reference_no: String(row.challan_reference_no ?? ""),
           vendor_name: String(row.vendor_name ?? ""),
           warehouse_name: String(row.warehouse_name ?? ""),
@@ -1056,6 +1076,9 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
       setBillItems([]);
       return;
     }
+    if (editingBillId && billItems.length > 0) {
+      return;
+    }
     const challan = challans.find((row) => row.id === selectedChallanId);
     if (!challan) {
       setBillItems([]);
@@ -1073,7 +1096,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         unit_price: "0",
       }))
     );
-  }, [billEntryMode, challans, selectedChallanId]);
+  }, [billEntryMode, challans, selectedChallanId, editingBillId, billItems.length]);
 
   useEffect(() => {
     if (billEntryMode === "challan") {
@@ -1246,6 +1269,87 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     setBillItems((prev) => prev.filter((_, index) => index !== indexToRemove));
   }
 
+  function resetBillEditor() {
+    setBillDialogMode("create");
+    setEditingBillId("");
+    setSelectedChallanId("");
+    setBillItems([]);
+    setBillVendorId("");
+    setBillWarehouseId("");
+    setBillRackId("");
+    setBillProductSearch("");
+    setBillProductResults([]);
+    setBillEntryMode("direct");
+    setBillNumber(createBillNo());
+    setBillDate(new Date().toISOString().slice(0, 10));
+  }
+
+  async function openBillEditor(billId: string, mode: "edit" | "view" = "edit") {
+    if (!billId) {
+      return;
+    }
+    setLoadingEditBillId(billId);
+    try {
+      const payload = asObject(await fetchBackend(`/procurement/purchase-bills/${billId}`));
+      const detail: PurchaseBillDetail = {
+        id: asText(payload.id),
+        bill_number: asText(payload.bill_number),
+        bill_date: asText(payload.bill_date),
+        vendor_id: payload.vendor_id ? asText(payload.vendor_id) : null,
+        warehouse_id: payload.warehouse_id ? asText(payload.warehouse_id) : null,
+        rack_id: payload.rack_id ? asText(payload.rack_id) : null,
+        challan_id: payload.challan_id ? asText(payload.challan_id) : null,
+        entry_mode: asText(payload.entry_mode) === "challan" ? "challan" : "direct",
+        items: asArray(payload.items).map((item) => ({
+          product_id: asText(item.product_id),
+          sku: asText(item.sku),
+          name: asText(item.name),
+          batch_no: asText(item.batch_no),
+          expiry_date: asText(item.expiry_date),
+          quantity: asText(item.quantity || "0"),
+          damaged_quantity: asText(item.damaged_quantity || "0"),
+          unit_price: asText(item.unit_price || "0"),
+        })),
+      };
+      setBillDialogMode(mode);
+      setEditingBillId(detail.id);
+      setBillEntryMode(detail.entry_mode);
+      setSelectedChallanId(detail.challan_id || "");
+      setBillVendorId(detail.vendor_id || "");
+      setBillWarehouseId(detail.warehouse_id || "");
+      setBillRackId(detail.rack_id || "");
+      setBillNumber(detail.bill_number);
+      setBillDate(detail.bill_date);
+      setBillItems(detail.items);
+      setShowNewBill(true);
+    } catch (error) {
+      toast.error(`Failed to load bill: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setLoadingEditBillId("");
+    }
+  }
+
+  async function deletePurchaseBillRow(billId: string) {
+    if (!canWritePurchase || !billId || deletingBillId) {
+      return;
+    }
+    const bill = bills.find((row) => row.id === billId);
+    const proceed = window.confirm(`Delete purchase bill ${bill?.bill_number || ""}? Stock and ledger effects will be reversed.`);
+    if (!proceed) {
+      return;
+    }
+    setDeletingBillId(billId);
+    try {
+      await deleteBackend(`/procurement/purchase-bills/${billId}`);
+      toast.success("Purchase bill deleted and stock reversed.", { duration: 5000 });
+      await loadBills();
+    } catch (error) {
+      toast.error(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setDeletingBillId("");
+    }
+  }
+
   async function createChallanWithItems() {
     if (!canWritePurchase) {
       return;
@@ -1293,7 +1397,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     }
   }
 
-  async function createPurchaseBill() {
+  async function savePurchaseBill() {
     if (!canWritePurchase) {
       return;
     }
@@ -1303,7 +1407,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     setSubmittingBill(true);
     setFeedback("");
     try {
-      await postBackend("/procurement/purchase-bills", {
+      const payload = {
         challan_id: billEntryMode === "challan" ? selectedChallanId : null,
         vendor_id: billEntryMode === "direct" ? billVendorId : null,
         warehouse_id: billEntryMode === "direct" ? billWarehouseId : null,
@@ -1318,24 +1422,22 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           damaged_quantity: Number(item.damaged_quantity),
           unit_price: Number(item.unit_price),
         })),
-      });
-      toast.success("Purchase bill created and stock adjusted.", { duration: 5000 });
-      setFeedback("Purchase bill created and stock adjusted.");
-      setSelectedChallanId("");
-      setBillItems([]);
-      setBillVendorId("");
-      setBillWarehouseId("");
-      setBillRackId("");
-      setBillProductSearch("");
-      setBillProductResults([]);
-      setBillEntryMode("direct");
-      setBillNumber(createBillNo());
-      setBillDate(new Date().toISOString().slice(0, 10));
+      };
+      if (editingBillId) {
+        await patchBackend(`/procurement/purchase-bills/${editingBillId}`, payload);
+        toast.success("Purchase bill updated and stock adjusted.", { duration: 5000 });
+        setFeedback("Purchase bill updated and stock adjusted.");
+      } else {
+        await postBackend("/procurement/purchase-bills", payload);
+        toast.success("Purchase bill created and stock adjusted.", { duration: 5000 });
+        setFeedback("Purchase bill created and stock adjusted.");
+      }
+      resetBillEditor();
       await loadChallans();
       await loadBills();
       setShowNewBill(false);
     } catch (error) {
-      const message = `Bill create failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      const message = `${editingBillId ? "Bill update" : "Bill create"} failed: ${error instanceof Error ? error.message : "Unknown error"}`;
       setFeedback(message);
       toast.error(message, { duration: 5000 });
     } finally {
@@ -1989,17 +2091,38 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   onChange={(e) => setBillSearch(e.target.value)}
                   className="md:w-80"
                 />
-                <Dialog open={showNewBill} onOpenChange={(open) => setShowNewBill(canWritePurchase ? open : false)}>
+                <Dialog
+                  open={showNewBill}
+                  onOpenChange={(open) => {
+                    if (!open) {
+                      setShowNewBill(false);
+                      resetBillEditor();
+                      return;
+                    }
+                    if (!canReadPurchase) {
+                      return;
+                    }
+                    setShowNewBill(open);
+                  }}
+                >
                   {canWritePurchase && !hideBillCreateButton ? (
                     <DialogTrigger asChild>
-                      <Button>Create New</Button>
+                      <Button onClick={() => resetBillEditor()}>Create New</Button>
                     </DialogTrigger>
                   ) : null}
                   <DialogContent className="max-h-[90vh] w-[75vw] max-w-[1080px] sm:max-w-[1080px] overflow-y-auto overflow-x-hidden p-4 sm:p-5">
                     <DialogHeader>
-                      <DialogTitle>Create Purchase Bill</DialogTitle>
+                      <DialogTitle>
+                        {billDialogMode === "view" ? "View Purchase Bill" : editingBillId ? "Edit Purchase Bill" : "Create Purchase Bill"}
+                      </DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4">
+                      {billDialogMode === "view" ? (
+                        <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                          Read-only bill view. Use Edit from the list to make changes.
+                        </p>
+                      ) : null}
+                      <fieldset className="space-y-4" disabled={billDialogMode === "view"}>
                       <Tabs
                         value={billEntryMode}
                         onValueChange={(value) => setBillEntryMode(value === "direct" ? "direct" : "challan")}
@@ -2499,9 +2622,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         </TabsContent>
                       </Tabs>
 
-                      <Button onClick={createPurchaseBill} disabled={!canWritePurchase || !canCreateBill || submittingBill}>
-                        {submittingBill ? "Creating..." : "Create Purchase Bill"}
-                      </Button>
+                      {billDialogMode !== "view" ? (
+                        <Button onClick={savePurchaseBill} disabled={!canWritePurchase || !canCreateBill || submittingBill}>
+                          {submittingBill ? (editingBillId ? "Saving..." : "Creating...") : (editingBillId ? "Save Purchase Bill" : "Create Purchase Bill")}
+                        </Button>
+                      ) : null}
+                      </fieldset>
                     </div>
                   </DialogContent>
                 </Dialog>
@@ -2520,6 +2646,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                     <th className="px-3 py-2 text-left">Challan Ref</th>
                     <th className="px-3 py-2 text-left">Items</th>
                     <th className="px-3 py-2 text-left">Status</th>
+                    <th className="px-3 py-2 text-left">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2534,11 +2661,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2"><Skeleton className="h-5 w-36" /></td>
                         <td className="px-3 py-2"><Skeleton className="h-5 w-8" /></td>
                         <td className="px-3 py-2"><Skeleton className="h-5 w-16" /></td>
+                        <td className="px-3 py-2"><Skeleton className="h-8 w-16" /></td>
                       </tr>
                     ))
                   ) : filteredBills.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-3 py-2 text-muted-foreground">
+                      <td colSpan={9} className="px-3 py-2 text-muted-foreground">
                         No bills found.
                       </td>
                     </tr>
@@ -2553,6 +2681,25 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2">{bill.challan_reference_no || "-"}</td>
                         <td className="px-3 py-2">{bill.item_count}</td>
                         <td className="px-3 py-2">{bill.posted ? "Posted" : bill.status}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-2">
+                            {canReadPurchase ? (
+                              <Button size="sm" variant="outline" onClick={() => openBillEditor(bill.id, "view")} disabled={loadingEditBillId === bill.id}>
+                                {loadingEditBillId === bill.id ? "Loading..." : "View"}
+                              </Button>
+                            ) : null}
+                            {canWritePurchase ? (
+                              <Button size="sm" variant="outline" onClick={() => openBillEditor(bill.id, "edit")} disabled={loadingEditBillId === bill.id}>
+                                {loadingEditBillId === bill.id ? "Loading..." : "Edit"}
+                              </Button>
+                            ) : null}
+                            {canWritePurchase ? (
+                              <Button size="sm" variant="outline" onClick={() => void deletePurchaseBillRow(bill.id)} disabled={deletingBillId === bill.id || loadingEditBillId === bill.id}>
+                                {deletingBillId === bill.id ? "Deleting..." : "Delete"}
+                              </Button>
+                            ) : null}
+                          </div>
+                        </td>
                       </tr>
                     ))
                   )}

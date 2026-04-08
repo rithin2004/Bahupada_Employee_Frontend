@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -143,7 +143,7 @@ export function VendorsAdminEditor() {
       return;
     }
     try {
-      const response = asObject(await fetchBackend("/masters/account-categories?party_type=VENDOR&page=1&page_size=100"));
+      const response = asObject(await fetchBackendFresh("/masters/account-categories?party_type=VENDOR&page=1&page_size=100"));
       setAccountCategories(
         asArray(response.items).map((row) => ({
           id: String(row.id ?? ""),
@@ -161,7 +161,7 @@ export function VendorsAdminEditor() {
       return;
     }
     try {
-      const response = asObject(await fetchBackend("/masters/product-brands?page=1&page_size=100"));
+      const response = asObject(await fetchBackendFresh("/masters/product-brands?page=1&page_size=100"));
       setBrands(
         asArray(response.items).map((row) => ({
           id: String(row.id ?? ""),
@@ -189,7 +189,7 @@ export function VendorsAdminEditor() {
       if (searchText.trim()) {
         params.set("search", searchText.trim());
       }
-      const response = asObject(await fetchBackend(`/masters/vendors?${params.toString()}`));
+      const response = asObject(await fetchBackendFresh(`/masters/vendors?${params.toString()}`));
       setRows(asArray(response.items).map(mapRow));
       setCurrentPage(Number(response.page ?? page));
       setTotalPages(Number(response.total_pages ?? 0));

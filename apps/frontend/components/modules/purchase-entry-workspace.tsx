@@ -234,6 +234,10 @@ function toNullableNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function sanitizeDigits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
 function makeLine(): LineDraft {
   return {
     id: crypto.randomUUID(),
@@ -370,6 +374,10 @@ function computeLineTaxableAmount(line: LineDraft) {
   return Math.max(0, subtotal - discountAmount);
 }
 
+function roundCurrency(value: number) {
+  return Math.round(value);
+}
+
 function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
   return {
     vendor_id: String(row.vendor_id ?? ""),
@@ -438,7 +446,11 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
   };
 }
 
-export function PurchaseEntryWorkspace() {
+type PurchaseEntryWorkspaceProps = {
+  onSaved?: () => void;
+};
+
+export function PurchaseEntryWorkspace({ onSaved }: PurchaseEntryWorkspaceProps) {
   const [loading, setLoading] = useState(true);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
@@ -497,6 +509,7 @@ export function PurchaseEntryWorkspace() {
   const [creatingProduct, setCreatingProduct] = useState(false);
   const [vendorCreateForm, setVendorCreateForm] = useState<VendorCreateForm>({ ...EMPTY_VENDOR_FORM });
   const [productCreateForm, setProductCreateForm] = useState<ProductCreateForm>({ ...EMPTY_PRODUCT_FORM });
+  const [productTargetRow, setProductTargetRow] = useState(0);
   const billDateRef = useRef<HTMLInputElement | null>(null);
   const billDatePickerRef = useRef<HTMLInputElement | null>(null);
   const billNumberRef = useRef<HTMLInputElement | null>(null);
@@ -626,8 +639,10 @@ export function PurchaseEntryWorkspace() {
       return sum + subtotal * (discountPercent / 100) + discountLumpsum;
     }, 0);
     const freight = asDecimal(freightAmount);
-    const finalAmount = valueOfGoods + gst + freight;
-    return { valueOfGoods, discount, gst, freight, finalAmount };
+    const grossFinalAmount = valueOfGoods + gst + freight;
+    const finalAmount = roundCurrency(grossFinalAmount);
+    const roundOff = finalAmount - grossFinalAmount;
+    return { valueOfGoods, discount, gst, freight, grossFinalAmount, roundOff, finalAmount };
   }, [freightAmount, lines]);
 
   const loadBootstrap = useCallback(async () => {
@@ -858,8 +873,8 @@ export function PurchaseEntryWorkspace() {
     });
   }, []);
 
-  const selectProduct = useCallback((product: ProductSummary) => {
-    updateLine(activeRow, {
+  const selectProduct = useCallback((product: ProductSummary, targetRow = productTargetRow) => {
+    updateLine(targetRow, {
       product,
       mrp: product.mrp ? Number(product.mrp).toFixed(2) : "0.00",
       rateValue: product.latest_rate_value || product.cost_price || "0",
@@ -869,16 +884,19 @@ export function PurchaseEntryWorkspace() {
     setProductSearchOpen(false);
     setProductSearch("");
     ensureTrailingEmptyLine();
-    setTimeout(() => focusLineField(activeRow, getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1"), 0);
-  }, [activeRow, ensureTrailingEmptyLine, focusLineField, updateLine]);
+    setActiveRow(targetRow);
+    setActiveField(getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1");
+    setTimeout(() => focusLineField(targetRow, getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1"), 0);
+  }, [ensureTrailingEmptyLine, focusLineField, productTargetRow, updateLine]);
 
-  const openProductSelector = useCallback(() => {
+  const openProductSelector = useCallback((rowIndex = activeRow) => {
     if (!vendorSummary?.vendor_id) {
       toast.error("Select vendor first");
       return;
     }
+    setProductTargetRow(rowIndex);
     setProductSearchOpen(true);
-  }, [vendorSummary?.vendor_id]);
+  }, [activeRow, vendorSummary?.vendor_id]);
 
   const openPaymentModePicker = useCallback(() => {
     setPaymentModeIndex(PAYMENT_MODE_OPTIONS.indexOf(paymentMode));
@@ -1066,6 +1084,10 @@ export function PurchaseEntryWorkspace() {
         })),
       });
       toast.success("Purchase bill saved");
+      if (onSaved) {
+        onSaved();
+        return;
+      }
       await showLedger();
       setLines([makeLine()]);
       setNotes("");
@@ -1079,7 +1101,7 @@ export function PurchaseEntryWorkspace() {
     } finally {
       setSaving(false);
     }
-  }, [billDate, billNumber, entryNumber, freightAmount, lines, notes, paymentMode, receivedDate, showLedger, taxType, vendorSummary, warehouseId]);
+  }, [billDate, billNumber, entryNumber, freightAmount, lines, notes, onSaved, paymentMode, receivedDate, showLedger, taxType, vendorSummary, warehouseId]);
 
   const moveGridFocus = useCallback((rowIndex: number, field: LineField) => {
     setActiveRow(rowIndex);
@@ -1123,7 +1145,7 @@ export function PurchaseEntryWorkspace() {
     if (field === "product") {
       setActiveRow(rowIndex);
       setActiveField("product");
-      openProductSelector();
+      openProductSelector(rowIndex);
       return;
     }
     if (field === "quantity3") {
@@ -1475,7 +1497,7 @@ export function PurchaseEntryWorkspace() {
                           onClick={() => {
                             setActiveRow(index);
                             setActiveField("product");
-                            openProductSelector();
+                            openProductSelector(index);
                           }}
                           onKeyDown={(e) => {
                             handleLineFieldKeyDown(e, index, "product");
@@ -1484,9 +1506,9 @@ export function PurchaseEntryWorkspace() {
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity3")} value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity2")} value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity1")} value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
+                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
                       <TableCell className="py-1.5">
@@ -1566,6 +1588,7 @@ export function PurchaseEntryWorkspace() {
                       }}
                     />
                   </div>
+                  <div>ROUND OFF</div><div className="text-right font-semibold">{totals.roundOff.toFixed(2)}</div>
                   <div className="pt-2 text-base font-semibold">FINAL BILL</div><div className="pt-2 text-right text-2xl font-bold">{totals.finalAmount.toFixed(2)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
@@ -1935,7 +1958,7 @@ export function PurchaseEntryWorkspace() {
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
               <span>Product Selector</span>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setProductCreateOpen(true)}>+ Add Product</Button>
+                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => { setProductTargetRow(activeRow); setProductCreateOpen(true); }}>+ Add Product</Button>
                 <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setProductSearchOpen(false)}>Esc</Button>
               </div>
             </div>
@@ -1957,7 +1980,7 @@ export function PurchaseEntryWorkspace() {
                   }
                   if (e.key === "Enter" && productResults[productIndex]) {
                     e.preventDefault();
-                    selectProduct(productResults[productIndex]);
+                    selectProduct(productResults[productIndex], productTargetRow);
                   }
                 }}
               />
@@ -1978,7 +2001,7 @@ export function PurchaseEntryWorkspace() {
                       index === productIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted/50"
                     )}
                     onMouseEnter={() => setProductIndex(index)}
-                    onClick={() => selectProduct(product)}
+                    onClick={() => selectProduct(product, productTargetRow)}
                   >
                     <div>
                       <div className="font-semibold">{product.name}</div>
@@ -2070,7 +2093,12 @@ export function PurchaseEntryWorkspace() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={vendorCreateOpen} onOpenChange={setVendorCreateOpen}>
+      <Dialog open={vendorCreateOpen} onOpenChange={(open) => {
+        setVendorCreateOpen(open);
+        if (!open) {
+          setTimeout(() => vendorButtonRef.current?.focus(), 0);
+        }
+      }}>
         <DialogContent className="max-h-[88vh] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-4xl">
           <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Vendor</DialogTitle>
@@ -2110,7 +2138,13 @@ export function PurchaseEntryWorkspace() {
             </div>
           </div>
           <div className="flex justify-end">
-            <Button ref={vendorCreateSaveRef} disabled={creatingVendor || !vendorCreateForm.firm_name.trim()} onClick={async () => {
+            <Button ref={vendorCreateSaveRef} type="button" disabled={creatingVendor || !vendorCreateForm.firm_name.trim()} onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                void (e.currentTarget as HTMLButtonElement).click();
+              }
+            }} onClick={async () => {
               setCreatingVendor(true);
               try {
                 const created = asObject(await postBackend("/masters/vendors", {
@@ -2148,7 +2182,12 @@ export function PurchaseEntryWorkspace() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={productCreateOpen} onOpenChange={setProductCreateOpen}>
+      <Dialog open={productCreateOpen} onOpenChange={(open) => {
+        setProductCreateOpen(open);
+        if (!open) {
+          setTimeout(() => focusLineField(productTargetRow, "product"), 0);
+        }
+      }}>
         <DialogContent className="max-h-[88vh] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-5xl">
           <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Product</DialogTitle>
@@ -2170,7 +2209,13 @@ export function PurchaseEntryWorkspace() {
             <div className="space-y-1"><Label>GST / Tax % *</Label><Input ref={setProductCreateRef("tax_percent")} value={productCreateForm.tax_percent} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, tax_percent: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "tax_percent")} /></div>
           </div>
           <div className="flex justify-end">
-            <Button ref={productCreateSaveRef} disabled={creatingProduct || !productCreateForm.sku.trim() || !productCreateForm.name.trim() || !productCreateForm.primary_unit_id || !productCreateForm.tax_percent.trim()} onClick={async () => {
+            <Button ref={productCreateSaveRef} type="button" disabled={creatingProduct || !productCreateForm.sku.trim() || !productCreateForm.name.trim() || !productCreateForm.primary_unit_id || !productCreateForm.tax_percent.trim()} onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                void (e.currentTarget as HTMLButtonElement).click();
+              }
+            }} onClick={async () => {
               setCreatingProduct(true);
               try {
                 const created = asObject(await postBackend("/masters/products", {
@@ -2192,7 +2237,7 @@ export function PurchaseEntryWorkspace() {
                 const createdSummary = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${String(created.id ?? "")}/summary`)));
                 setProductCreateOpen(false);
                 setProductCreateForm({ ...EMPTY_PRODUCT_FORM });
-                selectProduct(createdSummary);
+                selectProduct(createdSummary, productTargetRow);
                 toast.success("Product created");
               } catch (error) {
                 toast.error(error instanceof Error ? error.message : "Failed to create product");

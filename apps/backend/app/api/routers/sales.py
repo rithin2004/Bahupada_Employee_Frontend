@@ -17,7 +17,9 @@ from app.models.entities import (
     CreditNote,
     Customer,
     DebitNote,
+    Employee,
     InvoiceVersion,
+    OrderSource,
     PackingTask,
     Product,
     SalesFinalInvoice,
@@ -30,6 +32,7 @@ from app.models.entities import (
     Warehouse,
     SalesReturn,
     SalesReturnItem,
+    Payment,
     VoucherStatus,
     PartyType,
     PartyLedgerEntryKind,
@@ -37,6 +40,10 @@ from app.models.entities import (
 from app.schemas.sales import (
     CustomerPendingSalesOrderSummary,
     PendingOrdersDashboardResponse,
+    SalesEntryCustomerSummary,
+    SalesEntryPendingCustomer,
+    SalesEntryRecentInvoice,
+    SalesEntryRecentReceipt,
     SalesExpiryCreate,
     SalesFinalInvoiceCreate,
     SalesFinalInvoiceFromOrderCreate,
@@ -130,65 +137,42 @@ async def create_sales_order(
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
 
-    order = (
-        await db.execute(
-            select(SalesOrder)
-            .where(
-                SalesOrder.customer_id == payload.customer_id,
-                SalesOrder.deleted_at.is_(None),
-                SalesOrder.status == "pending",
-                SalesOrder.warehouse_id == payload.warehouse_id,
-            )
-            .order_by(SalesOrder.created_at.asc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    if auth.portal == "CUSTOMER":
+        order_source = OrderSource.CUSTOMER
+    elif payload.source == OrderSource.SALESMAN:
+        order_source = OrderSource.SALESMAN
+    else:
+        order_source = OrderSource.ADMIN
 
-    if order is None:
-        invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
-        if invoice_number is None:
-            invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+    invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
+    if invoice_number is None:
+        invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 
-        order = SalesOrder(
-            warehouse_id=payload.warehouse_id,
-            customer_id=payload.customer_id,
-            invoice_number=invoice_number,
-            source=payload.source,
-            status="pending",
-        )
-        db.add(order)
-        await db.flush()
+    order = SalesOrder(
+        warehouse_id=payload.warehouse_id,
+        customer_id=payload.customer_id,
+        salesman_id=auth.employee_id if order_source == OrderSource.SALESMAN and auth.employee_id else None,
+        invoice_number=invoice_number,
+        source=order_source,
+        status="pending",
+    )
+    db.add(order)
+    await db.flush()
 
     for item in payload.items:
         product = await db.get(Product, item.product_id)
         if product is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
         unit_price, _source = await resolve_price_for_customer(db, customer, product)
-        existing_item = (
-            await db.execute(
-                select(SalesOrderItem)
-                .where(
-                    SalesOrderItem.sales_order_id == order.id,
-                    SalesOrderItem.product_id == item.product_id,
-                    SalesOrderItem.is_bundle_child.is_(False),
-                )
-                .limit(1)
+        db.add(
+            SalesOrderItem(
+                sales_order_id=order.id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                unit_price=unit_price,
+                selling_price=unit_price,
             )
-        ).scalar_one_or_none()
-        if existing_item is None:
-            db.add(
-                SalesOrderItem(
-                    sales_order_id=order.id,
-                    product_id=item.product_id,
-                    quantity=item.quantity,
-                    unit_price=unit_price,
-                    selling_price=unit_price,
-                )
-            )
-        else:
-            existing_item.quantity = Decimal(existing_item.quantity) + Decimal(item.quantity)
-            if existing_item.selling_price is None:
-                existing_item.selling_price = existing_item.unit_price
+        )
 
     await db.flush()
     try:
@@ -356,11 +340,13 @@ async def list_customer_pending_sales_orders(
             SalesOrder.warehouse_id.label("warehouse_id"),
             Warehouse.name.label("warehouse_name"),
             SalesOrder.source.label("source"),
+            Employee.full_name.label("salesman_name"),
             SalesOrder.status.label("status"),
             SalesOrder.created_at.label("created_at"),
         )
         .select_from(SalesOrder)
         .join(Warehouse, Warehouse.id == SalesOrder.warehouse_id)
+        .outerjoin(Employee, Employee.id == SalesOrder.salesman_id)
         .where(
             SalesOrder.customer_id == customer_id,
             SalesOrder.deleted_at.is_(None),
@@ -384,6 +370,8 @@ async def list_customer_pending_sales_orders(
             SalesOrderItem.quantity.label("quantity"),
             SalesOrderItem.unit_price.label("unit_price"),
             SalesOrderItem.selling_price.label("selling_price"),
+            SalesOrderItem.discount_percent.label("discount_percent"),
+            SalesOrderItem.is_bundle_child.label("is_free_item"),
         )
         .select_from(SalesOrderItem)
         .join(Product, Product.id == SalesOrderItem.product_id)
@@ -406,6 +394,8 @@ async def list_customer_pending_sales_orders(
                 "quantity": row["quantity"],
                 "unit_price": row["unit_price"],
                 "selling_price": row["selling_price"],
+                "discount_percent": row["discount_percent"],
+                "is_free_item": bool(row["is_free_item"]),
             }
         )
 
@@ -421,12 +411,206 @@ async def list_customer_pending_sales_orders(
                 "warehouse_id": row["warehouse_id"],
                 "warehouse_name": row["warehouse_name"],
                 "source": row["source"].value if hasattr(row["source"], "value") else str(row["source"]),
+                "source_label": row["salesman_name"] or (row["source"].value if hasattr(row["source"], "value") else str(row["source"])),
                 "status": row["status"],
                 "created_at": row["created_at"].isoformat() if row["created_at"] else "",
                 "items": items,
             }
         )
     return response
+
+
+@router.get(
+    "/sales-entry/pending-customers",
+    response_model=list[SalesEntryPendingCustomer],
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def list_sales_entry_pending_customers(
+    search: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    clean_search = search.strip() if search else ""
+    stmt = (
+        select(
+            SalesOrder.id.label("sales_order_id"),
+            SalesOrder.customer_id.label("customer_id"),
+            SalesOrder.warehouse_id.label("warehouse_id"),
+            SalesOrder.invoice_number.label("invoice_number"),
+            SalesOrder.source.label("source"),
+            Employee.full_name.label("salesman_name"),
+            SalesOrder.status.label("status"),
+            SalesOrder.created_at.label("created_at"),
+            Customer.name.label("customer_name"),
+        )
+        .select_from(SalesOrder)
+        .join(Customer, Customer.id == SalesOrder.customer_id)
+        .outerjoin(Employee, Employee.id == SalesOrder.salesman_id)
+        .where(
+            SalesOrder.deleted_at.is_(None),
+            SalesOrder.status == "pending",
+        )
+    )
+    if clean_search:
+        q = f"%{clean_search}%"
+        stmt = stmt.where(
+            or_(
+                Customer.name.ilike(q),
+                SalesOrder.invoice_number.ilike(q),
+            )
+        )
+    rows = (
+        await db.execute(
+            stmt.order_by(SalesOrder.created_at.asc()).limit(limit)
+        )
+    ).mappings().all()
+    return [
+        {
+            "sales_order_id": row["sales_order_id"],
+            "customer_id": row["customer_id"],
+            "customer_name": row["customer_name"],
+            "warehouse_id": row["warehouse_id"],
+            "invoice_number": row["invoice_number"],
+            "source": row["source"].value if hasattr(row["source"], "value") else str(row["source"]),
+            "source_label": row["salesman_name"] or (row["source"].value if hasattr(row["source"], "value") else str(row["source"])),
+            "status": row["status"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else "",
+        }
+        for row in rows
+    ]
+
+
+@router.get(
+    "/sales-entry/customers/{customer_id}/summary",
+    response_model=SalesEntryCustomerSummary,
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def get_sales_entry_customer_summary(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    now = datetime.now(timezone.utc)
+    year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc).date()
+    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc).date()
+
+    annual_sales_amount = Decimal(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(SalesFinalInvoice.total_amount), Decimal("0")))
+                .select_from(SalesFinalInvoice)
+                .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
+                .where(
+                    SalesOrder.customer_id == customer_id,
+                    SalesFinalInvoice.deleted_at.is_(None),
+                    SalesFinalInvoice.invoice_date >= year_start,
+                )
+            )
+        ).scalar_one()
+        or Decimal("0")
+    )
+    monthly_sales_amount = Decimal(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(SalesFinalInvoice.total_amount), Decimal("0")))
+                .select_from(SalesFinalInvoice)
+                .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
+                .where(
+                    SalesOrder.customer_id == customer_id,
+                    SalesFinalInvoice.deleted_at.is_(None),
+                    SalesFinalInvoice.invoice_date >= month_start,
+                )
+            )
+        ).scalar_one()
+        or Decimal("0")
+    )
+    last_sale_date = (
+        await db.execute(
+            select(func.max(SalesFinalInvoice.invoice_date))
+            .select_from(SalesFinalInvoice)
+            .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
+            .where(
+                SalesOrder.customer_id == customer_id,
+                SalesFinalInvoice.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    last_receipt_date = (
+        await db.execute(select(func.max(Payment.payment_date)).where(Payment.customer_id == customer_id))
+    ).scalar_one()
+
+    recent_invoice_rows = (
+        await db.execute(
+            select(
+                SalesFinalInvoice.invoice_number,
+                SalesFinalInvoice.invoice_date,
+                SalesFinalInvoice.total_amount,
+            )
+            .select_from(SalesFinalInvoice)
+            .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
+            .where(
+                SalesOrder.customer_id == customer_id,
+                SalesFinalInvoice.deleted_at.is_(None),
+            )
+            .order_by(SalesFinalInvoice.invoice_date.desc(), SalesFinalInvoice.created_at.desc())
+            .limit(6)
+        )
+    ).all()
+    recent_receipt_rows = (
+        await db.execute(
+            select(Payment.payment_date, Payment.amount, Payment.mode)
+            .where(Payment.customer_id == customer_id)
+            .order_by(Payment.payment_date.desc(), Payment.created_at.desc())
+            .limit(6)
+        )
+    ).all()
+
+    address_lines = [
+        value
+        for value in [
+            customer.outlet_name,
+            customer.street_address_1,
+            customer.street_address_2,
+            ", ".join(part for part in [customer.city, customer.state, customer.pincode] if part),
+        ]
+        if value
+    ]
+    balance = Decimal(customer.current_balance or Decimal("0"))
+    return {
+        "customer_id": customer.id,
+        "customer_name": customer.name,
+        "address_lines": address_lines,
+        "gstin": customer.gstin or customer.gst_number,
+        "phone": customer.phone,
+        "route_name": customer.route_name,
+        "annual_sales_amount": annual_sales_amount,
+        "monthly_sales_amount": monthly_sales_amount,
+        "balance": abs(balance),
+        "balance_side": "DR" if balance >= 0 else "CR",
+        "last_sale_date": last_sale_date,
+        "last_receipt_date": last_receipt_date,
+        "recent_invoices": [
+            SalesEntryRecentInvoice(
+                invoice_number=invoice_number,
+                invoice_date=invoice_date,
+                total_amount=total_amount,
+            )
+            for invoice_number, invoice_date, total_amount in recent_invoice_rows
+        ],
+        "recent_receipts": [
+            SalesEntryRecentReceipt(
+                payment_date=payment_date,
+                amount=amount,
+                mode=mode,
+            )
+            for payment_date, amount, mode in recent_receipt_rows
+        ],
+    }
 
 
 @router.get("/sales-final-invoices", dependencies=[Depends(require_permission("sales", "read"))])

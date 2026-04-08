@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, deleteBackend, fetchBackendFresh, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,7 +64,7 @@ export function UnitsAdminEditor() {
       if (searchText.trim()) {
         params.set("search", searchText.trim());
       }
-      const res = asObject(await fetchBackend(`/masters/units?${params.toString()}`));
+      const res = asObject(await fetchBackendFresh(`/masters/units?${params.toString()}`));
       setRows(asArray(res.items).map(mapRow));
       setCurrentPage(Number(res.page ?? page));
       setTotalPages(Number(res.total_pages ?? 0));

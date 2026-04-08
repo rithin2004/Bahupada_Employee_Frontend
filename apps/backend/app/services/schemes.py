@@ -81,20 +81,6 @@ async def build_sales_order_preview(
     current_date = at_date or date.today()
     aggregated_qty: dict[uuid.UUID, Decimal] = defaultdict(lambda: Decimal("0"))
 
-    existing_items_res = await session.execute(
-        select(SalesOrderItem)
-        .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
-        .where(
-            SalesOrder.customer_id == customer.id,
-            SalesOrder.warehouse_id == warehouse_id,
-            SalesOrder.deleted_at.is_(None),
-            SalesOrder.status == "pending",
-            SalesOrderItem.is_bundle_child.is_(False),
-        )
-    )
-    for existing_item in existing_items_res.scalars().all():
-        aggregated_qty[existing_item.product_id] += Decimal(existing_item.quantity or 0)
-
     for product_id, quantity in items:
         if Decimal(quantity or 0) > 0:
             aggregated_qty[product_id] += Decimal(quantity)
