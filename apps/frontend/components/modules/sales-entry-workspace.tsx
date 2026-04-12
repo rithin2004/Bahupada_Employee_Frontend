@@ -7,7 +7,9 @@ import { asArray, fetchBackendFresh, postBackend } from "@/lib/backend-api";
 import { invalidateByPrefixes } from "@/lib/state/api-cache-slice";
 import { store } from "@/lib/state/store";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 type PendingCustomer = {
   sales_order_id: string;
@@ -83,9 +85,11 @@ function formatMoney(value: string | number) {
 type SalesEntryWorkspaceProps = {
   canWriteSales: boolean;
   onCreated?: () => void;
+  initialOrderId?: string;
+  onConsumedInitial?: () => void;
 };
 
-export function SalesEntryWorkspace({ canWriteSales, onCreated }: SalesEntryWorkspaceProps) {
+export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, onConsumedInitial }: SalesEntryWorkspaceProps) {
   const [pendingSearch, setPendingSearch] = useState("");
   const [pendingRows, setPendingRows] = useState<PendingCustomer[]>([]);
   const [pendingLoading, setPendingLoading] = useState(true);
@@ -97,12 +101,24 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated }: SalesEntryWork
   const [deliverQtyByItemId, setDeliverQtyByItemId] = useState<Record<string, string>>({});
   const [creating, setCreating] = useState(false);
   const [activeItemId, setActiveItemId] = useState("");
+  const [showCustomerCreate, setShowCustomerCreate] = useState(false);
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [newCustomerForm, setNewCustomerForm] = useState({
+    name: "",
+    phone: "",
+    gstin: "",
+    street_address_1: "",
+    city: "",
+    state: "",
+    pincode: "",
+  });
   const customerButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const referenceButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const qtyInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const invoiceDateRef = useRef<HTMLInputElement | null>(null);
   const pendingSearchRef = useRef<HTMLInputElement | null>(null);
   const createButtonRef = useRef<HTMLButtonElement | null>(null);
+  const initialHandledRef = useRef(false);
 
   const loadPendingRows = useCallback(async (term: string) => {
     setPendingLoading(true);
@@ -339,6 +355,54 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated }: SalesEntryWork
         ""
     );
   }, [selectedOrder]);
+
+  useEffect(() => {
+    if (!initialOrderId || initialHandledRef.current || pendingRows.length === 0) {
+      return;
+    }
+    const row = pendingRows.find((item) => item.sales_order_id === initialOrderId);
+    if (!row) {
+      return;
+    }
+    initialHandledRef.current = true;
+    void loadCustomerContext(row.customer_id, initialOrderId);
+    onConsumedInitial?.();
+  }, [initialOrderId, loadCustomerContext, onConsumedInitial, pendingRows]);
+
+  async function createInlineCustomer() {
+    if (!newCustomerForm.name.trim()) {
+      toast.error("Customer name is required.");
+      return;
+    }
+    setCreatingCustomer(true);
+    try {
+      const payload = {
+        name: newCustomerForm.name.trim(),
+        phone: newCustomerForm.phone.trim() || null,
+        gstin: newCustomerForm.gstin.trim() || null,
+        street_address_1: newCustomerForm.street_address_1.trim() || null,
+        city: newCustomerForm.city.trim() || null,
+        state: newCustomerForm.state.trim() || null,
+        pincode: newCustomerForm.pincode.trim() || null,
+      };
+      const created = await postBackend("/masters/customers", payload);
+      toast.success(`Customer ${String(created?.name ?? payload.name)} created.`);
+      setNewCustomerForm({
+        name: "",
+        phone: "",
+        gstin: "",
+        street_address_1: "",
+        city: "",
+        state: "",
+        pincode: "",
+      });
+      setShowCustomerCreate(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create customer");
+    } finally {
+      setCreatingCustomer(false);
+    }
+  }
 
   async function createInvoice() {
     if (!canWriteSales || !selectedOrder) return;
@@ -718,7 +782,14 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated }: SalesEntryWork
         </div>
 
         <div className="bg-[#f4f8ff]">
-          <div className="border-b border-[#cdd7d1] bg-[#73958b] px-4 py-3 font-mono text-lg tracking-[0.25em] text-white">PENDING CUSTOMERS</div>
+          <div className="border-b border-[#cdd7d1] bg-[#73958b] px-4 py-3 font-mono text-lg tracking-[0.25em] text-white">
+            <div className="flex items-center justify-between gap-3">
+              <span>PENDING CUSTOMERS</span>
+              <Button size="sm" variant="outline" onClick={() => setShowCustomerCreate(true)}>
+                + Add Customer
+              </Button>
+            </div>
+          </div>
           <div className="border-b border-[#d6dfd8] p-3">
             <Input
               ref={pendingSearchRef}
@@ -798,6 +869,48 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated }: SalesEntryWork
           </div>
         </div>
       </div>
+      <Dialog open={showCustomerCreate} onOpenChange={setShowCustomerCreate}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Customer</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1 md:col-span-2">
+              <Label>Customer Name *</Label>
+              <Input value={newCustomerForm.name} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, name: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Phone</Label>
+              <Input value={newCustomerForm.phone} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, phone: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>GSTIN</Label>
+              <Input value={newCustomerForm.gstin} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, gstin: e.target.value }))} />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label>Street</Label>
+              <Input value={newCustomerForm.street_address_1} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, street_address_1: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>City</Label>
+              <Input value={newCustomerForm.city} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, city: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>State</Label>
+              <Input value={newCustomerForm.state} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, state: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Pincode</Label>
+              <Input value={newCustomerForm.pincode} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, pincode: e.target.value }))} />
+            </div>
+          </div>
+          <div className="pt-2">
+            <Button onClick={createInlineCustomer} disabled={creatingCustomer || !newCustomerForm.name.trim()}>
+              {creatingCustomer ? "Adding..." : "Add Customer"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { PurchaseEntryWorkspace } from "@/components/modules/purchase-entry-workspace";
 
 type Option = {
   id: string;
@@ -81,6 +82,8 @@ type BillItemDraft = {
   quantity: string;
   damaged_quantity: string;
   unit_price: string;
+  discount_percent: string;
+  discount_amount: string;
 };
 
 type PurchaseBillSummary = {
@@ -441,6 +444,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [canReadPurchase, setCanReadPurchase] = useState(false);
   const [canWritePurchase, setCanWritePurchase] = useState(false);
+  
+  const [showWorkspace, setShowWorkspace] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<"challan" | "bill">("bill");
+  const [editingId, setEditingId] = useState("");
+  const [conversionId, setConversionId] = useState("");
+  
   const [vendors, setVendors] = useState<Option[]>([]);
   const [warehouses, setWarehouses] = useState<Option[]>([]);
   const [racks, setRacks] = useState<Option[]>([]);
@@ -465,9 +474,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [showNewChallan, setShowNewChallan] = useState(false);
   const [showNewBill, setShowNewBill] = useState(false);
   const [editingBillId, setEditingBillId] = useState("");
+  const [editingChallanId, setEditingChallanId] = useState("");
   const [billDialogMode, setBillDialogMode] = useState<"create" | "edit" | "view">("create");
   const [loadingEditBillId, setLoadingEditBillId] = useState("");
+  const [loadingEditChallanId, setLoadingEditChallanId] = useState("");
   const [deletingBillId, setDeletingBillId] = useState("");
+  const [deletingChallanId, setDeletingChallanId] = useState("");
   const [showVendorCreate, setShowVendorCreate] = useState(false);
   const [showWarehouseCreate, setShowWarehouseCreate] = useState(false);
   const [showRackCreate, setShowRackCreate] = useState(false);
@@ -1094,6 +1106,8 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         expiry_date: item.expiry_date ?? "",
         damaged_quantity: "0",
         unit_price: "0",
+        discount_percent: "",
+        discount_amount: "",
       }))
     );
   }, [billEntryMode, challans, selectedChallanId, editingBillId, billItems.length]);
@@ -1255,6 +1269,8 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           quantity: "1",
           damaged_quantity: "0",
           unit_price: "0",
+          discount_percent: "",
+          discount_amount: "",
         },
       ];
     });
@@ -1269,65 +1285,44 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     setBillItems((prev) => prev.filter((_, index) => index !== indexToRemove));
   }
 
-  function resetBillEditor() {
-    setBillDialogMode("create");
-    setEditingBillId("");
-    setSelectedChallanId("");
-    setBillItems([]);
-    setBillVendorId("");
-    setBillWarehouseId("");
-    setBillRackId("");
-    setBillProductSearch("");
-    setBillProductResults([]);
-    setBillEntryMode("direct");
-    setBillNumber(createBillNo());
-    setBillDate(new Date().toISOString().slice(0, 10));
+  function billLineSubtotal(item: BillItemDraft) {
+    const qty = Number(item.quantity || 0);
+    const price = Number(item.unit_price || 0);
+    return qty * price;
   }
 
-  async function openBillEditor(billId: string, mode: "edit" | "view" = "edit") {
-    if (!billId) {
-      return;
-    }
-    setLoadingEditBillId(billId);
-    try {
-      const payload = asObject(await fetchBackend(`/procurement/purchase-bills/${billId}`));
-      const detail: PurchaseBillDetail = {
-        id: asText(payload.id),
-        bill_number: asText(payload.bill_number),
-        bill_date: asText(payload.bill_date),
-        vendor_id: payload.vendor_id ? asText(payload.vendor_id) : null,
-        warehouse_id: payload.warehouse_id ? asText(payload.warehouse_id) : null,
-        rack_id: payload.rack_id ? asText(payload.rack_id) : null,
-        challan_id: payload.challan_id ? asText(payload.challan_id) : null,
-        entry_mode: asText(payload.entry_mode) === "challan" ? "challan" : "direct",
-        items: asArray(payload.items).map((item) => ({
-          product_id: asText(item.product_id),
-          sku: asText(item.sku),
-          name: asText(item.name),
-          batch_no: asText(item.batch_no),
-          expiry_date: asText(item.expiry_date),
-          quantity: asText(item.quantity || "0"),
-          damaged_quantity: asText(item.damaged_quantity || "0"),
-          unit_price: asText(item.unit_price || "0"),
-        })),
-      };
-      setBillDialogMode(mode);
-      setEditingBillId(detail.id);
-      setBillEntryMode(detail.entry_mode);
-      setSelectedChallanId(detail.challan_id || "");
-      setBillVendorId(detail.vendor_id || "");
-      setBillWarehouseId(detail.warehouse_id || "");
-      setBillRackId(detail.rack_id || "");
-      setBillNumber(detail.bill_number);
-      setBillDate(detail.bill_date);
-      setBillItems(detail.items);
-      setShowNewBill(true);
-    } catch (error) {
-      toast.error(`Failed to load bill: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
-    } finally {
-      setLoadingEditBillId("");
-    }
+  function updateBillDiscountPercent(index: number, nextPercent: string) {
+    setBillItems((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== index) return item;
+        const subtotal = billLineSubtotal(item);
+        const percent = Number(nextPercent || 0);
+        const amount = subtotal > 0 ? (subtotal * percent) / 100 : 0;
+        return {
+          ...item,
+          discount_percent: nextPercent,
+          discount_amount: amount ? amount.toFixed(2) : "",
+        };
+      })
+    );
   }
+
+  function updateBillDiscountAmount(index: number, nextAmount: string) {
+    setBillItems((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== index) return item;
+        const subtotal = billLineSubtotal(item);
+        const amount = Number(nextAmount || 0);
+        const percent = subtotal > 0 ? (amount / subtotal) * 100 : 0;
+        return {
+          ...item,
+          discount_amount: nextAmount,
+          discount_percent: percent ? percent.toFixed(2) : "",
+        };
+      })
+    );
+  }
+
 
   async function deletePurchaseBillRow(billId: string) {
     if (!canWritePurchase || !billId || deletingBillId) {
@@ -1350,6 +1345,51 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     }
   }
 
+  async function deletePurchaseChallanRow(challanId: string) {
+    if (!canWritePurchase || !challanId || deletingChallanId) {
+      return;
+    }
+    const challan = challans.find((row) => row.id === challanId);
+    const proceed = window.confirm(`Delete purchase challan ${challan?.reference_no || ""}? Stock will be reversed. Note: Linked bills will prevent deletion.`);
+    if (!proceed) {
+      return;
+    }
+    setDeletingChallanId(challanId);
+    try {
+      await deleteBackend(`/procurement/purchase-challans/${challanId}`);
+      toast.success("Deleted purchase challan and reversed stock.", { duration: 5000 });
+      void loadChallans();
+    } catch (error) {
+      toast.error(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setDeletingChallanId("");
+    }
+  }
+
+  function resetChallanEditor() {
+    setVendorId("");
+    setWarehouseId("");
+    setRackId("");
+    setReferenceNo(createReferenceNo());
+    setItems([]);
+    setEditingChallanId("");
+    setProductSearch("");
+    setProductResults([]);
+  }
+
+  function resetBillEditor() {
+    setEditingBillId("");
+    setBillNumber(createBillNo());
+    setBillDate(new Date().toISOString().slice(0, 10));
+    setBillItems([]);
+    setBillVendorId("");
+    setBillWarehouseId("");
+    setBillRackId("");
+    setBillProductSearch("");
+    setBillProductResults([]);
+    setBillDialogMode("create");
+  }
+
   async function createChallanWithItems() {
     if (!canWritePurchase) {
       return;
@@ -1369,7 +1409,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     setSubmittingChallan(true);
     setFeedback("");
     try {
-      await postBackend("/procurement/purchase-challans", {
+      const payload = {
         vendor_id: vendorId,
         warehouse_id: warehouseId,
         rack_id: rackId || null,
@@ -1379,20 +1419,25 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           quantity: Number(row.quantity),
           expiry_date: row.expiry_date || null,
         })),
-      });
-      toast.success("Purchase challan and items created.", { duration: 5000 });
-      setFeedback("Purchase challan and items created.");
-      setItems([]);
-      setProductSearch("");
-      setProductResults([]);
-      setReferenceNo(createReferenceNo());
+      };
+      if (editingChallanId) {
+        await patchBackend(`/procurement/purchase-challans/${editingChallanId}`, payload);
+        toast.success("Purchase challan and items updated.", { duration: 5000 });
+        setFeedback("Purchase challan and items updated.");
+      } else {
+        await postBackend("/procurement/purchase-challans", payload);
+        toast.success("Purchase challan and items created.", { duration: 5000 });
+        setFeedback("Purchase challan and items created.");
+      }
+      resetChallanEditor();
       await loadChallans();
       setShowNewChallan(false);
     } catch (error) {
-      const message = `Create failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      const message = `Save failed: ${error instanceof Error ? error.message : "Unknown error"}`;
       setFeedback(message);
       toast.error(message, { duration: 5000 });
     } finally {
+      setSubmittingChallan(true); // Should be false? The code I am replacing said false at 1507.
       setSubmittingChallan(false);
     }
   }
@@ -1421,6 +1466,8 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           quantity: Number(item.quantity),
           damaged_quantity: Number(item.damaged_quantity),
           unit_price: Number(item.unit_price),
+          discount_percent: item.discount_percent ? Number(item.discount_percent) : null,
+          line_discount_amount: item.discount_amount ? Number(item.discount_amount) : null,
         })),
       };
       if (editingBillId) {
@@ -1443,6 +1490,28 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     } finally {
       setSubmittingBill(false);
     }
+  }
+
+  if (showWorkspace) {
+    return (
+      <PurchaseEntryWorkspace 
+        mode={workspaceMode}
+        initialId={editingId}
+        sourceChallanId={conversionId}
+        onSaved={() => {
+          setShowWorkspace(false);
+          setEditingId("");
+          setConversionId("");
+          void loadChallans();
+          void loadBills();
+        }}
+        onClose={() => {
+          setShowWorkspace(false);
+          setEditingId("");
+          setConversionId("");
+        }}
+      />
+    );
   }
 
   return (
@@ -1482,452 +1551,9 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   onChange={(e) => setChallanSearch(e.target.value)}
                   className="md:w-80"
                 />
-                <Dialog open={showNewChallan} onOpenChange={(open) => setShowNewChallan(canWritePurchase ? open : false)}>
-                  {canWritePurchase ? (
-                    <DialogTrigger asChild>
-                      <Button>Create New</Button>
-                    </DialogTrigger>
-                  ) : null}
-                  <DialogContent className="max-h-[90vh] w-[75vw] max-w-[1080px] sm:max-w-[1080px] overflow-y-auto overflow-x-hidden p-4 sm:p-5">
-                    <DialogHeader>
-                      <DialogTitle>Create Purchase Challan</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <Label>Vendor *</Label>
-                            <Dialog open={showVendorCreate} onOpenChange={(open) => setShowVendorCreate(canWritePurchase ? open : false)}>
-                              <DialogTrigger asChild>
-                                <Button type="button" variant="outline" size="sm" disabled={!canWritePurchase}>
-                                  + Add Vendor
-                                </Button>
-                              </DialogTrigger>
-                              <DialogContent className="sm:max-w-md">
-                                <DialogHeader>
-                                  <DialogTitle>Add Vendor</DialogTitle>
-                                </DialogHeader>
-                                <div className="grid gap-3 md:grid-cols-2">
-                                  <div className="space-y-1">
-                                    <Label>Firm Name *</Label>
-                                    <Input
-                                      value={newVendorForm.firm_name}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, firm_name: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Type</Label>
-                                    <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={newVendorForm.purchase_type} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, purchase_type: e.target.value }))}>
-                                      <option value="CENTRAL">CENTRAL</option>
-                                      <option value="LOCAL">LOCAL</option>
-                                    </select>
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>GSTIN</Label>
-                                    <Input
-                                      value={newVendorForm.gstin}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>PAN</Label>
-                                    <Input
-                                      value={newVendorForm.pan}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, pan: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Owner Name</Label>
-                                    <Input
-                                      value={newVendorForm.owner_name}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, owner_name: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Phone</Label>
-                                    <Input
-                                      value={newVendorForm.phone}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, phone: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Alternate Phone</Label>
-                                    <Input
-                                      value={newVendorForm.alternate_phone}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, alternate_phone: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Email</Label>
-                                    <Input
-                                      value={newVendorForm.email}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, email: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1 md:col-span-2">
-                                    <Label>Street</Label>
-                                    <Input
-                                      value={newVendorForm.street}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, street: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>City</Label>
-                                    <Input
-                                      value={newVendorForm.city}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, city: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>State</Label>
-                                    <Input
-                                      value={newVendorForm.state}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, state: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Pincode</Label>
-                                    <Input
-                                      value={newVendorForm.pincode}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, pincode: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Bank Account Number</Label>
-                                    <Input
-                                      value={newVendorForm.bank_account_number}
-                                      onChange={(e) =>
-                                        setNewVendorForm((prev) => ({ ...prev, bank_account_number: e.target.value }))
-                                      }
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>IFSC Code</Label>
-                                    <Input
-                                      value={newVendorForm.ifsc_code}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, ifsc_code: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1 md:col-span-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <Label>Account Category</Label>
-                                      <Button type="button" variant="outline" size="sm" onClick={() => setOpenVendorCategoryDialog(true)}>
-                                        + Add Account Category
-                                      </Button>
-                                    </div>
-                                    <select
-                                      className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                                      value={(newVendorForm as typeof newVendorForm & { account_category_id?: string }).account_category_id || ""}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
-                                    >
-                                      <option value="">Optional</option>
-                                      {accountCategories.map((category) => (
-                                        <option key={category.id} value={category.id}>
-                                          {category.code} - {category.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                  <div className="space-y-2 md:col-span-2">
-                                    <Label>Linked Brands</Label>
-                                    <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
-                                      {brands.length ? brands.map((brand) => (
-                                        <label key={brand.id} className="flex items-center gap-2 text-sm">
-                                          <input
-                                            type="checkbox"
-                                            checked={newVendorForm.brand_ids.includes(brand.id)}
-                                            onChange={(e) =>
-                                              setNewVendorForm((prev) => ({
-                                                ...prev,
-                                                brand_ids: e.target.checked
-                                                  ? [...prev.brand_ids, brand.id]
-                                                  : prev.brand_ids.filter((id) => id !== brand.id),
-                                              }))
-                                            }
-                                          />
-                                          {brand.name}
-                                        </label>
-                                      )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
-                                    </div>
-                                  </div>
-                                </div>
-                                <div className="pt-2">
-                                  <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.firm_name.trim()}>
-                                    {creatingVendor ? "Adding..." : "Add Vendor"}
-                                  </Button>
-                                </div>
-                              </DialogContent>
-                            </Dialog>
-                          </div>
-                          <select
-                            className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                            value={vendorId}
-                            onChange={(e) => setVendorId(e.target.value)}
-                          >
-                            <option value="">{vendors.length ? "Select vendor" : "No vendors found"}</option>
-                            {vendors.map((vendor) => (
-                              <option key={vendor.id} value={vendor.id}>
-                                {vendor.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <Label>Warehouse *</Label>
-                            <Dialog open={showWarehouseCreate} onOpenChange={(open) => setShowWarehouseCreate(canWritePurchase ? open : false)}>
-                              <DialogTrigger asChild>
-                                <Button type="button" variant="outline" size="sm" disabled={!canWritePurchase}>
-                                  + Add Warehouse
-                                </Button>
-                              </DialogTrigger>
-                              <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
-                                <DialogHeader>
-                                  <DialogTitle>Add Warehouse</DialogTitle>
-                                </DialogHeader>
-                                <div className="grid gap-3 md:grid-cols-2">
-                                  <div className="space-y-1">
-                                    <Label>Code *</Label>
-                                    <Input
-                                      value={newWarehouseForm.code}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, code: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Name *</Label>
-                                    <Input
-                                      value={newWarehouseForm.name}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, name: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Street</Label>
-                                    <Input
-                                      value={newWarehouseForm.street}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, street: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>City</Label>
-                                    <Input
-                                      value={newWarehouseForm.city}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, city: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>State</Label>
-                                    <Input
-                                      value={newWarehouseForm.state}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, state: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Pincode</Label>
-                                    <Input
-                                      value={newWarehouseForm.pincode}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, pincode: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Latitude</Label>
-                                    <Input
-                                      value={newWarehouseForm.latitude}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, latitude: e.target.value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <Label>Longitude</Label>
-                                    <Input
-                                      value={newWarehouseForm.longitude}
-                                      onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, longitude: e.target.value }))}
-                                    />
-                                  </div>
-                                </div>
-                                <div className="pt-2">
-                                  <Button
-                                    onClick={createInlineWarehouse}
-                                    disabled={creatingWarehouse || !newWarehouseForm.code.trim() || !newWarehouseForm.name.trim()}
-                                  >
-                                    {creatingWarehouse ? "Adding..." : "Add Warehouse"}
-                                  </Button>
-                                </div>
-                              </DialogContent>
-                            </Dialog>
-                          </div>
-                          <select
-                            className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                            value={warehouseId}
-                            onChange={(e) => setWarehouseId(e.target.value)}
-                          >
-                            <option value="">{warehouses.length ? "Select warehouse" : "No warehouses found"}</option>
-                            {warehouses.map((warehouse) => (
-                              <option key={warehouse.id} value={warehouse.id}>
-                                {warehouse.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <Label>Rack (Optional)</Label>
-                            <Dialog open={showRackCreate} onOpenChange={(open) => setShowRackCreate(canWritePurchase ? open : false)}>
-                              <DialogTrigger asChild>
-                                <Button type="button" variant="outline" size="sm" disabled={!warehouseId || !canWritePurchase}>
-                                  + Add Rack
-                                </Button>
-                              </DialogTrigger>
-                              <DialogContent className="sm:max-w-md">
-                                <DialogHeader>
-                                  <DialogTitle>Add Rack</DialogTitle>
-                                </DialogHeader>
-                                <div className="space-y-3">
-                                  {!warehouseId ? (
-                                    <p className="text-sm text-muted-foreground">Select a warehouse first.</p>
-                                  ) : (
-                                    <>
-                                      <div className="space-y-1">
-                                        <Label>Rack Type</Label>
-                                        <Input value={newRackType} onChange={(e) => setNewRackType(e.target.value)} />
-                                      </div>
-                                      <div className="space-y-1">
-                                        <Label>Number of Rows *</Label>
-                                        <Input value={newRackRows} onChange={(e) => setNewRackRows(e.target.value)} />
-                                      </div>
-                                      <Button onClick={createInlineRack} disabled={creatingRack}>
-                                        {creatingRack ? "Adding..." : "Add Rack"}
-                                      </Button>
-                                    </>
-                                  )}
-                                </div>
-                              </DialogContent>
-                            </Dialog>
-                          </div>
-                          <select
-                            className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                            value={rackId}
-                            onChange={(e) => setRackId(e.target.value)}
-                            disabled={!warehouseId}
-                          >
-                            <option value="">{warehouseId ? "Select rack (optional)" : "Select warehouse first"}</option>
-                            {racks.map((rack) => (
-                              <option key={rack.id} value={rack.id}>
-                                {rack.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="space-y-1">
-                          <Label>Reference No</Label>
-                          <Input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} />
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Product Search</Label>
-                        <div className="flex gap-2">
-                          <Input
-                            value={productSearch}
-                            onChange={(e) => setProductSearch(e.target.value)}
-                            placeholder="Type first 3 letters of SKU, name or brand"
-                          />
-                          <Button type="button" variant="outline" disabled={!canWritePurchase} onClick={() => { setProductCreateMode("challan"); setShowProductCreate(true); }}>
-                            + Add Product
-                          </Button>
-                        </div>
-                        {productSearch.trim().length > 0 && productSearch.trim().length < 3 ? (
-                          <p className="text-xs text-muted-foreground">Enter at least 3 letters.</p>
-                        ) : null}
-                        {searchingProducts ? <p className="text-xs text-muted-foreground">Searching products...</p> : null}
-                        {productResults.length > 0 ? (
-                          <div className="max-h-56 overflow-y-auto rounded-md border">
-                            {productResults.map((product) => (
-                              <div key={product.id} className="flex items-center justify-between border-b px-3 py-2 last:border-b-0">
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-medium">{product.sku || "-"}</p>
-                                  <p className="truncate text-xs text-muted-foreground">
-                                    {product.name || "-"}{product.brand ? ` • ${product.brand}` : ""}
-                                  </p>
-                                </div>
-                                <Button size="sm" variant="outline" onClick={() => addProduct(product)} disabled={!canWritePurchase}>
-                                  Add
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                        {showProductNoResults ? (
-                          <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">No results found.</p>
-                        ) : null}
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Selected Items</Label>
-                        {items.length === 0 ? (
-                          <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">No products added yet.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {items.map((row, index) => (
-                              <div key={row.product_id} className="grid gap-2 rounded-md border p-3 text-sm md:grid-cols-12 md:items-end">
-                                <div className="md:col-span-2">
-                                  <p className="text-xs text-muted-foreground">SKU</p>
-                                  <p className="font-medium">{row.sku || "-"}</p>
-                                </div>
-                                <div className="md:col-span-3">
-                                  <p className="text-xs text-muted-foreground">Name</p>
-                                  <p className="font-medium">{row.name || "-"}</p>
-                                </div>
-                                <div className="md:col-span-2">
-                                  <p className="text-xs text-muted-foreground">Batch No (Auto)</p>
-                                  <p className="font-mono text-xs">{challanBatchPreview(index)}</p>
-                                </div>
-                                <div className="md:col-span-2">
-                                  <p className="mb-1 text-xs text-muted-foreground">Expiry Date</p>
-                                  <Input
-                                    type="date"
-                                    value={row.expiry_date}
-                                    onChange={(e) =>
-                                      setItems((prev) =>
-                                        prev.map((item) =>
-                                          item.product_id === row.product_id ? { ...item, expiry_date: e.target.value } : item
-                                        )
-                                      )
-                                    }
-                                  />
-                                </div>
-                                <div className="md:col-span-1">
-                                  <p className="mb-1 text-xs text-muted-foreground">Quantity</p>
-                                  <Input
-                                    value={row.quantity}
-                                    onChange={(e) =>
-                                      setItems((prev) =>
-                                        prev.map((item) =>
-                                          item.product_id === row.product_id ? { ...item, quantity: e.target.value } : item
-                                        )
-                                      )
-                                    }
-                                  />
-                                </div>
-                                <div className="md:col-span-2">
-                                  <p className="mb-1 text-xs text-muted-foreground">Action</p>
-                                  <Button size="sm" variant="outline" onClick={() => removeItem(row.product_id)} disabled={!canWritePurchase}>
-                                    Remove
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      <Button onClick={createChallanWithItems} disabled={!canWritePurchase || !canCreateChallan || submittingChallan}>
-                        {submittingChallan ? "Creating..." : "Create Purchase Challan"}
-                      </Button>
-                      {!vendorId || !warehouseId ? (
-                        <p className="text-xs text-muted-foreground">Select vendor and warehouse to enable challan creation.</p>
-                      ) : null}
-                    </div>
-                  </DialogContent>
-                </Dialog>
+                {canWritePurchase ? (
+                  <Button onClick={() => { setWorkspaceMode("challan"); setEditingId(""); setShowWorkspace(true); }}>Create New</Button>
+                ) : null}
               </div>
             </div>
 
@@ -1970,9 +1596,24 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2">{challan.items.length}</td>
                         <td className="px-3 py-2">Created</td>
                         <td className="px-3 py-2">
-                          <Button size="sm" variant="outline" onClick={() => setPreviewChallan(challan)}>
-                            View
-                          </Button>
+                          <div className="flex flex-wrap gap-2">
+                            <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("challan"); setEditingId(challan.id); setShowWorkspace(true); }}>
+                              View
+                            </Button>
+                            {canWritePurchase ? (
+                              <>
+                                <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("challan"); setEditingId(challan.id); setShowWorkspace(true); }}>
+                                  Edit
+                                </Button>
+                                <Button size="sm" variant="outline" className="text-destructive hover:bg-destructive hover:text-white" onClick={() => deletePurchaseChallanRow(challan.id)} disabled={deletingChallanId === challan.id}>
+                                  {deletingChallanId === challan.id ? "..." : "Delete"}
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setConversionId(challan.id); setEditingId(""); setShowWorkspace(true); }}>
+                                  Convert to Bill
+                                </Button>
+                              </>
+                            ) : null}
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -2096,540 +1737,16 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   onOpenChange={(open) => {
                     if (!open) {
                       setShowNewBill(false);
-                      resetBillEditor();
                       return;
                     }
                     if (!canReadPurchase) {
                       return;
                     }
-                    setShowNewBill(open);
                   }}
                 >
                   {canWritePurchase && !hideBillCreateButton ? (
-                    <DialogTrigger asChild>
-                      <Button onClick={() => resetBillEditor()}>Create New</Button>
-                    </DialogTrigger>
+                    <Button onClick={() => { setWorkspaceMode("bill"); setEditingId(""); setShowWorkspace(true); }}>Create New</Button>
                   ) : null}
-                  <DialogContent className="max-h-[90vh] w-[75vw] max-w-[1080px] sm:max-w-[1080px] overflow-y-auto overflow-x-hidden p-4 sm:p-5">
-                    <DialogHeader>
-                      <DialogTitle>
-                        {billDialogMode === "view" ? "View Purchase Bill" : editingBillId ? "Edit Purchase Bill" : "Create Purchase Bill"}
-                      </DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      {billDialogMode === "view" ? (
-                        <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                          Read-only bill view. Use Edit from the list to make changes.
-                        </p>
-                      ) : null}
-                      <fieldset className="space-y-4" disabled={billDialogMode === "view"}>
-                      <Tabs
-                        value={billEntryMode}
-                        onValueChange={(value) => setBillEntryMode(value === "direct" ? "direct" : "challan")}
-                        className="w-full"
-                      >
-                        <TabsList>
-                          <TabsTrigger value="challan">From Challan</TabsTrigger>
-                          <TabsTrigger value="direct">Direct Bill</TabsTrigger>
-                        </TabsList>
-                        <TabsContent value="challan" className="space-y-4">
-                          <div className="grid gap-3 md:grid-cols-3">
-                            <div className="space-y-1 md:col-span-2">
-                              <Label>Purchase Challan *</Label>
-                              <select
-                                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                                value={selectedChallanId}
-                                onChange={(e) => setSelectedChallanId(e.target.value)}
-                              >
-                                <option value="">{challans.length ? "Select challan" : "No challans found"}</option>
-                                {challans.map((challan) => (
-                                  <option key={challan.id} value={challan.id}>
-                                    {challan.reference_no} - {challan.vendor_name} - {challan.warehouse_name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="space-y-1">
-                              <Label>Bill Date *</Label>
-                              <Input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} />
-                            </div>
-                            <div className="space-y-1 md:col-span-3">
-                              <Label>Bill Number *</Label>
-                              <Input value={billNumber} onChange={(e) => setBillNumber(e.target.value)} />
-                            </div>
-                          </div>
-                          {billItems.length > 0 ? (
-                            <div className="space-y-2">
-                              {billItems.map((row, index) => (
-                                <div key={`${row.product_id}-${row.batch_no}-${index}`} className="grid gap-2 rounded-md border p-3 text-sm md:grid-cols-12 md:items-end">
-                                  <div className="md:col-span-2">
-                                    <p className="text-xs text-muted-foreground">SKU</p>
-                                    <p className="font-medium">{row.sku || "-"}</p>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="text-xs text-muted-foreground">Name</p>
-                                    <p className="font-medium">{row.name || "-"}</p>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="text-xs text-muted-foreground">Batch</p>
-                                    <p className="font-medium">{row.batch_no || "-"}</p>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="mb-1 text-xs text-muted-foreground">Expiry Date</p>
-                                    <Input
-                                      type="date"
-                                      value={row.expiry_date}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, expiry_date: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-1">
-                                    <p className="mb-1 text-xs text-muted-foreground">Received Qty</p>
-                                    <Input
-                                      value={row.quantity}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, quantity: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-1">
-                                    <p className="mb-1 text-xs text-muted-foreground">Damaged Qty</p>
-                                    <Input
-                                      value={row.damaged_quantity}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, damaged_quantity: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="mb-1 text-xs text-muted-foreground">Unit Price</p>
-                                    <Input
-                                      value={row.unit_price}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, unit_price: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                              Select a purchase challan to load items for bill creation.
-                            </p>
-                          )}
-                        </TabsContent>
-                        <TabsContent value="direct" className="space-y-4">
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <Label>Vendor *</Label>
-                                <Button type="button" variant="outline" size="sm" onClick={() => setShowVendorCreate(true)} disabled={!canWritePurchase}>
-                                  + Add Vendor
-                                </Button>
-                              </div>
-                              <select
-                                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                                value={billVendorId}
-                                onChange={(e) => setBillVendorId(e.target.value)}
-                              >
-                                <option value="">{vendors.length ? "Select vendor" : "No vendors found"}</option>
-                                {vendors.map((vendor) => (
-                                  <option key={vendor.id} value={vendor.id}>
-                                    {vendor.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <Dialog open={showVendorCreate} onOpenChange={(open) => setShowVendorCreate(canWritePurchase ? open : false)}>
-                                <DialogContent className="sm:max-w-md">
-                                  <DialogHeader>
-                                    <DialogTitle>Add Vendor</DialogTitle>
-                                  </DialogHeader>
-                                  <div className="grid gap-3 md:grid-cols-2">
-                                    <div className="space-y-1">
-                                      <Label>Firm Name *</Label>
-                                      <Input
-                                        value={newVendorForm.firm_name}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, firm_name: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Type</Label>
-                                      <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={newVendorForm.purchase_type} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, purchase_type: e.target.value }))}>
-                                        <option value="CENTRAL">CENTRAL</option>
-                                        <option value="LOCAL">LOCAL</option>
-                                      </select>
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>GSTIN</Label>
-                                      <Input
-                                        value={newVendorForm.gstin}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>PAN</Label>
-                                      <Input value={newVendorForm.pan} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, pan: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Owner Name</Label>
-                                      <Input
-                                        value={newVendorForm.owner_name}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, owner_name: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Phone</Label>
-                                      <Input value={newVendorForm.phone} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, phone: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Alternate Phone</Label>
-                                      <Input
-                                        value={newVendorForm.alternate_phone}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, alternate_phone: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Email</Label>
-                                      <Input value={newVendorForm.email} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, email: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1 md:col-span-2">
-                                      <Label>Street</Label>
-                                      <Input value={newVendorForm.street} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, street: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>City</Label>
-                                      <Input value={newVendorForm.city} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, city: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>State</Label>
-                                      <Input value={newVendorForm.state} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, state: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Pincode</Label>
-                                      <Input value={newVendorForm.pincode} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, pincode: e.target.value }))} />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Bank Account Number</Label>
-                                      <Input
-                                        value={newVendorForm.bank_account_number}
-                                        onChange={(e) => setNewVendorForm((prev) => ({ ...prev, bank_account_number: e.target.value }))}
-                                      />
-                                    </div>
-                                  <div className="space-y-1 md:col-span-2">
-                                    <Label>IFSC Code</Label>
-                                    <Input value={newVendorForm.ifsc_code} onChange={(e) => setNewVendorForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} />
-                                  </div>
-                                  <div className="space-y-1 md:col-span-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <Label>Account Category</Label>
-                                      <Button type="button" variant="outline" size="sm" onClick={() => setOpenVendorCategoryDialog(true)}>
-                                        + Add Account Category
-                                      </Button>
-                                    </div>
-                                    <select
-                                      className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                                      value={(newVendorForm as typeof newVendorForm & { account_category_id?: string }).account_category_id || ""}
-                                      onChange={(e) => setNewVendorForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
-                                    >
-                                      <option value="">Optional</option>
-                                      {accountCategories.map((category) => (
-                                        <option key={category.id} value={category.id}>
-                                          {category.code} - {category.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                  <div className="space-y-2 md:col-span-2">
-                                    <Label>Linked Brands</Label>
-                                    <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
-                                      {brands.length ? brands.map((brand) => (
-                                        <label key={brand.id} className="flex items-center gap-2 text-sm">
-                                          <input
-                                            type="checkbox"
-                                            checked={newVendorForm.brand_ids.includes(brand.id)}
-                                            onChange={(e) =>
-                                              setNewVendorForm((prev) => ({
-                                                ...prev,
-                                                brand_ids: e.target.checked
-                                                  ? [...prev.brand_ids, brand.id]
-                                                  : prev.brand_ids.filter((id) => id !== brand.id),
-                                              }))
-                                            }
-                                          />
-                                          {brand.name}
-                                        </label>
-                                      )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
-                                    </div>
-                                  </div>
-                                </div>
-                                  <div className="pt-2">
-                                    <Button onClick={createInlineVendor} disabled={creatingVendor || !newVendorForm.firm_name.trim()}>
-                                      {creatingVendor ? "Adding..." : "Add Vendor"}
-                                    </Button>
-                                  </div>
-                                </DialogContent>
-                              </Dialog>
-                            </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <Label>Warehouse *</Label>
-                                <Button type="button" variant="outline" size="sm" onClick={() => setShowWarehouseCreate(true)} disabled={!canWritePurchase}>
-                                  + Add Warehouse
-                                </Button>
-                              </div>
-                              <select
-                                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                                value={billWarehouseId}
-                                onChange={(e) => setBillWarehouseId(e.target.value)}
-                              >
-                                <option value="">{warehouses.length ? "Select warehouse" : "No warehouses found"}</option>
-                                {warehouses.map((warehouse) => (
-                                  <option key={warehouse.id} value={warehouse.id}>
-                                    {warehouse.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <Dialog open={showWarehouseCreate} onOpenChange={(open) => setShowWarehouseCreate(canWritePurchase ? open : false)}>
-                                <DialogContent className="sm:max-w-md">
-                                  <DialogHeader>
-                                    <DialogTitle>Add Warehouse</DialogTitle>
-                                  </DialogHeader>
-                                  <div className="grid gap-3 md:grid-cols-2">
-                                    <div className="space-y-1">
-                                      <Label>Code *</Label>
-                                      <Input
-                                        value={newWarehouseForm.code}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, code: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Name *</Label>
-                                      <Input
-                                        value={newWarehouseForm.name}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, name: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1 md:col-span-2">
-                                      <Label>Street</Label>
-                                      <Input
-                                        value={newWarehouseForm.street}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, street: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>City</Label>
-                                      <Input
-                                        value={newWarehouseForm.city}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, city: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>State</Label>
-                                      <Input
-                                        value={newWarehouseForm.state}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, state: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Pincode</Label>
-                                      <Input
-                                        value={newWarehouseForm.pincode}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, pincode: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Latitude</Label>
-                                      <Input
-                                        value={newWarehouseForm.latitude}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, latitude: e.target.value }))}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label>Longitude</Label>
-                                      <Input
-                                        value={newWarehouseForm.longitude}
-                                        onChange={(e) => setNewWarehouseForm((prev) => ({ ...prev, longitude: e.target.value }))}
-                                      />
-                                    </div>
-                                  </div>
-                                  <div className="pt-2">
-                                    <Button
-                                      onClick={createInlineWarehouse}
-                                      disabled={creatingWarehouse || !newWarehouseForm.code.trim() || !newWarehouseForm.name.trim()}
-                                    >
-                                      {creatingWarehouse ? "Adding..." : "Add Warehouse"}
-                                    </Button>
-                                  </div>
-                                </DialogContent>
-                              </Dialog>
-                            </div>
-                            <div className="space-y-1">
-                              <Label>Rack</Label>
-                              <select
-                                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
-                                value={billRackId}
-                                onChange={(e) => setBillRackId(e.target.value)}
-                                disabled={!billWarehouseId}
-                              >
-                                <option value="">{billWarehouseId ? "Select rack (optional)" : "Select warehouse first"}</option>
-                                {billRacks.map((rack) => (
-                                  <option key={rack.id} value={rack.id}>
-                                    {rack.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="space-y-1">
-                              <Label>Bill Date *</Label>
-                              <Input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} />
-                            </div>
-                            <div className="space-y-1 md:col-span-2">
-                              <Label>Bill Number *</Label>
-                              <Input value={billNumber} onChange={(e) => setBillNumber(e.target.value)} />
-                            </div>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Add Products *</Label>
-                            <div className="flex gap-2">
-                              <Input
-                                value={billProductSearch}
-                                onChange={(e) => setBillProductSearch(e.target.value)}
-                                placeholder="Type first 3 letters of SKU, name or brand"
-                              />
-                              <Button type="button" variant="outline" disabled={!canWritePurchase} onClick={() => { setProductCreateMode("bill"); setShowProductCreate(true); }}>
-                                + Add Product
-                              </Button>
-                            </div>
-                            {normalizedBillProductSearch.length > 0 && normalizedBillProductSearch.length < 3 ? (
-                              <p className="text-xs text-muted-foreground">Enter at least 3 letters.</p>
-                            ) : null}
-                            {billSearchingProducts ? <p className="text-xs text-muted-foreground">Searching products...</p> : null}
-                            {billProductResults.length > 0 ? (
-                              <div className="max-h-56 overflow-y-auto rounded-md border">
-                                {billProductResults.map((product) => (
-                                  <div key={product.id} className="flex items-center justify-between border-b px-3 py-2 last:border-b-0">
-                                    <div className="min-w-0">
-                                      <p className="truncate text-sm font-medium">{product.sku || "-"}</p>
-                                      <p className="truncate text-xs text-muted-foreground">
-                                        {product.name || "-"}{product.brand ? ` • ${product.brand}` : ""}
-                                      </p>
-                                    </div>
-                                    <Button size="sm" variant="outline" onClick={() => addBillProduct(product)} disabled={!canWritePurchase}>
-                                      Add
-                                    </Button>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                            {showBillProductNoResults ? (
-                              <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">No results found.</p>
-                            ) : null}
-                          </div>
-
-                          {billItems.length > 0 ? (
-                            <div className="space-y-2">
-                              {billItems.map((row, index) => (
-                                <div key={`${row.product_id}-${index}`} className="grid gap-2 rounded-md border p-3 text-sm md:grid-cols-12 md:items-end">
-                                  <div className="md:col-span-2">
-                                    <p className="text-xs text-muted-foreground">SKU</p>
-                                    <p className="font-medium">{row.sku || "-"}</p>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="text-xs text-muted-foreground">Name</p>
-                                    <p className="font-medium">{row.name || "-"}</p>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="mb-1 text-xs text-muted-foreground">Batch *</p>
-                                    <Input
-                                      value={row.batch_no}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, batch_no: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <p className="mb-1 text-xs text-muted-foreground">Expiry Date</p>
-                                    <Input
-                                      type="date"
-                                      value={row.expiry_date}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, expiry_date: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-1">
-                                    <p className="mb-1 text-xs text-muted-foreground">Received Qty *</p>
-                                    <Input
-                                      value={row.quantity}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, quantity: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-1">
-                                    <p className="mb-1 text-xs text-muted-foreground">Damaged Qty</p>
-                                    <Input
-                                      value={row.damaged_quantity}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, damaged_quantity: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-1">
-                                    <p className="mb-1 text-xs text-muted-foreground">Unit Price *</p>
-                                    <Input
-                                      value={row.unit_price}
-                                      onChange={(e) =>
-                                        setBillItems((prev) =>
-                                          prev.map((item, idx) => (idx === index ? { ...item, unit_price: e.target.value } : item))
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                  <div className="md:col-span-1">
-                                    <p className="mb-1 text-xs text-muted-foreground">Action</p>
-                                    <Button size="sm" variant="outline" onClick={() => removeBillItem(index)} disabled={!canWritePurchase}>
-                                      Remove
-                                    </Button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                              Search and add products to create a direct purchase bill.
-                            </p>
-                          )}
-                        </TabsContent>
-                      </Tabs>
-
-                      {billDialogMode !== "view" ? (
-                        <Button onClick={savePurchaseBill} disabled={!canWritePurchase || !canCreateBill || submittingBill}>
-                          {submittingBill ? (editingBillId ? "Saving..." : "Creating...") : (editingBillId ? "Save Purchase Bill" : "Create Purchase Bill")}
-                        </Button>
-                      ) : null}
-                      </fieldset>
-                    </div>
-                  </DialogContent>
                 </Dialog>
               </div>
             </div>
@@ -2684,13 +1801,13 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
                             {canReadPurchase ? (
-                              <Button size="sm" variant="outline" onClick={() => openBillEditor(bill.id, "view")} disabled={loadingEditBillId === bill.id}>
-                                {loadingEditBillId === bill.id ? "Loading..." : "View"}
+                              <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setEditingId(bill.id); setShowWorkspace(true); }}>
+                                View
                               </Button>
                             ) : null}
                             {canWritePurchase ? (
-                              <Button size="sm" variant="outline" onClick={() => openBillEditor(bill.id, "edit")} disabled={loadingEditBillId === bill.id}>
-                                {loadingEditBillId === bill.id ? "Loading..." : "Edit"}
+                              <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setEditingId(bill.id); setShowWorkspace(true); }}>
+                                Edit
                               </Button>
                             ) : null}
                             {canWritePurchase ? (

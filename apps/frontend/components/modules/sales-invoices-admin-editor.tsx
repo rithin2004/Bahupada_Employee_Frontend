@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
+import { asArray, asObject, fetchBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { invalidateByPrefixes } from "@/lib/state/api-cache-slice";
 import { usePersistedPage, usePersistedUiState } from "@/lib/state/pagination-hooks";
 import { store } from "@/lib/state/store";
@@ -28,6 +28,29 @@ type FinalInvoiceRow = {
   delivery_status: string;
   item_count: number;
   created_at: string;
+};
+
+type DirectCustomerOption = {
+  id: string;
+  name: string;
+};
+
+type DirectWarehouseOption = {
+  id: string;
+  name: string;
+};
+
+type DirectProductOption = {
+  id: string;
+  sku: string;
+  name: string;
+};
+
+type DirectBillItem = {
+  product_id: string;
+  sku: string;
+  name: string;
+  quantity: string;
 };
 
 type DeliveryVehicleOption = {
@@ -102,6 +125,11 @@ type WorkflowBatchSummary = {
   invoices: WorkflowInvoice[];
 };
 
+type SalesInvoicesAdminEditorProps = {
+  initialSalesOrderId?: string;
+  onConsumedInitial?: () => void;
+};
+
 const DEFAULT_PAGE_SIZE = 50;
 const defaultUiState = {
   tab: "create",
@@ -144,12 +172,35 @@ function formatPrice(value: string | number): string {
   return Number.isFinite(numeric) ? numeric.toFixed(2) : "0.00";
 }
 
-export function SalesInvoicesAdminEditor() {
+export function SalesInvoicesAdminEditor({ initialSalesOrderId, onConsumedInitial }: SalesInvoicesAdminEditorProps) {
   const { state: persistedUiState, setState: setPersistedUiState } = usePersistedUiState(
     "sales-invoices-admin-ui",
     defaultUiState
   );
   const [tab, setTab] = useState(persistedUiState.tab);
+  const [createMode, setCreateMode] = useState<"challan" | "direct">("challan");
+
+  const [directCustomerId, setDirectCustomerId] = useState("");
+  const [directWarehouseId, setDirectWarehouseId] = useState("");
+  const [directInvoiceDate, setDirectInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [directProductSearch, setDirectProductSearch] = useState("");
+  const [directProductResults, setDirectProductResults] = useState<DirectProductOption[]>([]);
+  const [directItems, setDirectItems] = useState<DirectBillItem[]>([]);
+  const [directLoadingProducts, setDirectLoadingProducts] = useState(false);
+  const [directCreating, setDirectCreating] = useState(false);
+  const [directCustomers, setDirectCustomers] = useState<DirectCustomerOption[]>([]);
+  const [directWarehouses, setDirectWarehouses] = useState<DirectWarehouseOption[]>([]);
+  const [showDirectCustomerCreate, setShowDirectCustomerCreate] = useState(false);
+  const [creatingDirectCustomer, setCreatingDirectCustomer] = useState(false);
+  const [newCustomerForm, setNewCustomerForm] = useState({
+    name: "",
+    phone: "",
+    gstin: "",
+    street_address_1: "",
+    city: "",
+    state: "",
+    pincode: "",
+  });
 
   const [invoiceRows, setInvoiceRows] = useState<FinalInvoiceRow[]>([]);
   const [invoiceLoading, setInvoiceLoading] = useState(true);
@@ -245,6 +296,43 @@ export function SalesInvoicesAdminEditor() {
     tab,
   ]);
 
+  useEffect(() => {
+    if (initialSalesOrderId) {
+      setTab("create");
+      setCreateMode("challan");
+    }
+  }, [initialSalesOrderId]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const [customersRes, warehousesRes] = await Promise.all([
+          fetchBackendFresh("/masters/customers?page=1&page_size=200"),
+          fetchBackendFresh("/masters/warehouses?page=1&page_size=200"),
+        ]);
+        if (!active) return;
+        const customers = asArray(customersRes.items ?? customersRes).map((row) => ({
+          id: String(row.id ?? ""),
+          name: String(row.name ?? row.display_name ?? "-"),
+        }));
+        const warehouses = asArray(warehousesRes.items ?? warehousesRes).map((row) => ({
+          id: String(row.id ?? ""),
+          name: String(row.name ?? "-"),
+        }));
+        setDirectCustomers(customers);
+        setDirectWarehouses(warehouses);
+      } catch {
+        if (!active) return;
+        setDirectCustomers([]);
+        setDirectWarehouses([]);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const loadInvoices = useCallback(async (page: number, searchText: string, size = pageSize) => {
     if (!canReadSales) {
       setInvoiceRows([]);
@@ -287,6 +375,133 @@ export function SalesInvoicesAdminEditor() {
       setInvoiceLoading(false);
     }
   }, [pageSize, canReadSales]);
+
+  useEffect(() => {
+    const term = directProductSearch.trim();
+    if (term.length < 3) {
+      setDirectProductResults([]);
+      return;
+    }
+    let active = true;
+    setDirectLoadingProducts(true);
+    void (async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("search", term);
+        params.set("page", "1");
+        params.set("page_size", "30");
+        const res = asObject(await fetchBackendFresh(`/masters/products?${params.toString()}`));
+        const items = asArray(res.items).map((row) => ({
+          id: String(row.id ?? ""),
+          sku: String(row.sku ?? "-"),
+          name: String(row.name ?? "-"),
+        }));
+        if (active) {
+          setDirectProductResults(items);
+        }
+      } catch {
+        if (active) {
+          setDirectProductResults([]);
+        }
+      } finally {
+        if (active) {
+          setDirectLoadingProducts(false);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [directProductSearch]);
+
+  function addDirectItem(product: DirectProductOption) {
+    setDirectItems((prev) => {
+      const existing = prev.find((row) => row.product_id === product.id);
+      if (existing) {
+        return prev.map((row) =>
+          row.product_id === product.id ? { ...row, quantity: String(Number(row.quantity || "0") + 1) } : row
+        );
+      }
+      return [...prev, { product_id: product.id, sku: product.sku, name: product.name, quantity: "1" }];
+    });
+  }
+
+  function removeDirectItem(index: number) {
+    setDirectItems((prev) => prev.filter((_, idx) => idx !== index));
+  }
+
+  async function createDirectInvoice() {
+    if (!canWriteSales || directCreating) return;
+    if (!directCustomerId || !directWarehouseId || directItems.length === 0) {
+      toast.error("Customer, warehouse and at least one item are required.");
+      return;
+    }
+    setDirectCreating(true);
+    try {
+      await postBackend("/sales/sales-final-invoices/direct", {
+        customer_id: directCustomerId,
+        warehouse_id: directWarehouseId,
+        invoice_date: directInvoiceDate,
+        items: directItems.map((item) => ({
+          product_id: item.product_id,
+          quantity: Number(item.quantity || 0),
+        })),
+      });
+      toast.success("Direct sales bill created.");
+      setDirectItems([]);
+      setDirectProductSearch("");
+      setDirectProductResults([]);
+      setCurrentPage(1);
+      void loadInvoices(1, invoiceSearch, pageSize);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create direct sales bill");
+    } finally {
+      setDirectCreating(false);
+    }
+  }
+
+  async function createDirectCustomer() {
+    if (!newCustomerForm.name.trim()) {
+      toast.error("Customer name is required.");
+      return;
+    }
+    setCreatingDirectCustomer(true);
+    try {
+      const payload = {
+        name: newCustomerForm.name.trim(),
+        phone: newCustomerForm.phone.trim() || null,
+        gstin: newCustomerForm.gstin.trim() || null,
+        street_address_1: newCustomerForm.street_address_1.trim() || null,
+        city: newCustomerForm.city.trim() || null,
+        state: newCustomerForm.state.trim() || null,
+        pincode: newCustomerForm.pincode.trim() || null,
+      };
+      const created = await postBackend("/masters/customers", payload);
+      const newId = String(created?.id ?? "");
+      setDirectCustomers((prev) => [
+        ...prev,
+        { id: newId, name: String(created?.name ?? payload.name) },
+      ]);
+      if (newId) {
+        setDirectCustomerId(newId);
+      }
+      setNewCustomerForm({
+        name: "",
+        phone: "",
+        gstin: "",
+        street_address_1: "",
+        city: "",
+        state: "",
+        pincode: "",
+      });
+      setShowDirectCustomerCreate(false);
+      toast.success("Customer created.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create customer");
+    } finally {
+      setCreatingDirectCustomer(false);
+    }
+  }
 
   const loadWorkflowBatches = useCallback(async () => {
     if (!canReadDelivery) {
@@ -591,7 +806,7 @@ export function SalesInvoicesAdminEditor() {
         <Card>
           <CardContent className="pt-6">
             <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-              You do not have access to the Sales Invoices module.
+              You do not have access to the Sales Bills module.
             </div>
           </CardContent>
         </Card>
@@ -599,7 +814,7 @@ export function SalesInvoicesAdminEditor() {
       {!permissionsLoaded || canReadSales ? (
       <Card>
         <CardHeader>
-          <CardTitle>Sales Invoices</CardTitle>
+          <CardTitle>Sales Bills</CardTitle>
         </CardHeader>
         <CardContent>
         {permissionsLoaded && canReadSales && !canWriteSales ? (
@@ -620,17 +835,147 @@ export function SalesInvoicesAdminEditor() {
         <Tabs value={tab} onValueChange={setTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="create">Create Invoice</TabsTrigger>
-            <TabsTrigger value="invoices">Sales Invoices</TabsTrigger>
+            <TabsTrigger value="invoices">Sales Bills</TabsTrigger>
           </TabsList>
 
           <TabsContent value="create" className="space-y-4">
-            <SalesEntryWorkspace
-              canWriteSales={canWriteSales}
-              onCreated={() => {
-                setCurrentPage(1);
-                void loadInvoices(1, invoiceSearch, pageSize);
-              }}
-            />
+            <Tabs value={createMode} onValueChange={(value) => setCreateMode(value === "direct" ? "direct" : "challan")}>
+              <TabsList>
+                <TabsTrigger value="challan">From Sales Challan</TabsTrigger>
+                <TabsTrigger value="direct">Direct Sales Bill</TabsTrigger>
+              </TabsList>
+              <TabsContent value="challan" className="space-y-4">
+                <SalesEntryWorkspace
+                  canWriteSales={canWriteSales}
+                  initialOrderId={initialSalesOrderId}
+                  onConsumedInitial={onConsumedInitial}
+                  onCreated={() => {
+                    setCurrentPage(1);
+                    void loadInvoices(1, invoiceSearch, pageSize);
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="direct" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Direct Sales Bill</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="space-y-1 md:col-span-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label>Customer *</Label>
+                          <Button size="sm" variant="outline" type="button" onClick={() => setShowDirectCustomerCreate(true)}>
+                            + Add Customer
+                          </Button>
+                        </div>
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={directCustomerId}
+                          onChange={(e) => setDirectCustomerId(e.target.value)}
+                        >
+                          <option value="">{directCustomers.length ? "Select customer" : "No customers found"}</option>
+                          {directCustomers.map((customer) => (
+                            <option key={customer.id} value={customer.id}>
+                              {customer.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Warehouse *</Label>
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={directWarehouseId}
+                          onChange={(e) => setDirectWarehouseId(e.target.value)}
+                        >
+                          <option value="">{directWarehouses.length ? "Select warehouse" : "No warehouses found"}</option>
+                          {directWarehouses.map((warehouse) => (
+                            <option key={warehouse.id} value={warehouse.id}>
+                              {warehouse.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Invoice Date *</Label>
+                        <Input type="date" value={directInvoiceDate} onChange={(e) => setDirectInvoiceDate(e.target.value)} />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Add Products *</Label>
+                      <Input
+                        value={directProductSearch}
+                        onChange={(e) => setDirectProductSearch(e.target.value)}
+                        placeholder="Type first 3 letters of SKU or name"
+                      />
+                      {directLoadingProducts ? <p className="text-xs text-muted-foreground">Searching products...</p> : null}
+                      {directProductResults.length > 0 ? (
+                        <div className="max-h-52 overflow-y-auto rounded-md border">
+                          {directProductResults.map((product) => (
+                            <div key={product.id} className="flex items-center justify-between border-b px-3 py-2 last:border-b-0">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium">{product.sku || "-"}</p>
+                                <p className="truncate text-xs text-muted-foreground">{product.name || "-"}</p>
+                              </div>
+                              <Button size="sm" variant="outline" onClick={() => addDirectItem(product)}>
+                                Add
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {directItems.length > 0 ? (
+                      <div className="space-y-2">
+                        {directItems.map((row, index) => (
+                          <div key={`${row.product_id}-${index}`} className="grid gap-2 rounded-md border p-3 text-sm md:grid-cols-12 md:items-end">
+                            <div className="md:col-span-4">
+                              <p className="text-xs text-muted-foreground">SKU</p>
+                              <p className="font-medium">{row.sku || "-"}</p>
+                            </div>
+                            <div className="md:col-span-4">
+                              <p className="text-xs text-muted-foreground">Name</p>
+                              <p className="font-medium">{row.name || "-"}</p>
+                            </div>
+                            <div className="md:col-span-2">
+                              <p className="mb-1 text-xs text-muted-foreground">Quantity</p>
+                              <Input
+                                value={row.quantity}
+                                onChange={(e) =>
+                                  setDirectItems((prev) =>
+                                    prev.map((item, idx) => (idx === index ? { ...item, quantity: e.target.value } : item))
+                                  )
+                                }
+                              />
+                            </div>
+                            <div className="md:col-span-2">
+                              <p className="mb-1 text-xs text-muted-foreground">Action</p>
+                              <Button size="sm" variant="outline" onClick={() => removeDirectItem(index)}>
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                        Search and add products to create a direct sales bill.
+                      </p>
+                    )}
+
+                    <Button
+                      onClick={() => void createDirectInvoice()}
+                      disabled={!canWriteSales || directCreating || !directCustomerId || !directWarehouseId || directItems.length === 0}
+                    >
+                      {directCreating ? "Creating..." : "Create Direct Bill"}
+                    </Button>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
           </TabsContent>
 
           <TabsContent value="invoices" className="space-y-3">
@@ -763,7 +1108,7 @@ export function SalesInvoicesAdminEditor() {
                   {!invoiceLoading && filteredInvoiceRows.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={8} className="text-center text-muted-foreground">
-                        No sales invoices found for the selected filter.
+                        No sales bills found for the selected filter.
                       </TableCell>
                     </TableRow>
                   ) : null}
@@ -920,8 +1265,51 @@ export function SalesInvoicesAdminEditor() {
             ) : null}
           </TabsContent>
         </Tabs>
-        </CardContent>
-      </Card>
+
+        <Dialog open={showDirectCustomerCreate} onOpenChange={setShowDirectCustomerCreate}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Add Customer</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-1 md:col-span-2">
+                <Label>Customer Name *</Label>
+                <Input value={newCustomerForm.name} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, name: e.target.value }))} />
+              </div>
+              <div className="space-y-1">
+                <Label>Phone</Label>
+                <Input value={newCustomerForm.phone} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, phone: e.target.value }))} />
+              </div>
+              <div className="space-y-1">
+                <Label>GSTIN</Label>
+                <Input value={newCustomerForm.gstin} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, gstin: e.target.value }))} />
+              </div>
+              <div className="space-y-1 md:col-span-2">
+                <Label>Street</Label>
+                <Input value={newCustomerForm.street_address_1} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, street_address_1: e.target.value }))} />
+              </div>
+              <div className="space-y-1">
+                <Label>City</Label>
+                <Input value={newCustomerForm.city} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, city: e.target.value }))} />
+              </div>
+              <div className="space-y-1">
+                <Label>State</Label>
+                <Input value={newCustomerForm.state} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, state: e.target.value }))} />
+              </div>
+              <div className="space-y-1">
+                <Label>Pincode</Label>
+                <Input value={newCustomerForm.pincode} onChange={(e) => setNewCustomerForm((prev) => ({ ...prev, pincode: e.target.value }))} />
+              </div>
+            </div>
+            <div className="pt-2">
+              <Button onClick={() => void createDirectCustomer()} disabled={creatingDirectCustomer || !newCustomerForm.name.trim()}>
+                {creatingDirectCustomer ? "Adding..." : "Add Customer"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
       ) : null}
 
       <Dialog open={workflowDialogOpen} onOpenChange={setWorkflowDialogOpen}>

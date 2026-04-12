@@ -48,6 +48,8 @@ from app.schemas.sales import (
     SalesFinalInvoiceCreate,
     SalesFinalInvoiceFromOrderCreate,
     SalesFinalInvoiceEditRequest,
+    SalesFinalInvoiceItemIn,
+    SalesDirectBillCreate,
     SalesOrderPrepareCreate,
     SalesOrderCreate,
     SalesOrderPreviewResponse,
@@ -1003,6 +1005,82 @@ async def create_final_invoice_from_sales_order(
     await db.commit()
     await db.refresh(final_invoice)
     return jsonable_encoder(final_invoice)
+
+
+@router.post("/sales-final-invoices/direct", dependencies=[Depends(require_permission("sales", "create"))])
+async def create_direct_final_invoice(
+    payload: SalesDirectBillCreate,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    customer = await db.get(Customer, payload.customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
+    if invoice_number is None:
+        invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+
+    order = SalesOrder(
+        warehouse_id=payload.warehouse_id,
+        customer_id=payload.customer_id,
+        salesman_id=None,
+        invoice_number=invoice_number,
+        challan_date=payload.invoice_date,
+        source=OrderSource.ADMIN,
+        status="pending",
+    )
+    db.add(order)
+    await db.flush()
+
+    for item in payload.items:
+        product = await db.get(Product, item.product_id)
+        if product is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        unit_price, _source = await resolve_price_for_customer(db, customer, product)
+        db.add(
+            SalesOrderItem(
+                sales_order_id=order.id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                unit_price=unit_price,
+                selling_price=unit_price,
+            )
+        )
+
+    await db.flush()
+    try:
+        await apply_schemes_to_sales_order(db, order, customer)
+        await db.flush()
+        await release_reserved_stock_for_sales_order(db, order)
+        await reserve_stock_fefo_for_sales_order(
+            db,
+            order,
+            allow_negative_override=True,
+            override_reason="AUTO_NEGATIVE_OVERRIDE",
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    order_items_res = await db.execute(
+        select(SalesOrderItem).where(SalesOrderItem.sales_order_id == order.id)
+    )
+    order_items = order_items_res.scalars().all()
+    if not order_items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sales order has no pending items")
+
+    invoice_payload = SalesFinalInvoiceFromOrderCreate(
+        sales_order_id=order.id,
+        invoice_number=payload.invoice_number,
+        invoice_date=payload.invoice_date,
+        items=[
+            SalesFinalInvoiceItemIn(sales_order_item_id=item.id, quantity=item.quantity)
+            for item in order_items
+        ],
+    )
+    response = await create_final_invoice_from_sales_order(invoice_payload, db, _auth)
+    return response
 
 
 @router.post("/sales-final-invoices/{sales_final_invoice_id}/edit", dependencies=[Depends(require_permission("sales", "update"))])

@@ -26,6 +26,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 type SalesOrderRow = {
   id: string;
   invoice_number: string;
+  customer_id: string;
   customer_name: string;
   warehouse_name: string;
   source: string;
@@ -87,12 +88,17 @@ type PreviewItem = {
   warehouse_name: string;
 };
 
+type SalesOrdersAdminEditorProps = {
+  onConvertToBill?: (salesOrderId: string) => void;
+};
+
 const DEFAULT_PAGE_SIZE = 50;
 
 function mapRow(row: Record<string, unknown>): SalesOrderRow {
   return {
     id: String(row.id ?? ""),
     invoice_number: String(row.invoice_number ?? "-"),
+    customer_id: String(row.customer_id ?? ""),
     customer_name: String(row.customer_name ?? "-"),
     warehouse_name: String(row.warehouse_name ?? "-"),
     source: String(row.source ?? "-"),
@@ -128,7 +134,7 @@ function formatPrice(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00";
 }
 
-export function SalesOrdersAdminEditor() {
+export function SalesOrdersAdminEditor({ onConvertToBill }: SalesOrdersAdminEditorProps) {
   const [rows, setRows] = useState<SalesOrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
@@ -604,7 +610,7 @@ export function SalesOrdersAdminEditor() {
       setRefreshKey(Date.now());
       setOpenCreateDialog(false);
       resetCreateDialogState();
-      toast.success("Sales order created successfully.");
+      toast.success("Sales challan created successfully.");
     } catch (error) {
       const message = `Order creation failed: ${error instanceof Error ? error.message : "Unknown error"}`;
       setCreateFeedback(message);
@@ -618,7 +624,7 @@ export function SalesOrdersAdminEditor() {
     <>
       <Card>
         <CardHeader>
-          <CardTitle>Sales Orders</CardTitle>
+          <CardTitle>Sales Challans</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
@@ -659,7 +665,7 @@ export function SalesOrdersAdminEditor() {
               void loadCreateReferences();
             }}
           >
-            Create Sales Order
+            Create Sales Challan
           </Button>
         </div>
 
@@ -700,7 +706,7 @@ export function SalesOrdersAdminEditor() {
               {!loading && rows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center text-muted-foreground">
-                    No sales orders found.
+                    No sales challans found.
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -721,9 +727,16 @@ export function SalesOrdersAdminEditor() {
                     <TableCell className="truncate" title={row.status}>{row.status}</TableCell>
                     <TableCell className="whitespace-nowrap">{formatDate(row.created_at)}</TableCell>
                     <TableCell>
-                      <Button size="sm" variant="outline" onClick={() => void openViewDialog(row)}>
-                        View
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => void openViewDialog(row)}>
+                          View
+                        </Button>
+                        {onConvertToBill ? (
+                          <Button size="sm" variant="outline" onClick={() => onConvertToBill(row.id)}>
+                            Convert to Bill
+                          </Button>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -762,7 +775,7 @@ export function SalesOrdersAdminEditor() {
       >
         <DialogContent className="max-h-[88vh] !w-[88vw] !max-w-5xl overflow-y-auto border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
           <DialogHeader>
-            <DialogTitle>Create Sales Order</DialogTitle>
+            <DialogTitle>Create Sales Challan</DialogTitle>
             <DialogDescription>Select customer, add stock items, and create a sales order using the same flow as customer ordering.</DialogDescription>
           </DialogHeader>
           {createFeedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{createFeedback}</p> : null}
@@ -953,7 +966,7 @@ export function SalesOrdersAdminEditor() {
                 </div>
               </div>
               <Button onClick={() => void createAdminSalesOrder()} disabled={placingOrder || cartItems.length === 0 || !selectedCustomerId}>
-                {placingOrder ? "Creating..." : "Create Sales Order"}
+                {placingOrder ? "Creating..." : "Create Sales Challan"}
               </Button>
             </div>
           </div>

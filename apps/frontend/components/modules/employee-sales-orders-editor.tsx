@@ -511,7 +511,7 @@ export function EmployeeSalesOrdersEditor() {
                 void loadCreateReferences();
               }}
             >
-              Create Sales Order
+              Create Sales Challan
             </Button>
           </div>
         </CardHeader>
@@ -570,7 +570,7 @@ export function EmployeeSalesOrdersEditor() {
       >
         <DialogContent className="max-h-[88vh] !w-[88vw] !max-w-5xl overflow-y-auto border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
           <DialogHeader>
-            <DialogTitle>Create Sales Order</DialogTitle>
+            <DialogTitle>Create Sales Challan</DialogTitle>
             <DialogDescription>Salesman can create orders using the same stock-based flow as admin.</DialogDescription>
           </DialogHeader>
           {createFeedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{createFeedback}</p> : null}
@@ -758,7 +758,7 @@ export function EmployeeSalesOrdersEditor() {
                 </div>
               </div>
               <Button onClick={() => void createSalesOrder()} disabled={placingOrder || cartItems.length === 0 || !selectedCustomerId}>
-                {placingOrder ? "Creating..." : "Create Sales Order"}
+                {placingOrder ? "Creating..." : "Create Sales Challan"}
               </Button>
             </div>
           </div>

@@ -17,12 +17,12 @@ type WarehouseOption = { id: string; name: string; code: string; state: string |
 type LookupOption = { id: string; name: string };
 type SubCategoryOption = LookupOption & { category_id?: string };
 type AccountCategoryOption = { id: string; code: string; name: string };
-type VendorSummary = {
-  vendor_id: string;
-  vendor_name: string;
+type CustomerSummary = {
+  customer_id: string;
+  customer_name: string;
   address_lines: string[];
   brand_names: string[];
-  purchase_type: "LOCAL" | "CENTRAL" | null;
+  sales_type: "LOCAL" | "CENTRAL" | null;
   city: string | null;
   state: string | null;
   pincode: string | null;
@@ -31,12 +31,12 @@ type VendorSummary = {
   phone: string | null;
   area: string | null;
   route: string | null;
-  annual_purchase_amount: string;
-  monthly_purchase_amount: string;
+  annual_sales_amount: string;
+  monthly_sales_amount: string;
   balance: string;
   balance_side: string;
-  last_purchase_date: string | null;
-  last_payment_date: string | null;
+  last_sale_date: string | null;
+  last_receipt_date: string | null;
   last_bills: Array<{ bill_number: string; bill_date: string; total_amount: string }>;
   open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number }>;
 };
@@ -94,10 +94,10 @@ type ProductEditForm = {
 
 type UnitOption = { id: string; unit_code: string; unit_name: string };
 type HsnOption = { id: string; hsn_code: string; gst_percent: string };
-type VendorCreateForm = {
+type CustomerCreateForm = {
   firm_name: string;
   brand_ids: string[];
-  purchase_type: "LOCAL" | "CENTRAL";
+  sales_type: "LOCAL" | "CENTRAL";
   gstin: string;
   pan: string;
   owner_name: string;
@@ -156,10 +156,10 @@ const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   weight_in_grams: "",
   tax_percent: "",
 };
-const EMPTY_VENDOR_FORM: VendorCreateForm = {
+const EMPTY_CUSTOMER_FORM: CustomerCreateForm = {
   firm_name: "",
   brand_ids: [],
-  purchase_type: "CENTRAL",
+  sales_type: "CENTRAL",
   gstin: "",
   pan: "",
   owner_name: "",
@@ -257,9 +257,9 @@ function makeLine(): LineDraft {
 type LineField = "product" | "quantity1" | "quantity2" | "quantity3" | "mrp" | "rateValue" | "rateUnitLevel" | "discountPercent" | "discountLumpsum";
 const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "quantity1", "mrp", "rateValue", "rateUnitLevel", "discountPercent", "discountLumpsum"];
 const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
-const VENDOR_CREATE_FIELD_ORDER = [
+const CUSTOMER_CREATE_FIELD_ORDER = [
   "firm_name",
-  "purchase_type",
+  "sales_type",
   "gstin",
   "pan",
   "owner_name",
@@ -320,11 +320,11 @@ function resolveFieldForLine(line: LineDraft | null, preferred: LineField): Line
   return order[0] ?? "product";
 }
 
-function deriveTaxType(warehouseState?: string | null, vendorState?: string | null) {
-  return (warehouseState || "").trim().toUpperCase() === (vendorState || "").trim().toUpperCase() ? "LOCAL" : "CENTRAL";
+function deriveTaxType(warehouseState?: string | null, customerState?: string | null) {
+  return (warehouseState || "").trim().toUpperCase() === (customerState || "").trim().toUpperCase() ? "LOCAL" : "CENTRAL";
 }
 
-function derivePurchaseTypeFromGstin(gstin: string) {
+function deriveSalesTypeFromGstin(gstin: string) {
   const normalized = gstin.trim().toUpperCase();
   if (normalized.length < 2) {
     return "CENTRAL" as const;
@@ -378,13 +378,13 @@ function roundCurrency(value: number) {
   return Math.round(value);
 }
 
-function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
+function mapCustomerSummary(row: Record<string, unknown>): CustomerSummary {
   return {
-    vendor_id: String(row.vendor_id ?? ""),
-    vendor_name: String(row.vendor_name ?? ""),
+    customer_id: String(row.customer_id ?? ""),
+    customer_name: String(row.customer_name ?? ""),
     address_lines: Array.isArray(row.address_lines) ? row.address_lines.map((item) => String(item)) : [],
     brand_names: asArray(row.brand_names).map((item) => String(item)),
-    purchase_type: row.purchase_type === "LOCAL" ? "LOCAL" : row.purchase_type === "CENTRAL" ? "CENTRAL" : null,
+    sales_type: row.sales_type === "LOCAL" ? "LOCAL" : row.sales_type === "CENTRAL" ? "CENTRAL" : null,
     city: row.city ? String(row.city) : null,
     state: row.state ? String(row.state) : null,
     pincode: row.pincode ? String(row.pincode) : null,
@@ -393,12 +393,12 @@ function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
     phone: row.phone ? String(row.phone) : null,
     area: row.area ? String(row.area) : null,
     route: row.route ? String(row.route) : null,
-    annual_purchase_amount: String(row.annual_purchase_amount ?? "0"),
-    monthly_purchase_amount: String(row.monthly_purchase_amount ?? "0"),
+    annual_sales_amount: String(row.annual_sales_amount ?? "0"),
+    monthly_sales_amount: String(row.monthly_sales_amount ?? "0"),
     balance: String(row.balance ?? "0"),
     balance_side: String(row.balance_side ?? "CR"),
-    last_purchase_date: row.last_purchase_date ? String(row.last_purchase_date) : null,
-  last_payment_date: row.last_payment_date ? String(row.last_payment_date) : null,
+    last_sale_date: row.last_sale_date ? String(row.last_sale_date) : null,
+  last_receipt_date: row.last_receipt_date ? String(row.last_receipt_date) : null,
   last_bills: asArray(row.last_bills).map((bill) => ({
       bill_number: String(bill.bill_number ?? ""),
       bill_date: String(bill.bill_date ?? ""),
@@ -446,15 +446,24 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
   };
 }
 
-type PurchaseEntryWorkspaceProps = {
+type SalesBillWorkspaceProps = {
   onSaved?: () => void;
   onClose?: () => void;
   initialId?: string;
   sourceChallanId?: string;
   mode?: "bill" | "challan";
+  /** When false, save is disabled (e.g. read-only sales permission). */
+  canWriteSales?: boolean;
 };
 
-export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChallanId, mode = "bill" }: PurchaseEntryWorkspaceProps) {
+export function SalesBillWorkspace({
+  onSaved,
+  onClose,
+  initialId,
+  sourceChallanId,
+  mode = "bill",
+  canWriteSales = true,
+}: SalesBillWorkspaceProps) {
   const [loading, setLoading] = useState(true);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
@@ -473,11 +482,11 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const [freightAmount, setFreightAmount] = useState("0");
   const [notes, setNotes] = useState("");
   const [entryNumber, setEntryNumber] = useState("");
-  const [vendorSummary, setVendorSummary] = useState<VendorSummary | null>(null);
-  const [vendorSearchOpen, setVendorSearchOpen] = useState(false);
-  const [vendorSearch, setVendorSearch] = useState("");
-  const [vendorResults, setVendorResults] = useState<VendorSummary[]>([]);
-  const [vendorIndex, setVendorIndex] = useState(0);
+  const [customerSummary, setCustomerSummary] = useState<CustomerSummary | null>(null);
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerResults, setCustomerResults] = useState<CustomerSummary[]>([]);
+  const [customerIndex, setCustomerIndex] = useState(0);
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [productResults, setProductResults] = useState<ProductSummary[]>([]);
@@ -496,8 +505,8 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const [brandOptions, setBrandOptions] = useState<LookupOption[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<LookupOption[]>([]);
   const [subCategoryOptions, setSubCategoryOptions] = useState<SubCategoryOption[]>([]);
-  const [vendorCategoryOptions, setVendorCategoryOptions] = useState<AccountCategoryOption[]>([]);
-  const [vendorCreateOpen, setVendorCreateOpen] = useState(false);
+  const [customerCategoryOptions, setCustomerCategoryOptions] = useState<AccountCategoryOption[]>([]);
+  const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
   const [productCreateOpen, setProductCreateOpen] = useState(false);
   const [quickCreateType, setQuickCreateType] = useState<"" | "brand" | "category" | "subCategory" | "unit" | "hsn">("");
   const [quickCreating, setQuickCreating] = useState(false);
@@ -506,12 +515,12 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const [quickDescription, setQuickDescription] = useState("");
   const [quickGst, setQuickGst] = useState("0");
   const [quickCategoryId, setQuickCategoryId] = useState("");
-  const [vendorCategoryCreateOpen, setVendorCategoryCreateOpen] = useState(false);
-  const [creatingVendorCategory, setCreatingVendorCategory] = useState(false);
-  const [vendorCategoryForm, setVendorCategoryForm] = useState({ code: "", name: "", description: "" });
-  const [creatingVendor, setCreatingVendor] = useState(false);
+  const [customerCategoryCreateOpen, setCustomerCategoryCreateOpen] = useState(false);
+  const [creatingCustomerCategory, setCreatingCustomerCategory] = useState(false);
+  const [customerCategoryForm, setCustomerCategoryForm] = useState({ code: "", name: "", description: "" });
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [creatingProduct, setCreatingProduct] = useState(false);
-  const [vendorCreateForm, setVendorCreateForm] = useState<VendorCreateForm>({ ...EMPTY_VENDOR_FORM });
+  const [customerCreateForm, setCustomerCreateForm] = useState<CustomerCreateForm>({ ...EMPTY_CUSTOMER_FORM });
   const [productCreateForm, setProductCreateForm] = useState<ProductCreateForm>({ ...EMPTY_PRODUCT_FORM });
   const [productTargetRow, setProductTargetRow] = useState(0);
   const billDateRef = useRef<HTMLInputElement | null>(null);
@@ -524,13 +533,13 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const freightRef = useRef<HTMLInputElement | null>(null);
   const notesRef = useRef<HTMLTextAreaElement | null>(null);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
-  const vendorSearchRef = useRef<HTMLInputElement | null>(null);
+  const customerSearchRef = useRef<HTMLInputElement | null>(null);
   const productSearchRef = useRef<HTMLInputElement | null>(null);
   const productCellRef = useRef<HTMLButtonElement | null>(null);
-  const vendorButtonRef = useRef<HTMLButtonElement | null>(null);
-  const vendorCreateRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
+  const customerButtonRef = useRef<HTMLButtonElement | null>(null);
+  const customerCreateRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
   const productCreateRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>>({});
-  const vendorCreateSaveRef = useRef<HTMLButtonElement | null>(null);
+  const customerCreateSaveRef = useRef<HTMLButtonElement | null>(null);
   const productCreateSaveRef = useRef<HTMLButtonElement | null>(null);
   const lineRefs = useRef<Record<string, HTMLInputElement | HTMLButtonElement | null>>({});
 
@@ -542,9 +551,9 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     };
   }, []);
 
-  const setVendorCreateRef = useCallback((field: string) => {
+  const setCustomerCreateRef = useCallback((field: string) => {
     return (node: HTMLInputElement | HTMLSelectElement | null) => {
-      vendorCreateRefs.current[field] = node;
+      customerCreateRefs.current[field] = node;
     };
   }, []);
 
@@ -554,8 +563,8 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     };
   }, []);
 
-  const focusVendorCreateField = useCallback((field: string) => {
-    const node = vendorCreateRefs.current[field];
+  const focusCustomerCreateField = useCallback((field: string) => {
+    const node = customerCreateRefs.current[field];
     if (node && "focus" in node) {
       node.focus();
       if ("select" in node && typeof node.select === "function") {
@@ -574,17 +583,17 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     }
   }, []);
 
-  const handleVendorCreateKeyDown = useCallback((event: ReactKeyboardEvent, field: (typeof VENDOR_CREATE_FIELD_ORDER)[number]) => {
+  const handleCustomerCreateKeyDown = useCallback((event: ReactKeyboardEvent, field: (typeof CUSTOMER_CREATE_FIELD_ORDER)[number]) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    const currentIndex = VENDOR_CREATE_FIELD_ORDER.indexOf(field);
-    const nextField = VENDOR_CREATE_FIELD_ORDER[currentIndex + 1];
+    const currentIndex = CUSTOMER_CREATE_FIELD_ORDER.indexOf(field);
+    const nextField = CUSTOMER_CREATE_FIELD_ORDER[currentIndex + 1];
     if (nextField) {
-      focusVendorCreateField(nextField);
+      focusCustomerCreateField(nextField);
       return;
     }
-    vendorCreateSaveRef.current?.focus();
-  }, [focusVendorCreateField]);
+    customerCreateSaveRef.current?.focus();
+  }, [focusCustomerCreateField]);
 
   const handleProductCreateKeyDown = useCallback((event: ReactKeyboardEvent, field: (typeof PRODUCT_CREATE_FIELD_ORDER)[number]) => {
     if (event.key !== "Enter") return;
@@ -653,7 +662,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     setLoading(true);
     try {
       const [bootstrapRes, warehouseRes, hsnRes, unitRes] = await Promise.all([
-        fetchBackend("/procurement/purchase-entry/bootstrap"),
+        fetchBackend("/sales/sales-entry/bootstrap"),
         fetchBackend("/masters/warehouses?page=1&page_size=200"),
         fetchBackend("/masters/hsn?page=1&page_size=200"),
         fetchBackend("/masters/units?page=1&page_size=200"),
@@ -674,7 +683,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       const activeWarehouse = warehouseItems.find((item) => item.id === String(bootstrap.default_warehouse_id ?? "")) ?? warehouseItems[0];
       setWarehouseState(activeWarehouse?.state ?? null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to load purchase entry");
+      toast.error(error instanceof Error ? error.message : "Failed to load sales entry");
     } finally {
       setLoading(false);
     }
@@ -682,37 +691,37 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
 
   const loadCreateReferences = useCallback(async () => {
     try {
-      const [brandRes, categoryRes, subCategoryRes, vendorCategoryRes] = await Promise.all([
+      const [brandRes, categoryRes, subCategoryRes, customerCategoryRes] = await Promise.all([
         fetchBackendFresh("/masters/product-brands?page=1&page_size=200"),
         fetchBackendFresh("/masters/product-categories?page=1&page_size=200"),
         fetchBackendFresh("/masters/product-sub-categories?page=1&page_size=200"),
-        fetchBackendFresh("/masters/account-categories?party_type=VENDOR&page=1&page_size=200"),
+        fetchBackendFresh("/masters/account-categories?party_type=CUSTOMER&page=1&page_size=200"),
       ]);
       setBrandOptions(asArray(asObject(brandRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
       setCategoryOptions(asArray(asObject(categoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
       setSubCategoryOptions(asArray(asObject(subCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? ""), category_id: item.category_id ? String(item.category_id) : undefined })));
-      setVendorCategoryOptions(asArray(asObject(vendorCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), code: String(item.code ?? ""), name: String(item.name ?? "") })));
+      setCustomerCategoryOptions(asArray(asObject(customerCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), code: String(item.code ?? ""), name: String(item.name ?? "") })));
     } catch {
       setBrandOptions([]);
       setCategoryOptions([]);
       setSubCategoryOptions([]);
-      setVendorCategoryOptions([]);
+      setCustomerCategoryOptions([]);
     }
   }, []);
 
-  const searchVendors = useCallback(async (query: string) => {
+  const searchCustomers = useCallback(async (query: string) => {
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    const res = await fetchBackendFresh(`/procurement/purchase-entry/vendors/search?${params.toString()}`);
-    const items = asArray(asObject(res).items).map(mapVendorSummary);
-    setVendorResults(items);
-    setVendorIndex(0);
+    const res = await fetchBackendFresh(`/sales/sales-entry/customers/search?${params.toString()}`);
+    const items = asArray(asObject(res).items).map(mapCustomerSummary);
+    setCustomerResults(items);
+    setCustomerIndex(0);
   }, []);
 
   const searchProducts = useCallback(async (query: string) => {
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    const res = await fetchBackendFresh(`/procurement/purchase-entry/products/search?${params.toString()}`);
+    const res = await fetchBackendFresh(`/sales/sales-entry/products/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapProductSummary);
     setProductResults(items);
     setProductIndex(0);
@@ -728,27 +737,28 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       try {
         const isConversion = Boolean(sourceChallanId);
         const effectiveId = sourceChallanId || initialId;
-        const fetchEndpoint = isConversion ? "/procurement/purchase-challans" : (mode === "challan" ? "/procurement/purchase-challans" : "/procurement/purchase-bills");
-        
+        const endpoint = mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices";
+        const fetchEndpoint = isConversion ? "/sales/sales-orders" : endpoint;
+
         const data = asObject(await fetchBackend(`${fetchEndpoint}/${effectiveId}`));
         
         if (!isConversion) {
+          setBillNumber(String(data.invoice_number || data.reference_no || ""));
           setEntryNumber(String(data.entry_number || ""));
-          setBillNumber(String(data.bill_number || data.reference_no || ""));
         }
         
-        setBillDate(String(data.bill_date || data.challan_date || todayIso()));
-        setBillDateInput(formatDisplayDate(String(data.bill_date || data.challan_date || todayIso())));
-        setReceivedDate(String(data.received_date || todayIso()));
-        setReceivedDateInput(formatDisplayDate(String(data.received_date || todayIso())));
+        setBillDate(String(data.invoice_date || data.order_date || todayIso()));
+        setBillDateInput(formatDisplayDate(String(data.invoice_date || data.order_date || todayIso())));
+        setReceivedDate(String(data.delivery_date || todayIso()));
+        setReceivedDateInput(formatDisplayDate(String(data.delivery_date || todayIso())));
         setPaymentMode(data.payment_mode === "CASH" ? "CASH" : "CREDIT");
         setWarehouseId(String(data.warehouse_id || ""));
         setFreightAmount(String(data.freight_amount || "0"));
         setNotes(String(data.notes || ""));
 
-        if (data.vendor_id) {
-          const v = asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${data.vendor_id}/summary`));
-          setVendorSummary(mapVendorSummary(v));
+        if (data.customer_id) {
+          const v = asObject(await fetchBackend(`/masters/customers/${data.customer_id}`));
+          setCustomerSummary(mapCustomerSummary(v));
         }
 
         const items = asArray(data.items);
@@ -790,9 +800,9 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   }, [loadCreateReferences]);
 
   useEffect(() => {
-    if (!vendorSearchOpen) return;
-    void searchVendors(vendorSearch);
-  }, [vendorSearchOpen, vendorSearch, searchVendors]);
+    if (!customerSearchOpen) return;
+    void searchCustomers(customerSearch);
+  }, [customerSearchOpen, customerSearch, searchCustomers]);
 
   useEffect(() => {
     if (!productSearchOpen) return;
@@ -803,16 +813,16 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     const selectedWarehouse = warehouses.find((warehouse) => warehouse.id === warehouseId) ?? null;
     const nextWarehouseState = selectedWarehouse?.state ?? null;
     setWarehouseState(nextWarehouseState);
-    if (vendorSummary) {
-      setTaxType((vendorSummary.purchase_type || deriveTaxType(nextWarehouseState, vendorSummary.state)) as "LOCAL" | "CENTRAL");
+    if (customerSummary) {
+      setTaxType((customerSummary.sales_type || deriveTaxType(nextWarehouseState, customerSummary.state)) as "LOCAL" | "CENTRAL");
     }
-  }, [vendorSummary, warehouseId, warehouses]);
+  }, [customerSummary, warehouseId, warehouses]);
 
   useEffect(() => {
-    if (vendorSearchOpen) {
-      setTimeout(() => vendorSearchRef.current?.focus(), 0);
+    if (customerSearchOpen) {
+      setTimeout(() => customerSearchRef.current?.focus(), 0);
     }
-  }, [vendorSearchOpen]);
+  }, [customerSearchOpen]);
 
   useEffect(() => {
     if (productSearchOpen) {
@@ -834,10 +844,10 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   }, [warehouseId, warehousePickerOpen, warehouses]);
 
   useEffect(() => {
-    if (vendorCreateOpen) {
-      setTimeout(() => focusVendorCreateField("firm_name"), 0);
+    if (customerCreateOpen) {
+      setTimeout(() => focusCustomerCreateField("firm_name"), 0);
     }
-  }, [focusVendorCreateField, vendorCreateOpen]);
+  }, [focusCustomerCreateField, customerCreateOpen]);
 
   useEffect(() => {
     if (productCreateOpen) {
@@ -850,9 +860,9 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       if (event.key !== "Escape") {
         return;
       }
-      if (productSearchOpen) {
+      if (customerSearchOpen) {
         event.preventDefault();
-        setProductSearchOpen(false);
+        setCustomerSearchOpen(false);
         setTimeout(() => focusLineField(activeRow, "product"), 0);
         return;
       }
@@ -875,15 +885,15 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         setTimeout(() => warehouseButtonRef.current?.focus(), 0);
         return;
       }
-      if (vendorSearchOpen) {
+      if (customerSearchOpen) {
         event.preventDefault();
-        setVendorSearchOpen(false);
-        setTimeout(() => vendorButtonRef.current?.focus(), 0);
+        setCustomerSearchOpen(false);
+        setTimeout(() => customerButtonRef.current?.focus(), 0);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen]);
+  }, [activeRow, focusLineField, paymentModeOpen, productSearchOpen, rateUnitPicker, customerSearchOpen, warehousePickerOpen]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -902,11 +912,11 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     next();
   }
 
-  const selectVendor = useCallback((vendor: VendorSummary) => {
-    setVendorSummary(vendor);
-    setTaxType((vendor.purchase_type || deriveTaxType(warehouseState, vendor.state)) as "LOCAL" | "CENTRAL");
-    setVendorSearchOpen(false);
-    setVendorSearch("");
+  const selectCustomer = useCallback((customer: CustomerSummary) => {
+    setCustomerSummary(customer);
+    setTaxType(((customer.sales_type || deriveTaxType(warehouseState, customer.state)) as "LOCAL" | "CENTRAL") || "CENTRAL");
+    setCustomerSearchOpen(false);
+    setCustomerSearch("");
     setTimeout(() => billNumberRef.current?.focus(), 0);
   }, [warehouseState]);
 
@@ -969,13 +979,13 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   }, [ensureTrailingEmptyLine, focusLineField, productTargetRow, updateLine]);
 
   const openProductSelector = useCallback((rowIndex = activeRow) => {
-    if (!vendorSummary?.vendor_id) {
-      toast.error("Select vendor first");
+    if (!customerSummary?.customer_id) {
+      toast.error("Select customer first");
       return;
     }
     setProductTargetRow(rowIndex);
     setProductSearchOpen(true);
-  }, [activeRow, vendorSummary?.vendor_id]);
+  }, [activeRow, customerSummary?.customer_id]);
 
   const openPaymentModePicker = useCallback(() => {
     setPaymentModeIndex(PAYMENT_MODE_OPTIONS.indexOf(paymentMode));
@@ -1070,36 +1080,36 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     }
   }
 
-  async function createInlineVendorCategory() {
-    if (!vendorCategoryForm.code.trim() || !vendorCategoryForm.name.trim()) {
+  async function createInlineCustomerCategory() {
+    if (!customerCategoryForm.code.trim() || !customerCategoryForm.name.trim()) {
       toast.error("Category code and name are required");
       return;
     }
-    setCreatingVendorCategory(true);
+    setCreatingCustomerCategory(true);
     try {
       const created = asObject(await postBackend("/masters/account-categories", {
-        code: vendorCategoryForm.code.trim(),
-        name: vendorCategoryForm.name.trim(),
-        party_type: "VENDOR",
-        description: vendorCategoryForm.description.trim() || null,
+        code: customerCategoryForm.code.trim(),
+        name: customerCategoryForm.name.trim(),
+        party_type: "CUSTOMER",
+        description: customerCategoryForm.description.trim() || null,
         is_active: true,
       }));
       await loadCreateReferences();
-      setVendorCreateForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
-      setVendorCategoryForm({ code: "", name: "", description: "" });
-      setVendorCategoryCreateOpen(false);
+      setCustomerCreateForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
+      setCustomerCategoryForm({ code: "", name: "", description: "" });
+      setCustomerCategoryCreateOpen(false);
       toast.success("Account category created");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to create account category");
     } finally {
-      setCreatingVendorCategory(false);
+      setCreatingCustomerCategory(false);
     }
   }
 
   const showLedger = useCallback(async () => {
-    if (!vendorSummary) return;
+    if (!customerSummary) return;
     try {
-      const res = asObject(await fetchBackend(`/finance/party-ledger/vendor/${vendorSummary.vendor_id}`));
+      const res = asObject(await fetchBackend(`/finance/party-ledger/customer/${customerSummary.customer_id}`));
       setLedgerRows(asArray(res.items).map((item) => ({
         entry_id: String(item.entry_id ?? ""),
         entry_date: String(item.entry_date ?? ""),
@@ -1113,11 +1123,15 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to load ledger");
     }
-  }, [vendorSummary]);
+  }, [customerSummary]);
 
   const saveEntry = useCallback(async () => {
-    if (!vendorSummary) {
-      toast.error("Select vendor");
+    if (!canWriteSales) {
+      toast.error("You do not have permission to save sales entries.");
+      return;
+    }
+    if (!customerSummary) {
+      toast.error("Select customer");
       return;
     }
     const validLines = lines.filter((line) => line.product && lineBaseQuantity(line) > 0);
@@ -1125,16 +1139,16 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       toast.error("Add at least one product line");
       return;
     }
-    const proceed = window.confirm(`Save purchase ${mode} ${billNumber} for ${vendorSummary.vendor_name}?`);
+    const proceed = window.confirm(`Save sales ${mode === "challan" ? "order" : "invoice"} ${billNumber} for ${customerSummary.customer_name}?`);
     if (!proceed) return;
     setSaving(true);
     try {
       const payload = {
-        vendor_id: vendorSummary.vendor_id,
+        customer_id: customerSummary.customer_id,
         warehouse_id: warehouseId,
-        bill_number: billNumber,
-        bill_date: billDate,
-        received_date: receivedDate,
+        invoice_number: billNumber,
+        invoice_date: billDate,
+        delivery_date: receivedDate,
         payment_mode: paymentMode,
         tax_type: taxType,
         freight_amount: Number(freightAmount || 0),
@@ -1142,7 +1156,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         notes: notes || null,
         items: validLines.map((line, index) => ({
           product_id: line.product?.product_id,
-          batch_no: `PBL-${billDate.replaceAll("-", "")}-${String(index + 1).padStart(3, "0")}`,
+          batch_no: `${mode === "challan" ? "ORD" : "INV"}-${billDate.replaceAll("-", "")}-${String(index + 1).padStart(3, "0")}`,
           expiry_date: null,
           quantity: lineBaseQuantity(line),
           quantity_1st: Number(line.quantity1 || 0),
@@ -1163,14 +1177,14 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         })),
       };
 
-      const endpoint = mode === "challan" ? "/procurement/purchase-challans" : "/procurement/purchase-bills";
+      const endpoint = mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices";
 
       if (initialId) {
         await patchBackend(`${endpoint}/${initialId}`, payload);
-        toast.success(`Purchase ${mode} updated`);
+        toast.success(`Sales ${mode === "challan" ? "order" : "invoice"} updated`);
       } else {
-        await postBackend(mode === "challan" ? "/procurement/purchase-challans" : "/procurement/purchase-entry", payload);
-        toast.success(`Purchase ${mode} saved`);
+        await postBackend(endpoint, payload);
+        toast.success(`Sales ${mode === "challan" ? "order" : "invoice"} saved`);
       }
 
       if (onSaved) {
@@ -1190,7 +1204,24 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     } finally {
       setSaving(false);
     }
-  }, [vendorSummary, lines, billNumber, mode, warehouseId, billDate, receivedDate, paymentMode, taxType, freightAmount, entryNumber, notes, initialId, onSaved, showLedger]);
+  }, [
+    canWriteSales,
+    customerSummary,
+    lines,
+    billNumber,
+    mode,
+    warehouseId,
+    billDate,
+    receivedDate,
+    paymentMode,
+    taxType,
+    freightAmount,
+    entryNumber,
+    notes,
+    initialId,
+    onSaved,
+    showLedger,
+  ]);
 
   const moveGridFocus = useCallback((rowIndex: number, field: LineField) => {
     setActiveRow(rowIndex);
@@ -1284,7 +1315,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     if (!iso) return;
     setBillDate(iso);
     setBillDateInput(formatDisplayDate(iso));
-    setTimeout(() => setVendorSearchOpen(true), 0);
+    setTimeout(() => setCustomerSearchOpen(true), 0);
   }, []);
 
   const applyReceivedDateFromPicker = useCallback((iso: string) => {
@@ -1347,46 +1378,45 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   return (
     <div className="bg-[#eef3ec] font-mono text-[#111714]">
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
-        <div className="flex items-center justify-between border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
-          <span>Purchase {mode === "challan" ? "Challan" : "Entry"} Console</span>
-          {onClose && <Button variant="ghost" size="sm" className="h-6 text-white hover:text-white/80" onClick={onClose}>ESC to Back</Button>}
+        <div className="border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
+          <span>Sales {mode === "challan" ? "Challan" : "Invoice"} Console</span>
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
-            {vendorSummary ? (
+            {customerSummary ? (
               <div className="grid gap-px border-b bg-border md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))]">
                 <div className="bg-[#fbfcf7] px-4 py-3">
-                  <div className="truncate text-lg font-semibold">{vendorSummary.vendor_name} <span className="text-primary">[{paymentMode}]</span></div>
-                  <div className="mt-1 truncate text-xs text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
+                  <div className="truncate text-lg font-semibold">{customerSummary.customer_name} <span className="text-primary">[{paymentMode}]</span></div>
+                  <div className="mt-1 truncate text-xs text-[#5b655f]">{customerSummary.address_lines.join(", ")}</div>
                   <div className="mt-2 text-xs text-[#5b655f]">
-                    Allowed Brands: {vendorSummary.brand_names.length ? vendorSummary.brand_names.join(", ") : "None linked"}
+                    Allowed Brands: {customerSummary.brand_names.length ? customerSummary.brand_names.join(", ") : "None linked"}
                   </div>
                   <div className="mt-1 text-xs text-[#5b655f]">
-                    Vendor Type: {vendorSummary.purchase_type || "Not set"}
+                    Sales Type: {customerSummary.sales_type || "Not set"}
                   </div>
                 </div>
                 <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
                   <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Balance</div>
-                  <div className="mt-1 font-semibold">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
+                  <div className="mt-1 font-semibold">{Number(customerSummary.balance).toFixed(2)} {customerSummary.balance_side}</div>
                 </div>
                 <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Purc</div>
-                  <div className="mt-1 font-semibold">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "-"}</div>
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Sale</div>
+                  <div className="mt-1 font-semibold">{customerSummary.last_sale_date ? formatDisplayDate(customerSummary.last_sale_date) : "-"}</div>
                 </div>
                 <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Pay</div>
-                  <div className="mt-1 font-semibold">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "-"}</div>
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Rect</div>
+                  <div className="mt-1 font-semibold">{customerSummary.last_receipt_date ? formatDisplayDate(customerSummary.last_receipt_date) : "-"}</div>
                 </div>
                 <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Month</div>
-                  <div className="mt-1 font-semibold">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Month</div>
+                  <div className="mt-1 font-semibold">{Number(customerSummary.monthly_sales_amount).toFixed(2)}</div>
                 </div>
               </div>
             ) : null}
 
             <div className="grid gap-px bg-border md:grid-cols-12">
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Purchase Date</Label>
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Invoice Date</Label>
                 <div className="mt-2 flex gap-2">
                   <Input
                     ref={billDateRef}
@@ -1396,7 +1426,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
-                        void confirmDate(billDateInput, setBillDate, setBillDateInput, () => setVendorSearchOpen(true));
+                        void confirmDate(billDateInput, setBillDate, setBillDateInput, () => setCustomerSearchOpen(true));
                       }
                     }}
                     placeholder="ddmmyyyy"
@@ -1430,21 +1460,21 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
+                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Customer</Label>
                 <Button
-                  ref={vendorButtonRef}
+                  ref={customerButtonRef}
                   type="button"
                   variant="ghost"
                   className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
-                  onClick={() => setVendorSearchOpen(true)}
+                  onClick={() => setCustomerSearchOpen(true)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === "ArrowDown") {
                       e.preventDefault();
-                      setVendorSearchOpen(true);
+                      setCustomerSearchOpen(true);
                     }
                   }}
                 >
-                  {vendorSummary ? vendorSummary.vendor_name : "Select vendor"}
+                  {customerSummary ? customerSummary.customer_name : "Select customer"}
                 </Button>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
@@ -1687,8 +1717,15 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   <div className="pt-2 text-base font-semibold">FINAL BILL</div><div className="pt-2 text-right text-2xl font-bold">{totals.finalAmount.toFixed(2)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
-                  <Button ref={saveButtonRef} className="rounded-sm" onClick={() => void saveEntry()} disabled={saving}>{saving ? "Saving..." : `Save ${mode === "challan" ? "Challan" : "Bill"}`}</Button>
-                  <Button variant="outline" onClick={() => void showLedger()} disabled={!vendorSummary}>Ledger</Button>
+                  <Button
+                    ref={saveButtonRef}
+                    className="rounded-sm"
+                    onClick={() => void saveEntry()}
+                    disabled={saving || !canWriteSales}
+                  >
+                    {saving ? "Saving..." : `Save ${mode === "challan" ? "Challan" : "Invoice"}`}
+                  </Button>
+                  <Button variant="outline" onClick={() => void showLedger()} disabled={!customerSummary}>Ledger</Button>
                   {activeLine?.product ? <Button variant="outline" onClick={() => void openProductEdit(activeLine.product!)}>Edit Product</Button> : null}
                   {onClose && <Button variant="secondary" onClick={onClose}>Back</Button>}
                 </div>
@@ -1717,27 +1754,27 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
 
           <div className="grid gap-px bg-border">
             <div className="bg-[#fbfcf7] p-4 text-sm">
-              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party History</div>
-              {vendorSummary ? (
+              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Customer History</div>
+              {customerSummary ? (
                 <div className="space-y-3">
                   <div>
-                    <div className="text-base font-semibold">{vendorSummary.vendor_name}</div>
-                    <div className="mt-1 text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
+                    <div className="text-base font-semibold">{customerSummary.customer_name}</div>
+                    <div className="mt-1 text-[#5b655f]">{customerSummary.address_lines.join(", ")}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>Annual</div><div className="text-right font-semibold">{Number(vendorSummary.annual_purchase_amount).toFixed(2)}</div>
-                    <div>Month</div><div className="text-right font-semibold">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
-                    <div>Balance</div><div className="text-right font-semibold">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
-                    <div>Last Purc</div><div className="text-right font-semibold">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "-"}</div>
-                    <div>Last Pay</div><div className="text-right font-semibold">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "-"}</div>
-                    <div>GSTIN</div><div className="text-right font-semibold">{vendorSummary.gstin || "-"}</div>
-                    <div>Type</div><div className="text-right font-semibold">{vendorSummary.purchase_type || "-"}</div>
-                    <div>Area / Route</div><div className="text-right font-semibold">{vendorSummary.area || "-"} / {vendorSummary.route || "-"}</div>
+                    <div>Annual Sales</div><div className="text-right font-semibold">{Number(customerSummary.annual_sales_amount).toFixed(2)}</div>
+                    <div>Month Sales</div><div className="text-right font-semibold">{Number(customerSummary.monthly_sales_amount).toFixed(2)}</div>
+                    <div>Balance</div><div className="text-right font-semibold">{Number(customerSummary.balance).toFixed(2)} {customerSummary.balance_side}</div>
+                    <div>Last Sale</div><div className="text-right font-semibold">{customerSummary.last_sale_date ? formatDisplayDate(customerSummary.last_sale_date) : "-"}</div>
+                    <div>Last Rect</div><div className="text-right font-semibold">{customerSummary.last_receipt_date ? formatDisplayDate(customerSummary.last_receipt_date) : "-"}</div>
+                    <div>GSTIN</div><div className="text-right font-semibold">{customerSummary.gstin || "-"}</div>
+                    <div>Type</div><div className="text-right font-semibold">{customerSummary.sales_type || "-"}</div>
+                    <div>Area / Route</div><div className="text-right font-semibold">{customerSummary.area || "-"} / {customerSummary.route || "-"}</div>
                   </div>
                   <div className="border-t pt-3">
                     <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Last 3 Bills</div>
                     <div className="space-y-2">
-                      {vendorSummary.last_bills.map((bill) => (
+                      {customerSummary.last_bills.map((bill) => (
                         <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                           <span>{bill.bill_number}</span>
                           <span>{formatDisplayDate(bill.bill_date)}</span>
@@ -1749,7 +1786,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   <div className="border-t pt-3">
                     <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Available Challans</div>
                     <div className="space-y-2">
-                      {vendorSummary.open_challans.length ? vendorSummary.open_challans.map((challan) => (
+                      {customerSummary.open_challans.length ? customerSummary.open_challans.map((challan) => (
                         <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                           <span>{challan.reference_no}</span>
                           <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
@@ -1760,7 +1797,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   </div>
                 </div>
               ) : (
-                <div className="text-muted-foreground">Select vendor to view history.</div>
+                <div className="text-muted-foreground">Select customer to view history.</div>
               )}
             </div>
             <div className="bg-[#fbfcf7] p-4 text-sm">
@@ -1942,35 +1979,35 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         </div>
       </div>
 
-      {vendorSearchOpen ? (
+      {customerSearchOpen ? (
         <div className="absolute inset-0 z-30 grid bg-card md:grid-cols-[1.2fr_0.9fr]">
           <div className="flex min-h-0 flex-col border-r">
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
-              <span>Vendor Selector</span>
+              <span>Customer Selector</span>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setVendorCreateOpen(true)}>+ Add Vendor</Button>
-                <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setVendorSearchOpen(false)}>Esc</Button>
+                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setCustomerCreateOpen(true)}>+ Add Customer</Button>
+                <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setCustomerSearchOpen(false)}>Esc</Button>
               </div>
             </div>
             <div className="border-b bg-background p-3">
               <Input
-                ref={vendorSearchRef}
-                value={vendorSearch}
-                onChange={(e) => setVendorSearch(e.target.value)}
-                placeholder="Type vendor name"
+                ref={customerSearchRef}
+                value={customerSearch}
+                onChange={(e) => setCustomerSearch(e.target.value)}
+                placeholder="Type customer name"
                 className="h-11 border-0 bg-muted text-base font-semibold"
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
-                    setVendorIndex((prev) => Math.min(prev + 1, vendorResults.length - 1));
+                    setCustomerIndex((prev) => Math.min(prev + 1, customerResults.length - 1));
                   }
                   if (e.key === "ArrowUp") {
                     e.preventDefault();
-                    setVendorIndex((prev) => Math.max(prev - 1, 0));
+                    setCustomerIndex((prev) => Math.max(prev - 1, 0));
                   }
-                  if (e.key === "Enter" && vendorResults[vendorIndex]) {
+                  if (e.key === "Enter" && customerResults[customerIndex]) {
                     e.preventDefault();
-                    selectVendor(vendorResults[vendorIndex]);
+                    selectCustomer(customerResults[customerIndex]);
                   }
                 }}
               />
@@ -1980,48 +2017,48 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
               <span className="text-right">Balance</span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {vendorResults.map((vendor, index) => (
+              {customerResults.map((customer, index) => (
                 <button
-                  key={vendor.vendor_id}
+                  key={customer.customer_id}
                   type="button"
                   className={cn(
                     "grid w-full grid-cols-[minmax(0,1fr)_120px] items-center border-b px-4 py-3 text-left text-sm",
-                    index === vendorIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted/50"
+                    index === customerIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted/50"
                   )}
-                  onMouseEnter={() => setVendorIndex(index)}
-                  onClick={() => selectVendor(vendor)}
+                  onMouseEnter={() => setCustomerIndex(index)}
+                  onClick={() => selectCustomer(customer)}
                 >
                   <div>
-                    <div className="font-semibold">{vendor.vendor_name}</div>
-                    <div className={cn("mt-1 truncate text-xs", index === vendorIndex ? "text-white/80" : "text-muted-foreground")}>
-                      {vendor.city || "-"} {vendor.state ? `• ${vendor.state}` : ""}
+                    <div className="font-semibold">{customer.customer_name}</div>
+                    <div className={cn("mt-1 truncate text-xs", index === customerIndex ? "text-white/80" : "text-muted-foreground")}>
+                      {customer.city || "-"} {customer.state ? `• ${customer.state}` : ""}
                     </div>
                   </div>
-                  <span className="text-right font-semibold">{Number(vendor.balance).toFixed(2)} {vendor.balance_side}</span>
+                  <span className="text-right font-semibold">{Number(customer.balance).toFixed(2)} {customer.balance_side}</span>
                 </button>
               ))}
             </div>
           </div>
           <div className="min-h-0 overflow-y-auto bg-[#f8faf7] p-4 text-sm">
-            {vendorResults[vendorIndex] ? (
+            {customerResults[customerIndex] ? (
               <>
-                <div className="text-lg font-semibold">{vendorResults[vendorIndex].vendor_name}</div>
-                <div className="mt-2 text-muted-foreground">{vendorResults[vendorIndex].address_lines.join(", ")}</div>
+                <div className="text-lg font-semibold">{customerResults[customerIndex].customer_name}</div>
+                <div className="mt-2 text-muted-foreground">{customerResults[customerIndex].address_lines.join(", ")}</div>
                 <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border bg-background p-4 text-sm">
-                  <div>GSTIN</div><div className="text-right font-semibold">{vendorResults[vendorIndex].gstin || "-"}</div>
-                  <div>Phone</div><div className="text-right font-semibold">{vendorResults[vendorIndex].phone || "-"}</div>
-                  <div>Area</div><div className="text-right font-semibold">{vendorResults[vendorIndex].area || "-"}</div>
-                  <div>Route</div><div className="text-right font-semibold">{vendorResults[vendorIndex].route || "-"}</div>
-                  <div>Brands</div><div className="text-right font-semibold">{vendorResults[vendorIndex].brand_names.length ? vendorResults[vendorIndex].brand_names.join(", ") : "None linked"}</div>
-                  <div>Monthly Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].monthly_purchase_amount).toFixed(2)}</div>
-                  <div>Annual Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].annual_purchase_amount).toFixed(2)}</div>
-                  <div>Last Purchase</div><div className="text-right font-semibold">{vendorResults[vendorIndex].last_purchase_date ? formatDisplayDate(vendorResults[vendorIndex].last_purchase_date) : "-"}</div>
-                  <div>Last Payment</div><div className="text-right font-semibold">{vendorResults[vendorIndex].last_payment_date ? formatDisplayDate(vendorResults[vendorIndex].last_payment_date) : "-"}</div>
+                  <div>GSTIN</div><div className="text-right font-semibold">{customerResults[customerIndex].gstin || "-"}</div>
+                  <div>Phone</div><div className="text-right font-semibold">{customerResults[customerIndex].phone || "-"}</div>
+                  <div>Area</div><div className="text-right font-semibold">{customerResults[customerIndex].area || "-"}</div>
+                  <div>Route</div><div className="text-right font-semibold">{customerResults[customerIndex].route || "-"}</div>
+                  <div>Brands</div><div className="text-right font-semibold">{customerResults[customerIndex].brand_names.length ? customerResults[customerIndex].brand_names.join(", ") : "None linked"}</div>
+                  <div>Monthly Sales</div><div className="text-right font-semibold">{Number(customerResults[customerIndex].monthly_sales_amount).toFixed(2)}</div>
+                  <div>Annual Sales</div><div className="text-right font-semibold">{Number(customerResults[customerIndex].annual_sales_amount).toFixed(2)}</div>
+                  <div>Last Sale</div><div className="text-right font-semibold">{customerResults[customerIndex].last_sale_date ? formatDisplayDate(customerResults[customerIndex].last_sale_date) : "-"}</div>
+                  <div>Last Receipt</div><div className="text-right font-semibold">{customerResults[customerIndex].last_receipt_date ? formatDisplayDate(customerResults[customerIndex].last_receipt_date) : "-"}</div>
                 </div>
                 <div className="mt-4 rounded-lg border bg-background p-4">
                   <div className="mb-3 text-xs uppercase tracking-[0.18em] text-muted-foreground">Last 3 Bills</div>
                   <div className="space-y-2">
-                    {vendorResults[vendorIndex].last_bills.map((bill) => (
+                    {customerResults[customerIndex].last_bills.map((bill) => (
                       <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                         <span>{bill.bill_number}</span>
                         <span>{formatDisplayDate(bill.bill_date)}</span>
@@ -2033,7 +2070,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 <div className="mt-4 rounded-lg border bg-background p-4">
                   <div className="mb-3 text-xs uppercase tracking-[0.18em] text-muted-foreground">Available Challans</div>
                   <div className="space-y-2">
-                    {vendorResults[vendorIndex].open_challans.length ? vendorResults[vendorIndex].open_challans.map((challan) => (
+                    {customerResults[customerIndex].open_challans.length ? customerResults[customerIndex].open_challans.map((challan) => (
                       <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                         <span>{challan.reference_no}</span>
                         <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
@@ -2043,7 +2080,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   </div>
                 </div>
               </>
-            ) : <div className="text-muted-foreground">No vendor selected.</div>}
+            ) : <div className="text-muted-foreground">No customer selected.</div>}
           </div>
         </div>
       ) : null}
@@ -2189,44 +2226,44 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         </DialogContent>
       </Dialog>
 
-      <Dialog open={vendorCreateOpen} onOpenChange={(open) => {
-        setVendorCreateOpen(open);
+      <Dialog open={customerCreateOpen} onOpenChange={(open) => {
+        setCustomerCreateOpen(open);
         if (!open) {
-          setTimeout(() => vendorButtonRef.current?.focus(), 0);
+          setTimeout(() => customerButtonRef.current?.focus(), 0);
         }
       }}>
         <DialogContent className="max-h-[88vh] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-4xl">
           <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
-            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Vendor</DialogTitle>
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Customer</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setVendorCreateRef("firm_name")} value={vendorCreateForm.firm_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "firm_name")} /></div>
-            <div className="space-y-1"><Label>Type</Label><select ref={setVendorCreateRef("purchase_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.purchase_type} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, purchase_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select></div>
-            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} /></div>
-            <div className="space-y-1"><Label>PAN</Label><Input ref={setVendorCreateRef("pan")} value={vendorCreateForm.pan} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pan")} /></div>
-            <div className="space-y-1"><Label>Owner Name</Label><Input ref={setVendorCreateRef("owner_name")} value={vendorCreateForm.owner_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "owner_name")} /></div>
-            <div className="space-y-1"><Label>Phone</Label><Input ref={setVendorCreateRef("phone")} value={vendorCreateForm.phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "phone")} /></div>
-            <div className="space-y-1"><Label>Alternate Phone</Label><Input ref={setVendorCreateRef("alternate_phone")} value={vendorCreateForm.alternate_phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "alternate_phone")} /></div>
-            <div className="space-y-1"><Label>Email</Label><Input ref={setVendorCreateRef("email")} value={vendorCreateForm.email} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "email")} /></div>
-            <div className="space-y-1 md:col-span-2"><Label>Street</Label><Input ref={setVendorCreateRef("street")} value={vendorCreateForm.street} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "street")} /></div>
-            <div className="space-y-1"><Label>City</Label><Input ref={setVendorCreateRef("city")} value={vendorCreateForm.city} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "city")} /></div>
-            <div className="space-y-1"><Label>State</Label><Input ref={setVendorCreateRef("state")} value={vendorCreateForm.state} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "state")} /></div>
-            <div className="space-y-1"><Label>Pincode</Label><Input ref={setVendorCreateRef("pincode")} value={vendorCreateForm.pincode} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pincode")} /></div>
-            <div className="space-y-1"><Label>Bank Account Number</Label><Input ref={setVendorCreateRef("bank_account_number")} value={vendorCreateForm.bank_account_number} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "bank_account_number")} /></div>
-            <div className="space-y-1"><Label>IFSC Code</Label><Input ref={setVendorCreateRef("ifsc_code")} value={vendorCreateForm.ifsc_code} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "ifsc_code")} /></div>
+            <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setCustomerCreateRef("firm_name")} value={customerCreateForm.firm_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "firm_name")} /></div>
+            <div className="space-y-1"><Label>Type</Label><select ref={setCustomerCreateRef("sales_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.sales_type} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, sales_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "sales_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select></div>
+            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setCustomerCreateRef("gstin")} value={customerCreateForm.gstin} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, gstin: e.target.value, sales_type: deriveSalesTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "gstin")} /></div>
+            <div className="space-y-1"><Label>PAN</Label><Input ref={setCustomerCreateRef("pan")} value={customerCreateForm.pan} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pan")} /></div>
+            <div className="space-y-1"><Label>Owner Name</Label><Input ref={setCustomerCreateRef("owner_name")} value={customerCreateForm.owner_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "owner_name")} /></div>
+            <div className="space-y-1"><Label>Phone</Label><Input ref={setCustomerCreateRef("phone")} value={customerCreateForm.phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "phone")} /></div>
+            <div className="space-y-1"><Label>Alternate Phone</Label><Input ref={setCustomerCreateRef("alternate_phone")} value={customerCreateForm.alternate_phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "alternate_phone")} /></div>
+            <div className="space-y-1"><Label>Email</Label><Input ref={setCustomerCreateRef("email")} value={customerCreateForm.email} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "email")} /></div>
+            <div className="space-y-1 md:col-span-2"><Label>Street</Label><Input ref={setCustomerCreateRef("street")} value={customerCreateForm.street} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street")} /></div>
+            <div className="space-y-1"><Label>City</Label><Input ref={setCustomerCreateRef("city")} value={customerCreateForm.city} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "city")} /></div>
+            <div className="space-y-1"><Label>State</Label><Input ref={setCustomerCreateRef("state")} value={customerCreateForm.state} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "state")} /></div>
+            <div className="space-y-1"><Label>Pincode</Label><Input ref={setCustomerCreateRef("pincode")} value={customerCreateForm.pincode} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pincode")} /></div>
+            <div className="space-y-1"><Label>Bank Account Number</Label><Input ref={setCustomerCreateRef("bank_account_number")} value={customerCreateForm.bank_account_number} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "bank_account_number")} /></div>
+            <div className="space-y-1"><Label>IFSC Code</Label><Input ref={setCustomerCreateRef("ifsc_code")} value={customerCreateForm.ifsc_code} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "ifsc_code")} /></div>
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <Label>Account Category</Label>
-                <Button type="button" variant="outline" size="sm" onClick={() => setVendorCategoryCreateOpen(true)}>+ Add Account Category</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setCustomerCategoryCreateOpen(true)}>+ Add Account Category</Button>
               </div>
-              <select ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
+              <select ref={setCustomerCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.account_category_id} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{customerCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label>Brands</Label>
               <div className="grid max-h-40 gap-2 overflow-y-auto rounded-md border p-3 md:grid-cols-2">
                 {brandOptions.map((brand) => (
                   <label key={brand.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={vendorCreateForm.brand_ids.includes(brand.id)} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, brand_ids: e.target.checked ? [...prev.brand_ids, brand.id] : prev.brand_ids.filter((id) => id !== brand.id) }))} />
+                    <input type="checkbox" checked={customerCreateForm.brand_ids.includes(brand.id)} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, brand_ids: e.target.checked ? [...prev.brand_ids, brand.id] : prev.brand_ids.filter((id) => id !== brand.id) }))} />
                     <span>{brand.name}</span>
                   </label>
                 ))}
@@ -2234,46 +2271,46 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             </div>
           </div>
           <div className="flex justify-end">
-            <Button ref={vendorCreateSaveRef} type="button" disabled={creatingVendor || !vendorCreateForm.firm_name.trim()} onKeyDown={(e) => {
+            <Button ref={customerCreateSaveRef} type="button" disabled={creatingCustomer || !customerCreateForm.firm_name.trim()} onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
                 e.stopPropagation();
                 void (e.currentTarget as HTMLButtonElement).click();
               }
             }} onClick={async () => {
-              setCreatingVendor(true);
+              setCreatingCustomer(true);
               try {
-                const created = asObject(await postBackend("/masters/vendors", {
-                  firm_name: vendorCreateForm.firm_name.trim(),
-                  purchase_type: vendorCreateForm.purchase_type,
-                  gstin: vendorCreateForm.gstin.trim() || null,
-                  pan: vendorCreateForm.pan.trim() || null,
-                  owner_name: vendorCreateForm.owner_name.trim() || null,
-                  phone: vendorCreateForm.phone.trim() || null,
-                  alternate_phone: vendorCreateForm.alternate_phone.trim() || null,
-                  email: vendorCreateForm.email.trim() || null,
-                  street: vendorCreateForm.street.trim() || null,
-                  city: vendorCreateForm.city.trim() || null,
-                  state: vendorCreateForm.state.trim() || null,
-                  pincode: vendorCreateForm.pincode.trim() || null,
-                  bank_account_number: vendorCreateForm.bank_account_number.trim() || null,
-                  ifsc_code: vendorCreateForm.ifsc_code.trim() || null,
-                  account_category_id: vendorCreateForm.account_category_id || null,
-                  brand_ids: vendorCreateForm.brand_ids,
+                const created = asObject(await postBackend("/masters/customers", {
+                  firm_name: customerCreateForm.firm_name.trim(),
+                  sales_type: customerCreateForm.sales_type,
+                  gstin: customerCreateForm.gstin.trim() || null,
+                  pan: customerCreateForm.pan.trim() || null,
+                  owner_name: customerCreateForm.owner_name.trim() || null,
+                  phone: customerCreateForm.phone.trim() || null,
+                  alternate_phone: customerCreateForm.alternate_phone.trim() || null,
+                  email: customerCreateForm.email.trim() || null,
+                  street: customerCreateForm.street.trim() || null,
+                  city: customerCreateForm.city.trim() || null,
+                  state: customerCreateForm.state.trim() || null,
+                  pincode: customerCreateForm.pincode.trim() || null,
+                  bank_account_number: customerCreateForm.bank_account_number.trim() || null,
+                  ifsc_code: customerCreateForm.ifsc_code.trim() || null,
+                  account_category_id: customerCreateForm.account_category_id || null,
+                  brand_ids: customerCreateForm.brand_ids,
                 }));
-                const createdSummary = mapVendorSummary(asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${String(created.id ?? "")}/summary`)));
-                setVendorCreateOpen(false);
-                setVendorCreateForm({ ...EMPTY_VENDOR_FORM });
-                setVendorSummary(createdSummary);
-                setVendorSearchOpen(false);
-                toast.success("Vendor created");
+                const createdSummary = mapCustomerSummary(asObject(await fetchBackend(`/sales/sales-entry/customers/${String(created.id ?? "")}/summary`)));
+                setCustomerCreateOpen(false);
+                setCustomerCreateForm({ ...EMPTY_CUSTOMER_FORM });
+                setCustomerSummary(createdSummary);
+                setCustomerSearchOpen(false);
+                toast.success("Customer created");
                 setTimeout(() => billNumberRef.current?.focus(), 0);
               } catch (error) {
-                toast.error(error instanceof Error ? error.message : "Failed to create vendor");
+                toast.error(error instanceof Error ? error.message : "Failed to create customer");
               } finally {
-                setCreatingVendor(false);
+                setCreatingCustomer(false);
               }
-            }}>{creatingVendor ? "Saving..." : "Save Vendor"}</Button>
+            }}>{creatingCustomer ? "Saving..." : "Save Customer"}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -2419,33 +2456,33 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         </DialogContent>
       </Dialog>
 
-      <Dialog open={vendorCategoryCreateOpen} onOpenChange={setVendorCategoryCreateOpen}>
+      <Dialog open={customerCategoryCreateOpen} onOpenChange={setCustomerCategoryCreateOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Add Vendor Account Category</DialogTitle>
+            <DialogTitle>Add Customer Account Category</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3">
             <div className="space-y-1">
               <Label>Code *</Label>
-              <Input value={vendorCategoryForm.code} onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, code: e.target.value }))} />
+              <Input value={customerCategoryForm.code} onChange={(e) => setCustomerCategoryForm((prev) => ({ ...prev, code: e.target.value }))} />
             </div>
             <div className="space-y-1">
               <Label>Name *</Label>
-              <Input value={vendorCategoryForm.name} onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, name: e.target.value }))} />
+              <Input value={customerCategoryForm.name} onChange={(e) => setCustomerCategoryForm((prev) => ({ ...prev, name: e.target.value }))} />
             </div>
             <div className="space-y-1">
               <Label>Description</Label>
-              <Input value={vendorCategoryForm.description} onChange={(e) => setVendorCategoryForm((prev) => ({ ...prev, description: e.target.value }))} />
+              <Input value={customerCategoryForm.description} onChange={(e) => setCustomerCategoryForm((prev) => ({ ...prev, description: e.target.value }))} />
             </div>
           </div>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setVendorCategoryCreateOpen(false)}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={() => setCustomerCategoryCreateOpen(false)}>Cancel</Button>
             <Button
               type="button"
-              onClick={() => void createInlineVendorCategory()}
-              disabled={creatingVendorCategory || !vendorCategoryForm.code.trim() || !vendorCategoryForm.name.trim()}
+              onClick={() => void createInlineCustomerCategory()}
+              disabled={creatingCustomerCategory || !customerCategoryForm.code.trim() || !customerCategoryForm.name.trim()}
             >
-              {creatingVendorCategory ? "Adding..." : "Add Account Category"}
+              {creatingCustomerCategory ? "Adding..." : "Add Account Category"}
             </Button>
           </div>
         </DialogContent>
@@ -2453,7 +2490,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
 
       <Dialog open={ledgerOpen} onOpenChange={setLedgerOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
-          <DialogHeader><DialogTitle>Vendor Ledger</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Customer Ledger</DialogTitle></DialogHeader>
           <div className="rounded border">
             <Table>
               <TableHeader>

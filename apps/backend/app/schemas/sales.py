@@ -83,6 +83,19 @@ class SalesFinalInvoiceEditRequest(BaseModel):
     auto_note: bool = True
 
 
+class SalesDirectBillItemIn(BaseModel):
+    product_id: uuid.UUID
+    quantity: Decimal
+
+
+class SalesDirectBillCreate(BaseModel):
+    customer_id: uuid.UUID
+    warehouse_id: uuid.UUID
+    invoice_number: str | None = None
+    invoice_date: date
+    items: list[SalesDirectBillItemIn]
+
+
 class SalesReturnItemIn(BaseModel):
     product_id: uuid.UUID
     batch_number: str

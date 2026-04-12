@@ -724,6 +724,57 @@ async def _reverse_purchase_bill_effects(db: AsyncSession, bill: PurchaseBill) -
         await db.delete(transaction)
 
 
+async def _reverse_purchase_challan_effects(db: AsyncSession, challan: PurchaseChallan) -> None:
+    linked_bill_exists = (
+        await db.execute(
+            select(PurchaseBill.id).where(
+                PurchaseBill.purchase_challan_id == challan.id,
+                PurchaseBill.deleted_at.is_(None),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if linked_bill_exists is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot edit or delete a purchase challan that is already linked to a purchase bill",
+        )
+
+    movements = (
+        await db.execute(
+            select(StockMovement).where(
+                StockMovement.reference_type == "purchase_challan",
+                StockMovement.reference_id == challan.id,
+            )
+        )
+    ).scalars().all()
+
+    for movement in movements:
+        batch = (
+            await db.execute(
+                select(InventoryBatch).where(
+                    InventoryBatch.warehouse_id == movement.warehouse_id,
+                    InventoryBatch.product_id == movement.product_id,
+                    InventoryBatch.batch_no == movement.batch_no,
+                )
+            )
+        ).scalar_one_or_none()
+        if batch is not None:
+            qty = Decimal(movement.quantity or 0)
+            if movement.move_type == StockMoveType.IN:
+                batch.available_quantity = Decimal(batch.available_quantity or 0) - qty
+            elif movement.move_type == StockMoveType.OUT:
+                batch.available_quantity = Decimal(batch.available_quantity or 0) + qty
+            elif movement.move_type == StockMoveType.ADJUST:
+                batch.damaged_quantity = Decimal(batch.damaged_quantity or 0) - qty
+        await db.delete(movement)
+
+    challan_items = (
+        await db.execute(select(PurchaseChallanItem).where(PurchaseChallanItem.purchase_challan_id == challan.id))
+    ).scalars().all()
+    for item in challan_items:
+        await db.delete(item)
+
+
 @router.post("/purchase-challans", dependencies=[Depends(require_permission("purchase", "create"))])
 async def create_purchase_challan(
     payload: PurchaseChallanCreate,
@@ -851,6 +902,140 @@ async def list_purchase_challans(db: AsyncSession = Depends(get_db)):
     return response
 
 
+@router.get("/purchase-challans/{purchase_challan_id}", dependencies=[Depends(require_permission("purchase", "read"))])
+async def get_purchase_challan(purchase_challan_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    challan = await db.get(PurchaseChallan, purchase_challan_id)
+    if challan is None or challan.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
+
+    items = (
+        await db.execute(
+            select(PurchaseChallanItem).where(PurchaseChallanItem.purchase_challan_id == challan.id).order_by(PurchaseChallanItem.id.asc())
+        )
+    ).scalars().all()
+    item_rows: list[dict] = []
+    for item in items:
+        product = await db.get(Product, item.product_id)
+        item_rows.append(
+            {
+                "id": str(item.id),
+                "product_id": str(item.product_id),
+                "sku": product.sku if product else "",
+                "name": product.name if product else "",
+                "batch_no": item.batch_number,
+                "expiry_date": str(item.expiry_date) if item.expiry_date else "",
+                "quantity": str(item.quantity or 0),
+            }
+        )
+
+    return {
+        "id": str(challan.id),
+        "reference_no": challan.reference_no,
+        "vendor_id": str(challan.vendor_id),
+        "warehouse_id": str(challan.warehouse_id),
+        "rack_id": str(challan.rack_id) if challan.rack_id else None,
+        "items": item_rows,
+    }
+
+
+@router.patch("/purchase-challans/{purchase_challan_id}", dependencies=[Depends(require_permission("purchase", "update"))])
+async def update_purchase_challan(
+    purchase_challan_id: uuid.UUID,
+    payload: PurchaseChallanCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    challan = await db.get(PurchaseChallan, purchase_challan_id)
+    if challan is None or challan.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
+
+    try:
+        await _reverse_purchase_challan_effects(db, challan)
+        await db.flush()
+
+        challan.vendor_id = payload.vendor_id
+        challan.warehouse_id = payload.warehouse_id
+        challan.rack_id = payload.rack_id
+        challan.reference_no = payload.reference_no
+        challan.status = VoucherStatus.CREATED.value
+        await db.flush()
+
+        for index, item in enumerate(payload.items, start=1):
+            batch_no = _challan_batch_no(challan.id, index, challan.created_at)
+            db.add(
+                PurchaseChallanItem(
+                    purchase_challan_id=challan.id,
+                    product_id=item.product_id,
+                    rack_id=payload.rack_id,
+                    batch_number=batch_no,
+                    expiry_date=item.expiry_date,
+                    quantity=item.quantity,
+                )
+            )
+            batch_res = await db.execute(
+                select(InventoryBatch).where(
+                    InventoryBatch.warehouse_id == payload.warehouse_id,
+                    InventoryBatch.product_id == item.product_id,
+                    InventoryBatch.batch_no == batch_no,
+                )
+            )
+            batch = batch_res.scalar_one_or_none()
+            if batch is None:
+                batch = InventoryBatch(
+                    warehouse_id=payload.warehouse_id,
+                    product_id=item.product_id,
+                    batch_no=batch_no,
+                    expiry_date=item.expiry_date,
+                    available_quantity=Decimal("0"),
+                    reserved_quantity=Decimal("0"),
+                    damaged_quantity=Decimal("0"),
+                )
+                db.add(batch)
+
+            batch.available_quantity = Decimal(batch.available_quantity or 0) + Decimal(item.quantity)
+            if item.expiry_date:
+                batch.expiry_date = item.expiry_date
+            db.add(
+                StockMovement(
+                    warehouse_id=payload.warehouse_id,
+                    product_id=item.product_id,
+                    batch_no=batch_no,
+                    move_type=StockMoveType.IN,
+                    quantity=item.quantity,
+                    reference_type="purchase_challan",
+                    reference_id=challan.id,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+    except HTTPException:
+        await db.rollback()
+        raise
+
+    await db.commit()
+    await db.refresh(challan)
+    return jsonable_encoder(challan)
+
+
+@router.delete("/purchase-challans/{purchase_challan_id}", dependencies=[Depends(require_permission("purchase", "delete"))])
+async def delete_purchase_challan(
+    purchase_challan_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    challan = await db.get(PurchaseChallan, purchase_challan_id)
+    if challan is None or challan.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase challan not found")
+
+    try:
+        await _reverse_purchase_challan_effects(db, challan)
+        challan.deleted_at = datetime.now(timezone.utc)
+        challan.status = VoucherStatus.CANCELLED.value
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+
+    return {"id": str(challan.id), "deleted": True}
+
+
 @router.get("/purchase-bills", dependencies=[Depends(require_permission("purchase", "read"))])
 async def list_purchase_bills(db: AsyncSession = Depends(get_db)):
     bills = (
@@ -911,6 +1096,8 @@ async def get_purchase_bill(purchase_bill_id: uuid.UUID, db: AsyncSession = Depe
                 "quantity": str(item.quantity or 0),
                 "damaged_quantity": str(item.damaged_quantity or 0),
                 "unit_price": str(item.unit_price or 0),
+                "discount_percent": str(item.discount_percent or 0),
+                "line_discount_amount": str(item.line_discount_amount or 0),
             }
         )
 
