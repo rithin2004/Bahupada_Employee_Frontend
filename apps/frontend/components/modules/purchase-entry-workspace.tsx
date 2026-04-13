@@ -357,8 +357,7 @@ function computeLineAmount(line: LineDraft) {
   const baseQty = lineBaseQuantity(line);
   const subtotal = baseQty * lineUnitPrice(line);
   const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-  const discountLumpsum = asDecimal(line.discountLumpsum);
-  const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
+  const discountAmount = subtotal * (discountPercent / 100);
   const taxable = subtotal - discountAmount;
   const tax = taxable * (asDecimal(line.product.tax_percent) / 100);
   return Math.max(0, taxable + tax);
@@ -369,9 +368,16 @@ function computeLineTaxableAmount(line: LineDraft) {
   const baseQty = lineBaseQuantity(line);
   const subtotal = baseQty * lineUnitPrice(line);
   const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-  const discountLumpsum = asDecimal(line.discountLumpsum);
-  const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
+  const discountAmount = subtotal * (discountPercent / 100);
   return Math.max(0, subtotal - discountAmount);
+}
+
+function computeLineDiscountAmount(line: LineDraft) {
+  if (!line.product) return 0;
+  const baseQty = lineBaseQuantity(line);
+  const subtotal = baseQty * lineUnitPrice(line);
+  const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+  return subtotal * (discountPercent / 100);
 }
 
 function roundCurrency(value: number) {
@@ -620,8 +626,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       const baseQty = lineBaseQuantity(line);
       const subtotal = baseQty * lineUnitPrice(line);
       const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-      const discountLumpsum = asDecimal(line.discountLumpsum);
-      const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
+      const discountAmount = subtotal * (discountPercent / 100);
       return sum + Math.max(0, subtotal - discountAmount);
     }, 0);
     const gst = lines.reduce((sum, line) => {
@@ -629,8 +634,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       const baseQty = lineBaseQuantity(line);
       const subtotal = baseQty * lineUnitPrice(line);
       const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-      const discountLumpsum = asDecimal(line.discountLumpsum);
-      const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
+      const discountAmount = subtotal * (discountPercent / 100);
       const taxable = Math.max(0, subtotal - discountAmount);
       return sum + taxable * (asDecimal(line.product.tax_percent) / 100);
     }, 0);
@@ -639,8 +643,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       const baseQty = lineBaseQuantity(line);
       const subtotal = baseQty * lineUnitPrice(line);
       const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-      const discountLumpsum = asDecimal(line.discountLumpsum);
-      return sum + subtotal * (discountPercent / 100) + discountLumpsum;
+      return sum + subtotal * (discountPercent / 100);
     }, 0);
     const freight = asDecimal(freightAmount);
     const grossFinalAmount = valueOfGoods + gst + freight;
@@ -915,21 +918,20 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       if (idx !== index) return line;
       let next = { ...line, ...patch };
       
-      // Bi-directional discount calculation
+      // Bi-directional discount calculation (per-unit basis)
       if (next.product) {
-        const baseQty = lineBaseQuantity(next);
-        const subtotal = baseQty * lineUnitPrice(next);
+        const rate = asDecimal(next.rateValue || next.product.latest_rate_value || next.product.cost_price);
         
         if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
           const pct = asDecimal(patch.discountPercent);
-          next.discountLumpsum = subtotal > 0 ? (subtotal * (pct / 100)).toFixed(2) : "0.00";
+          next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
         } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
           const amt = asDecimal(patch.discountLumpsum);
-          next.discountPercent = subtotal > 0 ? ((amt / subtotal) * 100).toFixed(2) : "0.00";
-        } else if (("quantity1" in patch || "quantity2" in patch || "quantity3" in patch || "rateValue" in patch || "rateUnitLevel" in patch) && subtotal > 0) {
-          // If subtotal changes, keep percent and update lumpsum
+          next.discountPercent = rate > 0 ? ((amt / rate) * 100).toFixed(2) : "0.00";
+        } else if (("rateValue" in patch || "rateUnitLevel" in patch)) {
+          // If rate changes, keep percent and update per-unit discount amount
           const pct = asDecimal(next.discountPercent);
-          next.discountLumpsum = (subtotal * (pct / 100)).toFixed(2);
+          next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
         }
       }
 
@@ -964,8 +966,11 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     setProductSearch("");
     ensureTrailingEmptyLine();
     setActiveRow(targetRow);
-    setActiveField(getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1");
-    setTimeout(() => focusLineField(targetRow, getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1"), 0);
+    const firstField = getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1";
+    setActiveField(firstField);
+    setTimeout(() => {
+      focusLineField(targetRow, firstField);
+    }, 80);
   }, [ensureTrailingEmptyLine, focusLineField, productTargetRow, updateLine]);
 
   const openProductSelector = useCallback((rowIndex = activeRow) => {
@@ -1387,7 +1392,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             <div className="grid gap-px bg-border md:grid-cols-12">
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Purchase Date</Label>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2 grid gap-1">
                   <Input
                     ref={billDateRef}
                     value={billDateInput}
@@ -1400,12 +1405,12 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       }
                     }}
                     placeholder="ddmmyyyy"
-                    className="h-11 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
+                    className="h-11 w-full rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
                   />
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-11 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    className="h-8 w-full rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
                     onClick={() => {
                       const node = billDatePickerRef.current;
                       if (!node) return;
@@ -1416,7 +1421,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       }
                     }}
                   >
-                    Date
+                    📅 Pick Date
                   </Button>
                   <input
                     ref={billDatePickerRef}
@@ -1453,7 +1458,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2 grid gap-1">
                   <Input
                     ref={receivedDateRef}
                     value={receivedDateInput}
@@ -1466,12 +1471,12 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       }
                     }}
                     placeholder="ddmmyyyy"
-                    className="h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
+                    className="h-11 w-full rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
                   />
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-11 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    className="h-8 w-full rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
                     onClick={() => {
                       const node = receivedDatePickerRef.current;
                       if (!node) return;
@@ -1482,7 +1487,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       }
                     }}
                   >
-                    Date
+                    📅 Pick Date
                   </Button>
                   <input
                     ref={receivedDatePickerRef}
@@ -1550,7 +1555,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             </div>
 
             <div className="border-t overflow-x-auto">
-              <Table className="min-w-[1100px] table-fixed">
+              <Table className="min-w-[1200px] table-fixed">
                 <TableHeader>
                   <TableRow className="bg-[#e7f0cb] hover:bg-[#e7f0cb]">
                     <TableHead className="w-[44px] text-center text-sm font-semibold text-foreground">#</TableHead>
@@ -1562,7 +1567,8 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                     <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
                     <TableHead className="w-[80px] text-center text-sm font-semibold text-foreground">UNIT</TableHead>
                     <TableHead className="w-[70px] text-center text-sm font-semibold text-foreground">DISC%</TableHead>
-                    <TableHead className="w-[100px] text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
+                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">DISC AMT</TableHead>
+                    <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
                     <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1619,8 +1625,8 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                         </Button>
                       </TableCell>
                       <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[100px] py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
                       <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
                     </TableRow>
                   ))}
