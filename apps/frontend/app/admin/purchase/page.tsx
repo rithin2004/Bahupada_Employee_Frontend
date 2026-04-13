@@ -41,35 +41,22 @@ export default function AdminPurchasePage() {
             <TabsContent value="bill" className="mt-4">
               <div className="space-y-4">
                 {showPurchaseEntry ? (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <h1 className="text-lg font-semibold">Create Purchase Bill</h1>
-                        <p className="text-sm text-muted-foreground">
-                          Keyboard-first purchase bill workflow.
-                        </p>
-                      </div>
-                      <Button variant="outline" onClick={() => setShowPurchaseEntry(false)}>
-                        Back To Purchase Bills
-                      </Button>
+                  <PurchaseEntryWorkspace
+                    onSaved={() => {
+                      setShowPurchaseEntry(false);
+                      setActiveTab("bill");
+                      setBillListRefreshKey((prev) => prev + 1);
+                    }}
+                    onClose={() => setShowPurchaseEntry(false)}
+                  />
+                ) : (
+                  <>
+                    <div className="flex items-center justify-end">
+                      <Button onClick={() => setShowPurchaseEntry(true)}>Create Purchase Bill</Button>
                     </div>
-                    <PurchaseEntryWorkspace
-                      onSaved={() => {
-                        setShowPurchaseEntry(false);
-                        setActiveTab("bill");
-                        setBillListRefreshKey((prev) => prev + 1);
-                      }}
-                    />
-                  </div>
-                ) : null}
-
-                {!showPurchaseEntry ? (
-                  <div className="flex items-center justify-end">
-                    <Button onClick={() => setShowPurchaseEntry(true)}>Create Purchase Bill</Button>
-                  </div>
-                ) : null}
-
-                <ProcurementCreateFlow key={`bill-list-${billListRefreshKey}`} initialTab="bill" hideTabs hideBillCreateButton />
+                    <ProcurementCreateFlow key={`bill-list-${billListRefreshKey}`} initialTab="bill" hideTabs hideBillCreateButton />
+                  </>
+                )}
               </div>
             </TabsContent>
           </Tabs>
