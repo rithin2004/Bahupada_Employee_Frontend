@@ -1550,11 +1550,11 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             </div>
 
             <div className="border-t overflow-x-auto">
-              <Table className="min-w-[1100px]">
+              <Table className="min-w-[1100px] table-fixed">
                 <TableHeader>
                   <TableRow className="bg-[#e7f0cb] hover:bg-[#e7f0cb]">
                     <TableHead className="w-[44px] text-center text-sm font-semibold text-foreground">#</TableHead>
-                    <TableHead className="w-[36%] min-w-[300px] text-sm font-semibold text-foreground">PRODUCT</TableHead>
+                    <TableHead className="text-sm font-semibold text-foreground">PRODUCT</TableHead>
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
@@ -1562,19 +1562,19 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                     <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
                     <TableHead className="w-[80px] text-center text-sm font-semibold text-foreground">UNIT</TableHead>
                     <TableHead className="w-[70px] text-center text-sm font-semibold text-foreground">DISC%</TableHead>
-                    <TableHead className="text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
-                    <TableHead className="text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
+                    <TableHead className="w-[100px] text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
+                    <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lines.map((line, index) => (
                     <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors")}>
-                      <TableCell className="w-[44px] py-1.5 text-center text-sm font-semibold text-muted-foreground">
+                      <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
                         <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
                           {index + 1}
                         </span>
                       </TableCell>
-                      <TableCell className="w-[36%] min-w-[300px] py-1.5">
+                      <TableCell className="py-1.5 overflow-hidden">
                         <Button
                           ref={(node) => {
                             setLineRef(line.id, "product")(node);
@@ -1600,11 +1600,11 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
                       <TableCell className="w-[80px] py-1.5">
                         <Button
                           ref={setLineRef(line.id, "rateUnitLevel")}
@@ -1618,8 +1618,8 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
                       <TableCell className="w-[100px] py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
                       <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
                     </TableRow>
