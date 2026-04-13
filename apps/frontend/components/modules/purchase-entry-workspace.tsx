@@ -685,16 +685,20 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
 
   const loadCreateReferences = useCallback(async () => {
     try {
-      const [brandRes, categoryRes, subCategoryRes, vendorCategoryRes] = await Promise.all([
+      const [brandRes, categoryRes, subCategoryRes, vendorCategoryRes, hsnRes, unitRes] = await Promise.all([
         fetchBackendFresh("/masters/product-brands?page=1&page_size=200"),
         fetchBackendFresh("/masters/product-categories?page=1&page_size=200"),
         fetchBackendFresh("/masters/product-sub-categories?page=1&page_size=200"),
         fetchBackendFresh("/masters/account-categories?party_type=VENDOR&page=1&page_size=200"),
+        fetchBackendFresh("/masters/hsn?page=1&page_size=200"),
+        fetchBackendFresh("/masters/units?page=1&page_size=200"),
       ]);
       setBrandOptions(asArray(asObject(brandRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
       setCategoryOptions(asArray(asObject(categoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
       setSubCategoryOptions(asArray(asObject(subCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? ""), category_id: item.category_id ? String(item.category_id) : undefined })));
       setVendorCategoryOptions(asArray(asObject(vendorCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), code: String(item.code ?? ""), name: String(item.name ?? "") })));
+      setHsnOptions(asArray(asObject(hsnRes).items).map((item) => ({ id: String(item.id ?? ""), hsn_code: String(item.hsn_code ?? ""), gst_percent: String(item.gst_percent ?? "0") })));
+      setUnitOptions(asArray(asObject(unitRes).items).map((item) => ({ id: String(item.id ?? ""), unit_code: String(item.unit_code ?? ""), unit_name: String(item.unit_name ?? "") })));
     } catch {
       setBrandOptions([]);
       setCategoryOptions([]);
@@ -939,7 +943,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     }));
   }, []);
 
-  const ensureTrailingEmptyLine = useCallback(() => {
+   const ensureTrailingEmptyLine = useCallback(() => {
     setLines((prev) => {
       const blankIndexes = prev.map((line, index) => ({ line, index })).filter(({ line }) => line.product === null);
       if (!blankIndexes.length) {
@@ -953,6 +957,24 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       return next;
     });
   }, []);
+
+  const deleteLine = useCallback((rowIndex: number) => {
+    setLines((prev) => {
+      const line = prev[rowIndex];
+      if (!line || !line.product) return prev; // Don't delete empty rows
+      if (prev.filter((l) => l.product !== null).length === 0) return prev; // Keep at least one
+      const next = prev.filter((_, idx) => idx !== rowIndex);
+      // Ensure there's always a trailing empty line
+      if (next.every((l) => l.product !== null)) {
+        next.push(makeLine());
+      }
+      return next;
+    });
+    // Move focus to previous row or stay at same index
+    const newIndex = Math.max(0, rowIndex - 1);
+    setActiveRow(newIndex);
+    setTimeout(() => focusLineField(newIndex, "product"), 80);
+  }, [focusLineField]);
 
   const selectProduct = useCallback((product: ProductSummary, targetRow = productTargetRow) => {
     updateLine(targetRow, {
@@ -1304,6 +1326,16 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       handleLineFieldEnter(event, rowIndex, field);
       return;
     }
+    if (event.key === "Delete" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      deleteLine(rowIndex);
+      return;
+    }
+    if (event.key === "F8") {
+      event.preventDefault();
+      deleteLine(rowIndex);
+      return;
+    }
     if (event.key === "ArrowRight") {
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, 0, 1);
@@ -1328,7 +1360,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, -1, 0);
     }
-  }, [handleLineFieldEnter, lines, navigateGridByDelta]);
+  }, [deleteLine, handleLineFieldEnter, lines, navigateGridByDelta]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1359,32 +1391,15 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
             {vendorSummary ? (
-              <div className="grid gap-px border-b bg-border md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))]">
-                <div className="bg-[#fbfcf7] px-4 py-3">
-                  <div className="truncate text-lg font-semibold">{vendorSummary.vendor_name} <span className="text-primary">[{paymentMode}]</span></div>
-                  <div className="mt-1 truncate text-xs text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
-                  <div className="mt-2 text-xs text-[#5b655f]">
-                    Allowed Brands: {vendorSummary.brand_names.length ? vendorSummary.brand_names.join(", ") : "None linked"}
-                  </div>
-                  <div className="mt-1 text-xs text-[#5b655f]">
-                    Vendor Type: {vendorSummary.purchase_type || "Not set"}
-                  </div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Balance</div>
-                  <div className="mt-1 font-semibold">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Purc</div>
-                  <div className="mt-1 font-semibold">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "-"}</div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Pay</div>
-                  <div className="mt-1 font-semibold">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "-"}</div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Month</div>
-                  <div className="mt-1 font-semibold">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
+              <div className="border-b bg-[#fbfcf7] px-4 py-3">
+                <div className="truncate text-lg font-semibold">{vendorSummary.vendor_name} <span className="text-primary">[{paymentMode}]</span></div>
+                <div className="mt-1 truncate text-xs text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
+                <div className="mt-2 flex gap-4 text-xs text-[#5b655f]">
+                  <span>Allowed Brands: {vendorSummary.brand_names.length ? vendorSummary.brand_names.join(", ") : "None linked"}</span>
+                  <span>•</span>
+                  <span>Vendor Type: {vendorSummary.purchase_type || "Not set"}</span>
+                  <span>•</span>
+                  <span>GSTIN: {vendorSummary.gstin || "-"}</span>
                 </div>
               </div>
             ) : null}
@@ -1575,10 +1590,24 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 <TableBody>
                   {lines.map((line, index) => (
                     <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors")}>
-                      <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
-                        <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
-                          {index + 1}
-                        </span>
+                      <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground group/row">
+                        {line.product ? (
+                          <span className="relative inline-flex min-w-7 items-center justify-center">
+                            <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1 group-hover/row:invisible", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
+                              {index + 1}
+                            </span>
+                            <button
+                              type="button"
+                              className="absolute inset-0 hidden items-center justify-center rounded-sm bg-red-100 text-red-600 hover:bg-red-200 group-hover/row:flex"
+                              onClick={() => deleteLine(index)}
+                              title="Delete line (F8)"
+                            >✕</button>
+                          </span>
+                        ) : (
+                          <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
+                            {index + 1}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="py-1.5 overflow-hidden">
                         <Button
@@ -1726,10 +1755,6 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
               <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party History</div>
               {vendorSummary ? (
                 <div className="space-y-3">
-                  <div>
-                    <div className="text-base font-semibold">{vendorSummary.vendor_name}</div>
-                    <div className="mt-1 text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
-                  </div>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div>Annual</div><div className="text-right font-semibold">{Number(vendorSummary.annual_purchase_amount).toFixed(2)}</div>
                     <div>Month</div><div className="text-right font-semibold">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
