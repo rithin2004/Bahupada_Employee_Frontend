@@ -292,8 +292,8 @@ async def list_sales_orders(
     }
 
 
-@router.get("/sales-orders/{sales_order_id}/items", dependencies=[Depends(require_permission("sales", "read"))])
-async def list_sales_order_items(
+@router.get("/sales-orders/{sales_order_id}", dependencies=[Depends(require_permission("sales", "read"))])
+async def get_sales_order(
     sales_order_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
@@ -311,6 +311,9 @@ async def list_sales_order_items(
             Product.unit.label("unit"),
             SalesOrderItem.quantity.label("quantity"),
             SalesOrderItem.unit_price.label("unit_price"),
+            SalesOrderItem.selling_price.label("selling_price"),
+            SalesOrderItem.discount_percent.label("discount_percent"),
+            SalesOrderItem.gst_percent.label("gst_percent"),
         )
         .select_from(SalesOrderItem)
         .join(Product, Product.id == SalesOrderItem.product_id)
@@ -318,7 +321,10 @@ async def list_sales_order_items(
         .order_by(Product.name.asc())
     )
     rows = (await db.execute(stmt)).mappings().all()
-    return {"items": jsonable_encoder([dict(row) for row in rows])}
+    
+    response = jsonable_encoder(order)
+    response["items"] = jsonable_encoder([dict(row) for row in rows])
+    return response
 
 
 @router.get(
@@ -422,6 +428,18 @@ async def list_customer_pending_sales_orders(
     return response
 
 
+@router.get("/sales-entry/bootstrap", dependencies=[Depends(require_permission("sales", "read"))])
+async def sales_entry_bootstrap(db: AsyncSession = Depends(get_db)):
+    warehouses = (
+        await db.execute(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.name.asc()))
+    ).scalars().all()
+    return {
+        "today": datetime.now(timezone.utc).date().isoformat(),
+        "default_warehouse_id": str(warehouses[0].id) if warehouses else None,
+        "next_entry_number": None,
+    }
+
+
 @router.get(
     "/sales-entry/pending-customers",
     response_model=list[SalesEntryPendingCustomer],
@@ -497,6 +515,7 @@ async def get_sales_entry_customer_summary(
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
 
+async def _build_customer_summary(db: AsyncSession, customer: Customer) -> dict[str, object]:
     now = datetime.now(timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc).date()
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc).date()
@@ -508,7 +527,7 @@ async def get_sales_entry_customer_summary(
                 .select_from(SalesFinalInvoice)
                 .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
                 .where(
-                    SalesOrder.customer_id == customer_id,
+                    SalesOrder.customer_id == customer.id,
                     SalesFinalInvoice.deleted_at.is_(None),
                     SalesFinalInvoice.invoice_date >= year_start,
                 )
@@ -523,7 +542,7 @@ async def get_sales_entry_customer_summary(
                 .select_from(SalesFinalInvoice)
                 .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
                 .where(
-                    SalesOrder.customer_id == customer_id,
+                    SalesOrder.customer_id == customer.id,
                     SalesFinalInvoice.deleted_at.is_(None),
                     SalesFinalInvoice.invoice_date >= month_start,
                 )
@@ -537,13 +556,13 @@ async def get_sales_entry_customer_summary(
             .select_from(SalesFinalInvoice)
             .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
             .where(
-                SalesOrder.customer_id == customer_id,
+                SalesOrder.customer_id == customer.id,
                 SalesFinalInvoice.deleted_at.is_(None),
             )
         )
     ).scalar_one()
     last_receipt_date = (
-        await db.execute(select(func.max(Payment.payment_date)).where(Payment.customer_id == customer_id))
+        await db.execute(select(func.max(Payment.payment_date)).where(Payment.customer_id == customer.id))
     ).scalar_one()
 
     recent_invoice_rows = (
@@ -556,7 +575,7 @@ async def get_sales_entry_customer_summary(
             .select_from(SalesFinalInvoice)
             .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
             .where(
-                SalesOrder.customer_id == customer_id,
+                SalesOrder.customer_id == customer.id,
                 SalesFinalInvoice.deleted_at.is_(None),
             )
             .order_by(SalesFinalInvoice.invoice_date.desc(), SalesFinalInvoice.created_at.desc())
@@ -566,9 +585,30 @@ async def get_sales_entry_customer_summary(
     recent_receipt_rows = (
         await db.execute(
             select(Payment.payment_date, Payment.amount, Payment.mode)
-            .where(Payment.customer_id == customer_id)
+            .where(Payment.customer_id == customer.id)
             .order_by(Payment.payment_date.desc(), Payment.created_at.desc())
             .limit(6)
+        )
+    ).all()
+
+    # Calculate open challans
+    open_challans_rows = (
+        await db.execute(
+            select(
+                SalesOrder.id,
+                SalesOrder.invoice_number,
+                SalesOrder.created_at,
+                func.count(SalesOrderItem.id).label("item_count"),
+            )
+            .select_from(SalesOrder)
+            .outerjoin(SalesOrderItem, SalesOrderItem.sales_order_id == SalesOrder.id)
+            .where(
+                SalesOrder.customer_id == customer.id,
+                SalesOrder.status == "pending",
+                SalesOrder.deleted_at.is_(None),
+            )
+            .group_by(SalesOrder.id)
+            .order_by(SalesOrder.created_at.asc())
         )
     ).all()
 
@@ -612,7 +652,63 @@ async def get_sales_entry_customer_summary(
             )
             for payment_date, amount, mode in recent_receipt_rows
         ],
+        "open_challans": [
+            {
+                "challan_id": str(row.id),
+                "reference_no": str(row.invoice_number),
+                "challan_date": str(row.created_at.date()) if row.created_at else None,
+                "item_count": int(row.item_count),
+            }
+            for row in open_challans_rows
+        ],
     }
+
+
+@router.get(
+    "/sales-entry/customers/search",
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def search_sales_entry_customers(
+    q: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    stmt = select(Customer)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Customer.name.ilike(term),
+                Customer.firm_name.ilike(term),
+                Customer.city.ilike(term),
+                Customer.gst_number.ilike(term),
+            )
+        )
+    stmt = stmt.order_by(Customer.name.asc()).limit(limit)
+    customers = (await db.execute(stmt)).scalars().all()
+    
+    summaries = []
+    for customer in customers:
+        summary = await _build_customer_summary(db, customer)
+        summaries.append(jsonable_encoder(summary))
+    return {"items": summaries}
+
+
+@router.get(
+    "/sales-entry/customers/{customer_id}/summary",
+    response_model=SalesEntryCustomerSummary,
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def get_sales_entry_customer_summary(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    return await _build_customer_summary(db, customer)
 
 
 @router.get("/sales-final-invoices", dependencies=[Depends(require_permission("sales", "read"))])
@@ -682,8 +778,8 @@ async def list_sales_final_invoices(
     }
 
 
-@router.get("/sales-final-invoices/{sales_final_invoice_id}/items", dependencies=[Depends(require_permission("sales", "read"))])
-async def list_sales_final_invoice_items(
+@router.get("/sales-final-invoices/{sales_final_invoice_id}", dependencies=[Depends(require_permission("sales", "read"))])
+async def get_sales_final_invoice(
     sales_final_invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
@@ -691,6 +787,8 @@ async def list_sales_final_invoice_items(
     invoice = await db.get(SalesFinalInvoice, sales_final_invoice_id)
     if invoice is None or invoice.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sales final invoice not found")
+
+    order = await db.get(SalesOrder, invoice.sales_order_id)
 
     stmt = (
         select(
@@ -702,6 +800,8 @@ async def list_sales_final_invoice_items(
             SalesFinalInvoiceItem.quantity.label("quantity"),
             SalesFinalInvoiceItem.selling_price.label("selling_price"),
             SalesFinalInvoiceItem.total_amount.label("total_amount"),
+            SalesFinalInvoiceItem.discount_percent.label("discount_percent"),
+            SalesFinalInvoiceItem.gst_percent.label("gst_percent"),
         )
         .select_from(SalesFinalInvoiceItem)
         .join(Product, Product.id == SalesFinalInvoiceItem.product_id)
@@ -709,7 +809,12 @@ async def list_sales_final_invoice_items(
         .order_by(Product.name.asc())
     )
     rows = (await db.execute(stmt)).mappings().all()
-    return {"items": jsonable_encoder([dict(row) for row in rows])}
+    
+    response = jsonable_encoder(invoice)
+    response["customer_id"] = str(order.customer_id) if order else None
+    response["warehouse_id"] = str(order.warehouse_id) if order else None
+    response["items"] = jsonable_encoder([dict(row) for row in rows])
+    return response
 
 
 @router.get("/dashboard/pending-orders", response_model=PendingOrdersDashboardResponse, dependencies=[Depends(require_permission("sales", "read"))])

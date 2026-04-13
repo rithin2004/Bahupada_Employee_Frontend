@@ -1386,7 +1386,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
         <div className="flex items-center justify-between border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
           <span>Purchase {mode === "challan" ? "Challan" : "Entry"} Console</span>
-          {onClose && <Button variant="ghost" size="sm" className="h-6 text-white hover:text-white/80" onClick={onClose}>ESC to Back</Button>}
+          {onClose && <Button variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>ESC to Back</Button>}
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
@@ -1589,8 +1589,8 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 </TableHeader>
                 <TableBody>
                   {lines.map((line, index) => (
-                    <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors")}>
-                      <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground group/row">
+                    <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors group/row")}>
+                      <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
                         {line.product ? (
                           <span className="relative inline-flex min-w-7 items-center justify-center">
                             <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1 group-hover/row:invisible", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>

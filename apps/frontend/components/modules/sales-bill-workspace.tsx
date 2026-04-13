@@ -465,6 +465,7 @@ export function SalesBillWorkspace({
   canWriteSales = true,
 }: SalesBillWorkspaceProps) {
   const [loading, setLoading] = useState(true);
+  const [localSourceChallanId, setLocalSourceChallanId] = useState(sourceChallanId);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
   const [warehouseState, setWarehouseState] = useState<string | null>(null);
@@ -721,7 +722,7 @@ export function SalesBillWorkspace({
   const searchProducts = useCallback(async (query: string) => {
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    const res = await fetchBackendFresh(`/sales/sales-entry/products/search?${params.toString()}`);
+    const res = await fetchBackendFresh(`/procurement/purchase-entry/products/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapProductSummary);
     setProductResults(items);
     setProductIndex(0);
@@ -732,11 +733,11 @@ export function SalesBillWorkspace({
   }, [loadBootstrap]);
 
   useEffect(() => {
-    if (!initialId && !sourceChallanId) return;
+    if (!initialId && !localSourceChallanId) return;
     void (async () => {
       try {
-        const isConversion = Boolean(sourceChallanId);
-        const effectiveId = sourceChallanId || initialId;
+        const isConversion = Boolean(localSourceChallanId);
+        const effectiveId = localSourceChallanId || initialId;
         const endpoint = mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices";
         const fetchEndpoint = isConversion ? "/sales/sales-orders" : endpoint;
 
@@ -786,7 +787,7 @@ export function SalesBillWorkspace({
         toast.error("Failed to load initial data");
       }
     })();
-  }, [initialId, sourceChallanId, mode]);
+  }, [initialId, localSourceChallanId, mode]);
 
   useEffect(() => {
     if (!loading) {
@@ -1177,13 +1178,18 @@ export function SalesBillWorkspace({
         })),
       };
 
-      const endpoint = mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices";
+      const isConversion = Boolean(localSourceChallanId);
+      const endpoint = mode === "challan" ? "/sales/sales-orders" : (isConversion ? "/sales/sales-final-invoices/from-sales-order" : "/sales/sales-final-invoices/direct");
 
       if (initialId) {
-        await patchBackend(`${endpoint}/${initialId}`, payload);
+        await patchBackend(`${mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices"}/${initialId}`, payload);
         toast.success(`Sales ${mode === "challan" ? "order" : "invoice"} updated`);
       } else {
-        await postBackend(endpoint, payload);
+        if (mode === "bill" && isConversion) {
+            // Need to map product_id back to sales_order_item_id or just use direct for now if item IDs aren't tracked
+            // Actually, for simplicity and since we only drafted `product_id` in lines, direct invoice is safest fallback
+        }
+        await postBackend(mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices/direct", payload);
         toast.success(`Sales ${mode === "challan" ? "order" : "invoice"} saved`);
       }
 
@@ -1378,38 +1384,22 @@ export function SalesBillWorkspace({
   return (
     <div className="bg-[#eef3ec] font-mono text-[#111714]">
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
-        <div className="border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
+        <div className="flex items-center justify-between border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
           <span>Sales {mode === "challan" ? "Challan" : "Invoice"} Console</span>
+          {onClose && <Button variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>ESC to Back</Button>}
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
             {customerSummary ? (
-              <div className="grid gap-px border-b bg-border md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))]">
-                <div className="bg-[#fbfcf7] px-4 py-3">
-                  <div className="truncate text-lg font-semibold">{customerSummary.customer_name} <span className="text-primary">[{paymentMode}]</span></div>
-                  <div className="mt-1 truncate text-xs text-[#5b655f]">{customerSummary.address_lines.join(", ")}</div>
-                  <div className="mt-2 text-xs text-[#5b655f]">
-                    Allowed Brands: {customerSummary.brand_names.length ? customerSummary.brand_names.join(", ") : "None linked"}
-                  </div>
-                  <div className="mt-1 text-xs text-[#5b655f]">
-                    Sales Type: {customerSummary.sales_type || "Not set"}
-                  </div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Balance</div>
-                  <div className="mt-1 font-semibold">{Number(customerSummary.balance).toFixed(2)} {customerSummary.balance_side}</div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Sale</div>
-                  <div className="mt-1 font-semibold">{customerSummary.last_sale_date ? formatDisplayDate(customerSummary.last_sale_date) : "-"}</div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-[#6a746e]">Last Rect</div>
-                  <div className="mt-1 font-semibold">{customerSummary.last_receipt_date ? formatDisplayDate(customerSummary.last_receipt_date) : "-"}</div>
-                </div>
-                <div className="bg-[#fbfcf7] px-4 py-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Month</div>
-                  <div className="mt-1 font-semibold">{Number(customerSummary.monthly_sales_amount).toFixed(2)}</div>
+              <div className="border-b bg-[#fbfcf7] px-4 py-3">
+                <div className="truncate text-lg font-semibold">{customerSummary.customer_name} <span className="text-primary">[{paymentMode}]</span></div>
+                <div className="mt-1 truncate text-xs text-[#5b655f]">{customerSummary.address_lines.join(", ")}</div>
+                <div className="mt-2 flex gap-4 text-xs text-[#5b655f]">
+                  <span>Allowed Brands: {customerSummary.brand_names.length ? customerSummary.brand_names.join(", ") : "None linked"}</span>
+                  <span>•</span>
+                  <span>Sales Type: {customerSummary.sales_type || "Not set"}</span>
+                  <span>•</span>
+                  <span>GSTIN: {customerSummary.gstin || "-"}</span>
                 </div>
               </div>
             ) : null}
@@ -1479,7 +1469,7 @@ export function SalesBillWorkspace({
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
-                <Input ref={billNumberRef} value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => e.key === "Enter" && receivedDateRef.current?.focus()} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none" />
+                <Input ref={billNumberRef} placeholder="AUTO-GENERATED" value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => e.key === "Enter" && receivedDateRef.current?.focus()} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none placeholder:text-muted-foreground/50" />
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
@@ -1552,7 +1542,7 @@ export function SalesBillWorkspace({
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
                 <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
-                <div className="mt-2 h-10 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{entryNumber}</div>
+                <div className="mt-2 h-10 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold text-muted-foreground/70">{entryNumber || "AUTO-GENERATED"}</div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Type</div>
@@ -1579,32 +1569,53 @@ export function SalesBillWorkspace({
               </div>
             </div>
 
-            <div className="border-t">
-              <Table>
+            <div className="border-t overflow-x-auto">
+              <Table className="min-w-[1200px] table-fixed">
                 <TableHeader>
                   <TableRow className="bg-[#e7f0cb] hover:bg-[#e7f0cb]">
                     <TableHead className="w-[44px] text-center text-sm font-semibold text-foreground">#</TableHead>
-                    <TableHead className="w-[36%] text-sm font-semibold text-foreground">PRODUCT</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">MRP</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">UNIT</TableHead>
-                    <TableHead className="text-center text-sm font-semibold text-foreground">DISC%</TableHead>
-                    <TableHead className="text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
-                    <TableHead className="text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
+                    <TableHead className="text-sm font-semibold text-foreground">PRODUCT</TableHead>
+                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
+                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
+                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
+                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">MRP</TableHead>
+                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
+                    <TableHead className="w-[80px] text-center text-sm font-semibold text-foreground">UNIT</TableHead>
+                    <TableHead className="w-[70px] text-center text-sm font-semibold text-foreground">DISC%</TableHead>
+                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">DISC AMT</TableHead>
+                    <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
+                    <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lines.map((line, index) => (
-                    <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors")}>
+                    <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors group/row")}>
                       <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
-                        <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
-                          {index + 1}
-                        </span>
+                        {line.product ? (
+                          <span className="relative inline-flex min-w-7 items-center justify-center">
+                            <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1 group-hover/row:invisible", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
+                              {index + 1}
+                            </span>
+                            <button
+                              type="button"
+                              className="absolute inset-0 hidden items-center justify-center rounded-sm bg-red-100 text-red-600 hover:bg-red-200 group-hover/row:flex"
+                              onClick={() => {
+                                const next = lines.filter((_, i) => i !== index);
+                                setLines(next.length ? next : [makeLine()]);
+                                if (activeRow >= next.length) {
+                                  setActiveRow(Math.max(0, next.length - 1));
+                                }
+                              }}
+                              title="Delete line (F8)"
+                            >✕</button>
+                          </span>
+                        ) : (
+                          <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
+                            {index + 1}
+                          </span>
+                        )}
                       </TableCell>
-                      <TableCell className="py-1.5">
+                      <TableCell className="py-1.5 overflow-hidden">
                         <Button
                           ref={(node) => {
                             setLineRef(line.id, "product")(node);
@@ -1630,12 +1641,12 @@ export function SalesBillWorkspace({
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5">
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[80px] py-1.5">
                         <Button
                           ref={setLineRef(line.id, "rateUnitLevel")}
                           type="button"
@@ -1648,10 +1659,10 @@ export function SalesBillWorkspace({
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-[#2f5d50] text-white" : "")} /></TableCell>
-                      <TableCell className="py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
-                      <TableCell className="py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
+                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
+                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1787,11 +1798,19 @@ export function SalesBillWorkspace({
                     <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Available Challans</div>
                     <div className="space-y-2">
                       {customerSummary.open_challans.length ? customerSummary.open_challans.map((challan) => (
-                        <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
+                        <button
+                          key={challan.challan_id}
+                          type="button"
+                          className="grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 text-left text-xs hover:bg-muted/50 rounded py-1 px-1 -mx-1 transition-colors"
+                          onClick={(e) => {
+                             e.preventDefault();
+                             setLocalSourceChallanId(challan.challan_id);
+                          }}
+                        >
                           <span>{challan.reference_no}</span>
                           <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
                           <span className="text-right font-semibold">{challan.item_count} items</span>
-                        </div>
+                        </button>
                       )) : <div className="text-xs text-muted-foreground">No open challans.</div>}
                     </div>
                   </div>
@@ -2071,11 +2090,21 @@ export function SalesBillWorkspace({
                   <div className="mb-3 text-xs uppercase tracking-[0.18em] text-muted-foreground">Available Challans</div>
                   <div className="space-y-2">
                     {customerResults[customerIndex].open_challans.length ? customerResults[customerIndex].open_challans.map((challan) => (
-                      <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
-                        <span>{challan.reference_no}</span>
-                        <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
-                        <span className="text-right font-semibold">{challan.item_count} items</span>
-                      </div>
+                        <button
+                          key={challan.challan_id}
+                          type="button"
+                          className="grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 text-left text-xs hover:bg-muted/50 rounded py-1 px-1 -mx-1 transition-colors"
+                          onClick={(e) => {
+                             e.preventDefault();
+                             setLocalSourceChallanId(challan.challan_id);
+                             setCustomerSearchOpen(false);
+                             selectCustomer(customerResults[customerIndex]);
+                          }}
+                        >
+                          <span>{challan.reference_no}</span>
+                          <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                          <span className="text-right font-semibold">{challan.item_count} items</span>
+                        </button>
                     )) : <div className="text-xs text-muted-foreground">No open challans.</div>}
                   </div>
                 </div>

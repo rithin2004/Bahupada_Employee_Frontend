@@ -47,7 +47,6 @@ const adminModules: NavModule[] = [
   { key: "products", label: "Products", href: "/products?tab=products", icon: Boxes, permissionKey: "products" },
   { key: "warehouses", label: "Warehouse Module", href: "/warehouses", icon: Warehouse, permissionKey: "warehouses" },
   { key: "sales", label: "Sales Module", href: "/sales", icon: FileText, permissionKey: "sales" },
-  { key: "sales-invoices", label: "Sales Invoices", href: "/sales-invoices", icon: FileText, permissionKey: "sales-invoices" },
   { key: "planning", label: "Planner Module", href: "/planning", icon: CalendarDays, permissionKey: "planning" },
   { key: "areas", label: "Areas Module", href: "/areas", icon: MapPinned, permissionKey: "areas" },
   { key: "routes", label: "Routes Module", href: "/routes", icon: Route, permissionKey: "routes" },
