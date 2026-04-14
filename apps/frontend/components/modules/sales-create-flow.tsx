@@ -141,6 +141,8 @@ export function SalesCreateFlow() {
     b.customer_name.toLowerCase().includes(billSearch.toLowerCase())
   );
 
+  const [activeTab, setActiveTab] = useState<"challan" | "bill">("bill");
+
   if (showWorkspace) {
     return (
       <SalesBillWorkspace 
@@ -148,6 +150,14 @@ export function SalesCreateFlow() {
         onClose={() => {
           setShowWorkspace(false);
           setEditingId("");
+          setActiveTab(workspaceMode);
+          void loadChallans();
+          void loadBills();
+        }}
+        onSaved={() => {
+          setShowWorkspace(false);
+          setEditingId("");
+          setActiveTab(workspaceMode);
           void loadChallans();
           void loadBills();
         }}
@@ -175,7 +185,7 @@ export function SalesCreateFlow() {
         </div>
       </div>
 
-      <Tabs defaultValue="bill">
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "challan" | "bill")}>
         <TabsList>
           <TabsTrigger value="bill">Sales Bills</TabsTrigger>
           <TabsTrigger value="challan">Sales Challans</TabsTrigger>

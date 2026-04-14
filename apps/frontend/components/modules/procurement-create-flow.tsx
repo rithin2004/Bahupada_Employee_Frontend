@@ -446,6 +446,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [canWritePurchase, setCanWritePurchase] = useState(false);
   
   const [showWorkspace, setShowWorkspace] = useState(false);
+  const [activeTab, setActiveTab] = useState<"challan" | "bill">(initialTab);
   const [workspaceMode, setWorkspaceMode] = useState<"challan" | "bill">("bill");
   const [editingId, setEditingId] = useState("");
   const [conversionId, setConversionId] = useState("");
@@ -1502,6 +1503,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           setShowWorkspace(false);
           setEditingId("");
           setConversionId("");
+          setActiveTab(workspaceMode);
           void loadChallans();
           void loadBills();
         }}
@@ -1509,6 +1511,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           setShowWorkspace(false);
           setEditingId("");
           setConversionId("");
+          setActiveTab(workspaceMode);
         }}
       />
     );
@@ -1516,7 +1519,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
 
   return (
     <>
-    <Tabs defaultValue={initialTab} className="w-full">
+    <Tabs value={hideTabs ? initialTab : activeTab} onValueChange={(v) => setActiveTab(v as "challan" | "bill")} className="w-full">
       {!hideTabs ? (
         <TabsList>
           <TabsTrigger value="challan">Purchase Challan</TabsTrigger>

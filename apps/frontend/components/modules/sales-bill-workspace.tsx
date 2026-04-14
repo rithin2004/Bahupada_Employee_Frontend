@@ -948,6 +948,24 @@ export function SalesBillWorkspace({
     }));
   }, []);
 
+  const deleteLine = useCallback((rowIndex: number) => {
+    setLines((prev) => {
+      const line = prev[rowIndex];
+      if (!line || !line.product) return prev; // Don't delete empty rows
+      if (prev.filter((l) => l.product !== null).length === 0) return prev; // Keep at least one
+      const next = prev.filter((_, idx) => idx !== rowIndex);
+      // Ensure there's always a trailing empty line
+      if (next.every((l) => l.product !== null)) {
+        next.push(makeLine());
+      }
+      return next;
+    });
+    // Move focus to previous row or stay at same index
+    const newIndex = Math.max(0, rowIndex - 1);
+    setActiveRow(newIndex);
+    setTimeout(() => focusLineField(newIndex, "product"), 80);
+  }, [focusLineField]);
+
   const ensureTrailingEmptyLine = useCallback(() => {
     setLines((prev) => {
       const blankIndexes = prev.map((line, index) => ({ line, index })).filter(({ line }) => line.product === null);
@@ -1147,6 +1165,7 @@ export function SalesBillWorkspace({
       const payload = {
         customer_id: customerSummary.customer_id,
         warehouse_id: warehouseId,
+        source: "ADMIN", // Required for SalesOrderCreate
         invoice_number: billNumber,
         invoice_date: billDate,
         delivery_date: receivedDate,
@@ -1239,13 +1258,25 @@ export function SalesBillWorkspace({
   const navigateGridByDelta = useCallback((rowIndex: number, field: LineField, rowDelta: number, colDelta: number) => {
     const currentOrder = getLineFieldOrder(lines[rowIndex] ?? null);
     const currentCol = Math.max(0, currentOrder.indexOf(resolveFieldForLine(lines[rowIndex] ?? null, field)));
-    const nextRow = Math.max(0, Math.min(lines.length - 1, rowIndex + rowDelta));
+    
     if (colDelta !== 0) {
-      const nextCol = Math.max(0, Math.min(currentOrder.length - 1, currentCol + colDelta));
-      moveGridFocus(rowIndex, currentOrder[nextCol]);
+      const nextCol = currentCol + colDelta;
+      if (nextCol < 0 && rowIndex === 0) {
+        setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+        return;
+      }
+      const boundedNextCol = Math.max(0, Math.min(currentOrder.length - 1, nextCol));
+      moveGridFocus(rowIndex, currentOrder[boundedNextCol]);
       return;
     }
-    moveGridFocus(nextRow, field);
+
+    const nextRow = rowIndex + rowDelta;
+    if (nextRow < 0) {
+      setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+      return;
+    }
+    const boundedNextRow = Math.max(0, Math.min(lines.length - 1, nextRow));
+    moveGridFocus(boundedNextRow, field);
   }, [lines, moveGridFocus]);
 
   const focusFooterField = useCallback((field: "freight" | "notes" | "save") => {
@@ -1336,12 +1367,30 @@ export function SalesBillWorkspace({
       handleLineFieldEnter(event, rowIndex, field);
       return;
     }
+    if ((event.key === "Delete" || event.key === "Backspace") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      deleteLine(rowIndex);
+      return;
+    }
+    if (event.key === "F8") {
+      event.preventDefault();
+      deleteLine(rowIndex);
+      return;
+    }
     if (event.key === "ArrowRight") {
+      const el = event.currentTarget as HTMLInputElement;
+      if (el && typeof el.selectionEnd === "number") {
+        if (el.selectionEnd !== null && el.selectionEnd < (el.value?.length || 0)) return;
+      }
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, 0, 1);
       return;
     }
     if (event.key === "ArrowLeft") {
+      const el = event.currentTarget as HTMLInputElement;
+      if (el && typeof el.selectionStart === "number") {
+        if (el.selectionStart !== null && el.selectionStart > 0) return;
+      }
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, 0, -1);
       return;
@@ -1381,6 +1430,66 @@ export function SalesBillWorkspace({
     return <div className="rounded-xl border bg-card px-4 py-10 text-sm text-muted-foreground">Loading purchase entry...</div>;
   }
 
+  const handleTopFieldKeyDown = (
+    e: React.KeyboardEvent<HTMLElement>,
+    currentIndex: number,
+    isInput: boolean,
+    onNavigateAway?: (next: () => void) => void
+  ) => {
+    let nextIndex = currentIndex;
+    
+    if (e.key === "Enter" && isInput) {
+      nextIndex = currentIndex + 1;
+    } else if (e.key === "ArrowRight") {
+       if (isInput) {
+         const el = e.currentTarget as HTMLInputElement;
+         if (el.selectionEnd !== null && el.selectionEnd < el.value.length) return;
+       }
+       nextIndex = currentIndex + 1;
+    } else if (e.key === "ArrowLeft") {
+       if (isInput) {
+         const el = e.currentTarget as HTMLInputElement;
+         if (el.selectionStart !== null && el.selectionStart > 0) return;
+       }
+       nextIndex = currentIndex - 1;
+    } else if (e.key === "ArrowDown") {
+       if (!isInput) return;
+       nextIndex = currentIndex + 1;
+    } else if (e.key === "ArrowUp") {
+       nextIndex = currentIndex - 1;
+    } else {
+       return;
+    }
+    
+    if (nextIndex >= 0 && nextIndex !== currentIndex) {
+      e.preventDefault();
+      const fields = [
+        customerButtonRef,
+        billDateRef,
+        billNumberRef,
+        receivedDateRef,
+        paymentModeRef,
+        warehouseButtonRef
+      ];
+      
+      const proceedToNext = () => {
+        if (nextIndex < fields.length) {
+          setTimeout(() => fields[nextIndex].current?.focus(), 0);
+        } else if (nextIndex >= fields.length) {
+          if (e.key === "Enter" || e.key === "ArrowRight" || e.key === "ArrowDown") {
+            setTimeout(() => productCellRef.current?.focus(), 0);
+          }
+        }
+      };
+
+      if (onNavigateAway) {
+        onNavigateAway(proceedToNext);
+      } else {
+        proceedToNext();
+      }
+    }
+  };
+
   return (
     <div className="bg-[#eef3ec] font-mono text-[#111714]">
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
@@ -1414,10 +1523,9 @@ export function SalesBillWorkspace({
                     onChange={(e) => setBillDateInput(e.target.value)}
                     onFocus={() => setActiveField("product")}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void confirmDate(billDateInput, setBillDate, setBillDateInput, () => setCustomerSearchOpen(true));
-                      }
+                      handleTopFieldKeyDown(e, 1, true, (next) => {
+                        void confirmDate(billDateInput, setBillDate, setBillDateInput, next);
+                      });
                     }}
                     placeholder="ddmmyyyy"
                     className="h-11 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
@@ -1458,7 +1566,8 @@ export function SalesBillWorkspace({
                   className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
                   onClick={() => setCustomerSearchOpen(true)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "ArrowDown") {
+                    handleTopFieldKeyDown(e, 0, false);
+                    if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
                       e.preventDefault();
                       setCustomerSearchOpen(true);
                     }
@@ -1469,7 +1578,7 @@ export function SalesBillWorkspace({
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
-                <Input ref={billNumberRef} placeholder="AUTO-GENERATED" value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => e.key === "Enter" && receivedDateRef.current?.focus()} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none placeholder:text-muted-foreground/50" />
+                <Input ref={billNumberRef} placeholder="AUTO-GENERATED" value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => handleTopFieldKeyDown(e, 2, true)} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none placeholder:text-muted-foreground/50" />
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
@@ -1480,10 +1589,9 @@ export function SalesBillWorkspace({
                     onChange={(e) => setReceivedDateInput(e.target.value)}
                     onFocus={() => setActiveField("product")}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void confirmDate(receivedDateInput, setReceivedDate, setReceivedDateInput, () => paymentModeRef.current?.focus());
-                      }
+                      handleTopFieldKeyDown(e, 3, true, (next) => {
+                        void confirmDate(receivedDateInput, setReceivedDate, setReceivedDateInput, next);
+                      });
                     }}
                     placeholder="ddmmyyyy"
                     className="h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
@@ -1524,7 +1632,8 @@ export function SalesBillWorkspace({
                   className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
                   onClick={openPaymentModePicker}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "ArrowDown") {
+                    handleTopFieldKeyDown(e, 4, false);
+                    if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
                       e.preventDefault();
                       openPaymentModePicker();
                     }
@@ -1557,7 +1666,8 @@ export function SalesBillWorkspace({
                   className="mt-2 h-10 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-sm font-semibold shadow-none"
                   onClick={openWarehousePicker}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "ArrowDown") {
+                    handleTopFieldKeyDown(e, 5, false);
+                    if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
                       e.preventDefault();
                       openWarehousePicker();
                     }
@@ -1599,13 +1709,7 @@ export function SalesBillWorkspace({
                             <button
                               type="button"
                               className="absolute inset-0 hidden items-center justify-center rounded-sm bg-red-100 text-red-600 hover:bg-red-200 group-hover/row:flex"
-                              onClick={() => {
-                                const next = lines.filter((_, i) => i !== index);
-                                setLines(next.length ? next : [makeLine()]);
-                                if (activeRow >= next.length) {
-                                  setActiveRow(Math.max(0, next.length - 1));
-                                }
-                              }}
+                              onClick={() => deleteLine(index)}
                               title="Delete line (F8)"
                             >✕</button>
                           </span>
@@ -1886,7 +1990,7 @@ export function SalesBillWorkspace({
                     setPaymentModeIndex((prev) => (prev - 1 + PAYMENT_MODE_OPTIONS.length) % PAYMENT_MODE_OPTIONS.length);
                   } else if (e.key === "Enter") {
                     e.preventDefault();
-                    setPaymentMode(option);
+                    setPaymentMode(PAYMENT_MODE_OPTIONS[paymentModeIndex]);
                     setPaymentModeOpen(false);
                     setTimeout(() => warehouseButtonRef.current?.focus(), 0);
                   }
@@ -1973,7 +2077,7 @@ export function SalesBillWorkspace({
                     setWarehouseIndex((prev) => (prev - 1 + warehouses.length) % warehouses.length);
                   } else if (e.key === "Enter") {
                     e.preventDefault();
-                    setWarehouseId(warehouse.id);
+                    setWarehouseId(warehouses[warehouseIndex].id);
                     setWarehousePickerOpen(false);
                     setTimeout(() => productCellRef.current?.focus(), 0);
                   }
@@ -1994,6 +2098,7 @@ export function SalesBillWorkspace({
           <span><span className="font-semibold text-foreground">Arrow Up/Down</span> selector navigation</span>
           <span><span className="font-semibold text-foreground">Esc</span> close selector</span>
           <span><span className="font-semibold text-foreground">F4</span> edit product</span>
+          <span><span className="font-semibold text-foreground">Ctrl/⌘+⌫</span> delete row</span>
           <span><span className="font-semibold text-foreground">Ctrl+S</span> save bill</span>
         </div>
       </div>
