@@ -100,6 +100,17 @@ class PurchaseEntryVendorSummary(BaseModel):
     open_challans: list[dict] = []
 
 
+class RecentPurchaseBill(BaseModel):
+    bill_number: str
+    bill_date: date
+    quantity: Decimal
+    unit_name: str | None = None
+    mrp: Decimal
+    rate_value: Decimal
+    discount_percent: Decimal
+    line_total_amount: Decimal
+
+
 class PurchaseEntryProductSummary(BaseModel):
     product_id: uuid.UUID
     sku: str
@@ -124,7 +135,8 @@ class PurchaseEntryProductSummary(BaseModel):
     latest_rate_value: Decimal | None = None
     latest_rate_unit_level: int | None = None
     latest_discount_percent: Decimal | None = None
-    recent_bills: list[dict]
+    has_interactions: bool = False
+    recent_bills: list[RecentPurchaseBill] = []
 
 
 class PurchaseEntryBootstrap(BaseModel):

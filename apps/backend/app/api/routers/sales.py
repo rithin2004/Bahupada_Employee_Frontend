@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, Query
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.auth import require_any_portal, require_employee_or_admin_portal, require_permission
@@ -34,16 +34,23 @@ from app.models.entities import (
     SalesReturnItem,
     Payment,
     VoucherStatus,
-    PartyType,
     PartyLedgerEntryKind,
+    PartyType,
+    Pricing,
+    HSNMaster,
+    InventoryBatch,
+    Unit,
 )
 from app.schemas.sales import (
+    SalesEntryProductSummary,
+    RecentSalesBill,
     CustomerPendingSalesOrderSummary,
     PendingOrdersDashboardResponse,
     SalesEntryCustomerSummary,
     SalesEntryPendingCustomer,
     SalesEntryRecentInvoice,
     SalesEntryRecentReceipt,
+    SalesEntryBootstrap,
     SalesExpiryCreate,
     SalesFinalInvoiceCreate,
     SalesFinalInvoiceFromOrderCreate,
@@ -56,8 +63,9 @@ from app.schemas.sales import (
     SalesReturnCreate,
 )
 from app.schemas.auth import AuthUserInfo
+from app.schemas.finance import PartyLedgerStatementResponse
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
-from app.services.finance import post_customer_sales_invoice_receivable, post_party_ledger_entry
+from app.services.finance import get_party_ledger_statement, post_customer_sales_invoice_receivable, post_party_ledger_entry
 from app.services.pricing import resolve_price_for_customer
 from app.services.schemes import apply_schemes_to_sales_order, build_sales_order_preview
 from app.services.stock import (
@@ -69,6 +77,191 @@ from app.services.stock import (
 from app.services.workflow import assert_voucher_transition
 
 router = APIRouter()
+
+
+def _sales_entry_number(now: datetime | None = None) -> str:
+    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return f"S{ts.strftime('%y%m%d%H%M%S')}"
+
+
+def _normalize_unit_ratio(base_quantity: Decimal, conv_2_to_1: Decimal | None, conv_3_to_1: Decimal | None) -> tuple[str, dict[str, Decimal]]:
+    q = base_quantity
+    c3 = conv_3_to_1 or Decimal("0")
+    c2 = conv_2_to_1 or Decimal("0")
+    
+    parts = []
+    ratios = {}
+    
+    if c3 > 0:
+        val = int(q // c3)
+        if val > 0:
+            parts.append(f"{val} (3rd)")
+            ratios["3rd"] = Decimal(val)
+            q %= c3
+            
+    if c2 > 0:
+        val = int(q // c2)
+        if val > 0:
+            parts.append(f"{val} (2nd)")
+            ratios["2nd"] = Decimal(val)
+            q %= c2
+            
+    if q > 0 or not parts:
+        parts.append(f"{float(q):.2f} (1st)")
+        ratios["1st"] = q
+        
+    return " + ".join(parts), ratios
+
+
+async def _unit_name(db: AsyncSession, unit_id: uuid.UUID | None) -> str | None:
+    if not unit_id:
+        return None
+    unit = await db.get(Unit, unit_id)
+    return unit.unit_code if unit else None
+
+
+async def _build_sales_product_summary(db: AsyncSession, product: Product) -> SalesEntryProductSummary:
+    pricing = (
+        await db.execute(select(Pricing).where(Pricing.product_id == product.id))
+    ).scalar_one_or_none()
+    hsn = await db.get(HSNMaster, product.hsn_id) if product.hsn_id else None
+    
+    stock_total = (
+        await db.execute(
+            select(func.coalesce(func.sum(InventoryBatch.available_quantity), Decimal("0"))).where(InventoryBatch.product_id == product.id)
+        )
+    ).scalar_one()
+    
+    latest_line = (
+        await db.execute(
+            select(
+                SalesFinalInvoiceItem.selling_price,
+                SalesFinalInvoiceItem.discount_percent,
+                SalesFinalInvoice.invoice_number,
+                SalesFinalInvoice.invoice_date,
+                SalesFinalInvoiceItem.total_amount,
+                SalesFinalInvoiceItem.quantity,
+            )
+            .join(SalesFinalInvoice, SalesFinalInvoice.id == SalesFinalInvoiceItem.sales_final_invoice_id)
+            .where(SalesFinalInvoiceItem.product_id == product.id, SalesFinalInvoice.deleted_at.is_(None))
+            .order_by(SalesFinalInvoice.invoice_date.desc(), SalesFinalInvoice.created_at.desc(), SalesFinalInvoiceItem.id.desc())
+            .limit(5)
+        )
+    ).all()
+
+    conv2 = Decimal(product.conv_2_to_1 or 0)
+    conv3 = Decimal(product.conv_3_to_1 or 0)
+    stock_ratio, _ = _normalize_unit_ratio(Decimal(stock_total or 0), conv2, conv3)
+    
+    # Check if product has any transactions (stock movements)
+    has_interactions = (
+        await db.execute(
+            select(exists().where(StockMovement.product_id == product.id))
+        )
+    ).scalar()
+
+    return SalesEntryProductSummary(
+        product_id=product.id,
+        sku=product.sku,
+        name=product.name,
+        brand=None, # Brand could be fetched but keeping it simple for now
+        description=product.description,
+        hsn_code=hsn.hsn_code if hsn else None,
+        tax_percent=Decimal(product.tax_percent or 0),
+        mrp=Decimal(pricing.mrp if pricing else 0),
+        selling_price=Decimal(pricing.selling_price if pricing else 0),
+        unit_1st_name=await _unit_name(db, product.primary_unit_id),
+        unit_2nd_name=await _unit_name(db, product.secondary_unit_id),
+        unit_3rd_name=await _unit_name(db, product.third_unit_id),
+        unit_1st_id=product.primary_unit_id,
+        unit_2nd_id=product.secondary_unit_id,
+        unit_3rd_id=product.third_unit_id,
+        conv_2_to_1=conv2 if conv2 > 0 else None,
+        conv_3_to_2=Decimal(product.conv_3_to_2 or 0) if product.conv_3_to_2 else None,
+        conv_3_to_1=conv3 if conv3 > 0 else None,
+        stock_base_quantity=Decimal(stock_total or 0),
+        stock_ratio=stock_ratio,
+        latest_rate_value=Decimal(latest_line[0][0] or 0) if latest_line else None,
+        latest_rate_unit_level=1, # Defaulting to 1 as SalesFinalInvoiceItem lacks this column
+        latest_discount_percent=Decimal(latest_line[0][1] or 0) if latest_line else None,
+        has_interactions=bool(has_interactions),
+        recent_bills=[
+            {
+                "bill_number": row[2],
+                "bill_date": row[3],
+                "line_total_amount": Decimal(row[4] or 0),
+                "quantity": Decimal(row[5] or 0),
+                "mrp": Decimal(pricing.mrp if pricing else 0),
+                "rate_value": Decimal(row[0] or 0),
+                "discount_percent": Decimal(row[1] or 0),
+                "unit_name": await _unit_name(db, product.primary_unit_id) # Sales items usually stored in base unit
+            }
+            for row in latest_line
+        ]
+    )
+
+
+@router.get("/sales-entry/products/{product_id}/summary", response_model=SalesEntryProductSummary, dependencies=[Depends(require_permission("sales", "read"))])
+async def get_sales_entry_product_summary(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    product = await db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return await _build_sales_product_summary(db, product)
+
+
+@router.get("/sales-entry/products/search", dependencies=[Depends(require_permission("sales", "read"))])
+async def search_sales_entry_products(
+    q: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Product).where(Product.is_active.is_(True))
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Product.sku.ilike(term),
+                Product.name.ilike(term),
+                Product.display_name.ilike(term),
+                Product.brand.ilike(term),
+            )
+        )
+    stmt = stmt.order_by(Product.name.asc()).limit(limit)
+    products = (await db.execute(stmt)).scalars().all()
+    items = [jsonable_encoder(await _build_sales_product_summary(db, p)) for p in products]
+    return {"items": items}
+
+
+@router.get("/sales-entry/products/{product_id}/resolved-price", dependencies=[Depends(require_permission("sales", "read"))])
+async def get_sales_entry_resolved_price(
+    product_id: uuid.UUID,
+    customer_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    product = await db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    unit_price, source = await resolve_price_for_customer(db, customer, product)
+    return {"unit_price": str(unit_price), "source": source}
+
+
+@router.get(
+    "/sales-entry/customers/{customer_id}/ledger",
+    response_model=PartyLedgerStatementResponse,
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def get_sales_entry_customer_ledger(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await get_party_ledger_statement(db, party_type=PartyType.CUSTOMER, party_id=customer_id)
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
 @router.post("/sales-orders/preview", response_model=SalesOrderPreviewResponse, dependencies=[Depends(require_permission("sales", "read"))])
@@ -204,11 +397,110 @@ async def create_sales_order(
     return response
 
 
+@router.patch("/sales-orders/{sales_order_id}", dependencies=[Depends(require_permission("sales", "update"))])
+async def update_sales_order(
+    sales_order_id: uuid.UUID,
+    payload: SalesOrderCreate,
+    db: AsyncSession = Depends(get_db),
+    auth: AuthUserInfo = Depends(require_any_portal),
+):
+    order = await db.get(SalesOrder, sales_order_id)
+    if order is None or order.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sales order not found")
+
+    inv_exists = (
+        await db.execute(
+            select(func.count())
+            .select_from(SalesFinalInvoice)
+            .where(
+                SalesFinalInvoice.sales_order_id == order.id,
+                SalesFinalInvoice.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if int(inv_exists or 0) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot edit sales order after a final invoice exists",
+        )
+
+    customer = await db.get(Customer, payload.customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    if auth.portal == "CUSTOMER" and auth.customer_id != str(payload.customer_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Customer access denied")
+
+    if auth.portal == "CUSTOMER":
+        order_source = OrderSource.CUSTOMER
+    elif payload.source == OrderSource.SALESMAN:
+        order_source = OrderSource.SALESMAN
+    else:
+        order_source = OrderSource.ADMIN
+
+    invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
+    if invoice_number is None:
+        invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+
+    try:
+        await release_reserved_stock_for_sales_order(db, order)
+        await db.execute(delete(SalesOrderItem).where(SalesOrderItem.sales_order_id == order.id))
+        await db.flush()
+
+        order.warehouse_id = payload.warehouse_id
+        order.customer_id = payload.customer_id
+        order.invoice_number = invoice_number
+        order.source = order_source
+        order.salesman_id = auth.employee_id if order_source == OrderSource.SALESMAN and auth.employee_id else None
+        order.status = "pending"
+
+        for item in payload.items:
+            product = await db.get(Product, item.product_id)
+            if product is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+            unit_price, _source = await resolve_price_for_customer(db, customer, product)
+            db.add(
+                SalesOrderItem(
+                    sales_order_id=order.id,
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                    unit_price=unit_price,
+                    selling_price=unit_price,
+                )
+            )
+
+        await db.flush()
+        await apply_schemes_to_sales_order(db, order, customer)
+        await db.flush()
+        await release_reserved_stock_for_sales_order(db, order)
+        await reserve_stock_fefo_for_sales_order(
+            db,
+            order,
+            allow_negative_override=True,
+            override_reason="AUTO_NEGATIVE_OVERRIDE",
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="invoice_number already exists") from exc
+    await db.refresh(order)
+    return jsonable_encoder(order)
+
+
 @router.get("/sales-orders", dependencies=[Depends(require_permission("sales", "read"))])
 async def list_sales_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     search: str | None = Query(None),
+    open_only: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
 ):
@@ -231,6 +523,9 @@ async def list_sales_orders(
         .join(Warehouse, Warehouse.id == SalesOrder.warehouse_id)
         .where(SalesOrder.deleted_at.is_(None))
     )
+
+    if open_only:
+        base_stmt = base_stmt.where(SalesOrder.status == "pending")
 
     if has_search:
         q = f"%{clean_search}%"
@@ -428,16 +723,17 @@ async def list_customer_pending_sales_orders(
     return response
 
 
-@router.get("/sales-entry/bootstrap", dependencies=[Depends(require_permission("sales", "read"))])
+@router.get("/sales-entry/bootstrap", response_model=SalesEntryBootstrap, dependencies=[Depends(require_permission("sales", "read"))])
 async def sales_entry_bootstrap(db: AsyncSession = Depends(get_db)):
     warehouses = (
         await db.execute(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.name.asc()))
     ).scalars().all()
-    return {
-        "today": datetime.now(timezone.utc).date().isoformat(),
-        "default_warehouse_id": str(warehouses[0].id) if warehouses else None,
-        "next_entry_number": None,
-    }
+    return SalesEntryBootstrap(
+        today=datetime.now(timezone.utc).date(),
+        default_warehouse_id=warehouses[0].id if warehouses else None,
+        next_entry_number=_sales_entry_number(),
+        warehouses=[{"id": warehouse.id, "name": warehouse.name, "code": warehouse.code} for warehouse in warehouses],
+    )
 
 
 @router.get(

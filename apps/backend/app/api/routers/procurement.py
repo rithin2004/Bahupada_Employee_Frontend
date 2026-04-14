@@ -7,7 +7,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Header, Query
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -19,6 +19,7 @@ from app.models.entities import (
     PartyLedgerAccount,
     PartyLedgerEntry,
     PartyLedgerPayment,
+    PaymentFlowDirection,
     PartyType,
     Pricing,
     Product,
@@ -48,6 +49,7 @@ from app.models.entities import (
     WarehouseTransfer,
     WarehouseTransferItem,
 )
+from app.schemas.finance import PartyLedgerPaymentCreate, PartyLedgerStatementResponse
 from app.schemas.procurement import (
     PurchaseBillCreate,
     PurchaseBillUpdate,
@@ -61,7 +63,7 @@ from app.schemas.procurement import (
     WarehouseTransferCreate,
 )
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
-from app.services.finance import post_vendor_purchase_bill_payable
+from app.services.finance import get_party_ledger_statement, post_vendor_purchase_bill_payable, record_party_payment
 from app.services.stock import post_purchase_bill
 
 router = APIRouter()
@@ -300,6 +302,7 @@ async def _build_product_summary(db: AsyncSession, product: Product) -> Purchase
                 PurchaseBill.bill_number,
                 PurchaseBill.bill_date,
                 PurchaseBillItem.line_total_amount,
+                PurchaseBillItem.quantity,
             )
             .join(PurchaseBill, PurchaseBill.id == PurchaseBillItem.purchase_bill_id)
             .where(PurchaseBillItem.product_id == product.id, PurchaseBill.deleted_at.is_(None))
@@ -310,6 +313,13 @@ async def _build_product_summary(db: AsyncSession, product: Product) -> Purchase
     conv2 = Decimal(product.conv_2_to_1 or 0)
     conv3 = Decimal(product.conv_3_to_1 or 0)
     stock_ratio, _ = _normalize_unit_ratio(Decimal(stock_total or 0), conv2, conv3)
+    
+    # Check if product has any transactions (stock movements)
+    has_interactions = (
+        await db.execute(
+            select(exists().where(StockMovement.product_id == product.id))
+        )
+    ).scalar()
 
     return PurchaseEntryProductSummary(
         product_id=product.id,
@@ -335,11 +345,21 @@ async def _build_product_summary(db: AsyncSession, product: Product) -> Purchase
         latest_rate_value=Decimal(latest_line[0][0] or 0) if latest_line else None,
         latest_rate_unit_level=int(latest_line[0][1]) if latest_line and latest_line[0][1] is not None else None,
         latest_discount_percent=Decimal(latest_line[0][2] or 0) if latest_line else None,
+        has_interactions=bool(has_interactions),
         recent_bills=[
             {
                 "bill_number": row[3],
                 "bill_date": row[4],
                 "line_total_amount": Decimal(row[5] or 0),
+                "quantity": Decimal(row[6] or 0),
+                "mrp": Decimal(pricing.mrp if pricing else 0),
+                "rate_value": Decimal(row[0] or 0),
+                "discount_percent": Decimal(row[2] or 0),
+                "unit_name": (
+                    await _unit_name(db, product.primary_unit_id) if int(row[1] or 1) == 1 else
+                    await _unit_name(db, product.secondary_unit_id) if int(row[1] or 1) == 2 else
+                    await _unit_name(db, product.third_unit_id)
+                ) if row[1] is not None else await _unit_name(db, product.primary_unit_id)
             }
             for row in latest_line
         ],
@@ -855,9 +875,20 @@ async def create_purchase_challan(
 
 
 @router.get("/purchase-challans", dependencies=[Depends(require_permission("purchase", "read"))])
-async def list_purchase_challans(db: AsyncSession = Depends(get_db)):
+async def list_purchase_challans(open_only: bool = False, db: AsyncSession = Depends(get_db)):
+    query = select(PurchaseChallan).where(PurchaseChallan.deleted_at.is_(None))
+    
+    if open_only:
+        query = query.outerjoin(
+            PurchaseBill,
+            and_(
+                PurchaseBill.purchase_challan_id == PurchaseChallan.id,
+                PurchaseBill.deleted_at.is_(None),
+            ),
+        ).where(PurchaseBill.id.is_(None))
+        
     challans = (
-        await db.execute(select(PurchaseChallan).where(PurchaseChallan.deleted_at.is_(None)).order_by(PurchaseChallan.created_at.desc()))
+        await db.execute(query.order_by(PurchaseChallan.created_at.desc()))
     ).scalars().all()
 
     response: list[dict] = []
@@ -1373,6 +1404,48 @@ async def get_purchase_entry_vendor_summary(vendor_id: uuid.UUID, db: AsyncSessi
     if vendor is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
     return await _build_vendor_summary(db, vendor)
+
+
+@router.get(
+    "/purchase-entry/vendors/{vendor_id}/ledger",
+    response_model=PartyLedgerStatementResponse,
+    dependencies=[Depends(require_permission("purchase", "read"))],
+)
+async def get_purchase_entry_vendor_ledger(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    try:
+        return await get_party_ledger_statement(db, party_type=PartyType.VENDOR, party_id=vendor_id)
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
+@router.post("/purchase-entry/vendor-payments", dependencies=[Depends(require_permission("purchase", "create"))])
+async def create_purchase_entry_vendor_payment(payload: PartyLedgerPaymentCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        resolved_party_type = PartyType(payload.party_type.upper())
+        if resolved_party_type != PartyType.VENDOR:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="party_type must be VENDOR")
+        resolved_direction = PaymentFlowDirection(payload.direction.upper())
+        payment = await record_party_payment(
+            db,
+            party_type=resolved_party_type,
+            party_id=payload.party_id,
+            amount=payload.amount,
+            direction=resolved_direction,
+            self_account_id=payload.self_account_id,
+            payment_mode=payload.payment_mode,
+            payment_date_value=payload.payment_date,
+            reference_no=payload.reference_no,
+            note=payload.note,
+            purchase_bill_allocations=[
+                {"purchase_bill_id": row.purchase_bill_id, "allocated_amount": row.allocated_amount}
+                for row in payload.purchase_bill_allocations
+            ],
+        )
+        return jsonable_encoder(payment)
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
 @router.get("/purchase-entry/products/search", dependencies=[Depends(require_permission("purchase", "read"))])

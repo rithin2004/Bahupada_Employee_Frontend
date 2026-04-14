@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { PurchaseBillRefWizard } from "@/components/modules/purchase-bill-ref-wizard";
 import { PurchaseEntryWorkspace } from "@/components/modules/purchase-entry-workspace";
 
 type Option = {
@@ -446,6 +447,8 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [canWritePurchase, setCanWritePurchase] = useState(false);
   
   const [showWorkspace, setShowWorkspace] = useState(false);
+  const [billRefWizardOpen, setBillRefWizardOpen] = useState(false);
+  const [billRefWizardCtx, setBillRefWizardCtx] = useState<{ vendorId: string; purchaseBillId?: string } | null>(null);
   const [activeTab, setActiveTab] = useState<"challan" | "bill">(initialTab);
   const [workspaceMode, setWorkspaceMode] = useState<"challan" | "bill">("bill");
   const [editingId, setEditingId] = useState("");
@@ -1476,9 +1479,14 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         toast.success("Purchase bill updated and stock adjusted.", { duration: 5000 });
         setFeedback("Purchase bill updated and stock adjusted.");
       } else {
-        await postBackend("/procurement/purchase-bills", payload);
+        const created = asObject(await postBackend("/procurement/purchase-bills", payload));
         toast.success("Purchase bill created and stock adjusted.", { duration: 5000 });
         setFeedback("Purchase bill created and stock adjusted.");
+        const vid = String(created.vendor_id ?? (billEntryMode === "direct" ? billVendorId : "") ?? "");
+        if (vid) {
+          setBillRefWizardCtx({ vendorId: vid, purchaseBillId: String(created.id ?? "") });
+          setBillRefWizardOpen(true);
+        }
       }
       resetBillEditor();
       await loadChallans();
@@ -1495,17 +1503,22 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
 
   if (showWorkspace) {
     return (
-      <PurchaseEntryWorkspace 
+      <PurchaseEntryWorkspace
+        canWritePurchase={canWritePurchase}
         mode={workspaceMode}
         initialId={editingId}
         sourceChallanId={conversionId}
-        onSaved={() => {
+        onSaved={(detail) => {
           setShowWorkspace(false);
           setEditingId("");
           setConversionId("");
           setActiveTab(workspaceMode);
           void loadChallans();
           void loadBills();
+          if (detail && workspaceMode === "bill") {
+            setBillRefWizardCtx({ vendorId: detail.vendorId, purchaseBillId: detail.purchaseBillId });
+            setBillRefWizardOpen(true);
+          }
         }}
         onClose={() => {
           setShowWorkspace(false);
@@ -2006,6 +2019,19 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         </div>
       </DialogContent>
     </Dialog>
+    {billRefWizardCtx ? (
+      <PurchaseBillRefWizard
+        open={billRefWizardOpen}
+        onOpenChange={(open) => {
+          setBillRefWizardOpen(open);
+          if (!open) {
+            setBillRefWizardCtx(null);
+          }
+        }}
+        vendorId={billRefWizardCtx.vendorId}
+        highlightPurchaseBillId={billRefWizardCtx.purchaseBillId}
+      />
+    ) : null}
     </>
   );
 }

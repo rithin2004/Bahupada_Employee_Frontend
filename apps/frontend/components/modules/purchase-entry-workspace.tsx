@@ -38,7 +38,7 @@ type VendorSummary = {
   last_purchase_date: string | null;
   last_payment_date: string | null;
   last_bills: Array<{ bill_number: string; bill_date: string; total_amount: string }>;
-  open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number }>;
+  open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number; vendor_name?: string }>;
 };
 
 type ProductSummary = {
@@ -60,12 +60,23 @@ type ProductSummary = {
   conv_2_to_1: string | null;
   conv_3_to_2: string | null;
   conv_3_to_1: string | null;
+  weight_in_grams: string | null;
   stock_base_quantity: string;
   stock_ratio: string;
   latest_rate_value: string | null;
   latest_rate_unit_level: number | null;
   latest_discount_percent: string | null;
-  recent_bills: Array<{ bill_number: string; bill_date: string; line_total_amount: string }>;
+  has_interactions: boolean;
+  recent_bills: Array<{
+    bill_number: string;
+    bill_date: string;
+    quantity: string;
+    mrp: string;
+    rate_value: string;
+    discount_percent: string;
+    line_total_amount: string;
+    unit_name: string;
+  }>;
 };
 
 type LedgerEntry = {
@@ -90,6 +101,7 @@ type ProductEditForm = {
   third_unit_quantity: string;
   weight_in_grams: string;
   tax_percent: string;
+  has_interactions: boolean;
 };
 
 type UnitOption = { id: string; unit_code: string; unit_name: string };
@@ -155,6 +167,7 @@ const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   third_unit_quantity: "",
   weight_in_grams: "",
   tax_percent: "",
+  has_interactions: false,
 };
 const EMPTY_VENDOR_FORM: VendorCreateForm = {
   firm_name: "",
@@ -254,8 +267,31 @@ function makeLine(): LineDraft {
   };
 }
 
-type LineField = "product" | "quantity1" | "quantity2" | "quantity3" | "mrp" | "rateValue" | "rateUnitLevel" | "discountPercent" | "discountLumpsum";
-const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "quantity1", "mrp", "rateValue", "rateUnitLevel", "discountPercent", "discountLumpsum"];
+type LineField =
+  | "product"
+  | "quantity1"
+  | "quantity2"
+  | "quantity3"
+  | "mrp"
+  | "rateValue"
+  | "rateUnitLevel"
+  | "discountPercent"
+  | "discountLumpsum"
+  | "taxable"
+  | "lineAmount";
+const LINE_FIELD_ORDER: LineField[] = [
+  "product",
+  "quantity3",
+  "quantity2",
+  "quantity1",
+  "mrp",
+  "rateValue",
+  "rateUnitLevel",
+  "discountPercent",
+  "discountLumpsum",
+  "taxable",
+  "lineAmount",
+];
 const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
 const VENDOR_CREATE_FIELD_ORDER = [
   "firm_name",
@@ -303,7 +339,17 @@ function getLineQuantityFields(line: LineDraft | null): LineField[] {
 }
 
 function getLineFieldOrder(line: LineDraft | null): LineField[] {
-  return ["product", ...getLineQuantityFields(line), "mrp", "rateValue", "rateUnitLevel", "discountPercent", "discountLumpsum"];
+  return [
+    "product",
+    ...getLineQuantityFields(line),
+    "mrp",
+    "rateValue",
+    "rateUnitLevel",
+    "discountPercent",
+    "discountLumpsum",
+    "taxable",
+    "lineAmount",
+  ];
 }
 
 function resolveFieldForLine(line: LineDraft | null, preferred: LineField): LineField {
@@ -415,6 +461,7 @@ function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
       reference_no: String(challan.reference_no ?? ""),
       challan_date: challan.challan_date ? String(challan.challan_date) : null,
       item_count: Number(challan.item_count ?? 0),
+      vendor_name: challan.vendor_name ? String(challan.vendor_name) : undefined,
     })),
   };
 }
@@ -439,28 +486,50 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
     conv_2_to_1: row.conv_2_to_1 ? String(row.conv_2_to_1) : null,
     conv_3_to_2: row.conv_3_to_2 ? String(row.conv_3_to_2) : null,
     conv_3_to_1: row.conv_3_to_1 ? String(row.conv_3_to_1) : null,
+    weight_in_grams: row.weight_in_grams != null && row.weight_in_grams !== "" ? String(row.weight_in_grams) : null,
     stock_base_quantity: String(row.stock_base_quantity ?? "0"),
     stock_ratio: String(row.stock_ratio ?? "0 : 0 : 0"),
     latest_rate_value: row.latest_rate_value ? String(row.latest_rate_value) : null,
     latest_rate_unit_level: row.latest_rate_unit_level ? Number(row.latest_rate_unit_level) : null,
     latest_discount_percent: row.latest_discount_percent ? String(row.latest_discount_percent) : null,
+    has_interactions: Boolean(row.has_interactions),
     recent_bills: asArray(row.recent_bills).map((bill) => ({
       bill_number: String(bill.bill_number ?? ""),
       bill_date: String(bill.bill_date ?? ""),
+      quantity: String(bill.quantity ?? "0"),
+      mrp: String(bill.mrp ?? "0"),
+      rate_value: String(bill.rate_value ?? "0"),
+      discount_percent: String(bill.discount_percent ?? "0"),
       line_total_amount: String(bill.line_total_amount ?? "0"),
+      unit_name: String(bill.unit_name ?? ""),
     })),
   };
 }
 
+export type PurchaseEntrySaveDetail = {
+  purchaseBillId: string;
+  vendorId: string;
+};
+
 type PurchaseEntryWorkspaceProps = {
-  onSaved?: () => void;
+  /** Called after a successful save. For new purchase bills, includes ids for post-save payment reference flow. */
+  onSaved?: (detail?: PurchaseEntrySaveDetail) => void;
   onClose?: () => void;
   initialId?: string;
   sourceChallanId?: string;
   mode?: "bill" | "challan";
+  /** When false, saving is disabled (read-only purchase permission). */
+  canWritePurchase?: boolean;
 };
 
-export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChallanId, mode = "bill" }: PurchaseEntryWorkspaceProps) {
+export function PurchaseEntryWorkspace({
+  onSaved,
+  onClose,
+  initialId,
+  sourceChallanId,
+  mode = "bill",
+  canWritePurchase = true,
+}: PurchaseEntryWorkspaceProps) {
   const [loading, setLoading] = useState(true);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
@@ -484,6 +553,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const [vendorSearch, setVendorSearch] = useState("");
   const [vendorResults, setVendorResults] = useState<VendorSummary[]>([]);
   const [vendorIndex, setVendorIndex] = useState(0);
+  const [generalOpenChallans, setGeneralOpenChallans] = useState<VendorSummary["open_challans"]>([]);
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [productResults, setProductResults] = useState<ProductSummary[]>([]);
@@ -528,7 +598,6 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const paymentModeRef = useRef<HTMLButtonElement | null>(null);
   const warehouseButtonRef = useRef<HTMLButtonElement | null>(null);
   const freightRef = useRef<HTMLInputElement | null>(null);
-  const notesRef = useRef<HTMLTextAreaElement | null>(null);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const vendorSearchRef = useRef<HTMLInputElement | null>(null);
   const productSearchRef = useRef<HTMLInputElement | null>(null);
@@ -802,6 +871,24 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   }, [vendorSearchOpen, vendorSearch, searchVendors]);
 
   useEffect(() => {
+    async function fetchGeneralOpenChallans() {
+      try {
+        const raw = await fetchBackend("/procurement/purchase-challans?open_only=true");
+        setGeneralOpenChallans(asArray(raw).map((challan: any) => ({
+          challan_id: String(challan.id),
+          reference_no: String(challan.reference_no),
+          challan_date: challan.challan_date ? String(challan.challan_date) : null,
+          item_count: Number(challan.item_rows?.length || 0),
+          vendor_name: String(challan.vendor_name || ""),
+        })));
+      } catch (err) {
+        console.error("Failed to fetch general open challans", err);
+      }
+    }
+    void fetchGeneralOpenChallans();
+  }, []);
+
+  useEffect(() => {
     if (!productSearchOpen) return;
     void searchProducts(productSearch);
   }, [productSearchOpen, productSearch, searchProducts]);
@@ -886,11 +973,16 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         event.preventDefault();
         setVendorSearchOpen(false);
         setTimeout(() => vendorButtonRef.current?.focus(), 0);
+        return;
+      }
+      if (onClose) {
+        event.preventDefault();
+        onClose();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen]);
+  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -1027,8 +1119,9 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       third_unit_id: full.unit_3rd_id || "",
       secondary_unit_quantity: full.conv_2_to_1 || "",
       third_unit_quantity: full.conv_3_to_2 || "",
-      weight_in_grams: full.stock_base_quantity ? "" : "",
+      weight_in_grams: full.weight_in_grams || "",
       tax_percent: full.tax_percent,
+      has_interactions: full.has_interactions,
     });
     setProductEditOpen(true);
   }, [hsnOptions]);
@@ -1126,7 +1219,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   const showLedger = useCallback(async () => {
     if (!vendorSummary) return;
     try {
-      const res = asObject(await fetchBackend(`/finance/party-ledger/vendor/${vendorSummary.vendor_id}`));
+      const res = asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${vendorSummary.vendor_id}/ledger`));
       setLedgerRows(asArray(res.items).map((item) => ({
         entry_id: String(item.entry_id ?? ""),
         entry_date: String(item.entry_date ?? ""),
@@ -1143,6 +1236,10 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
   }, [vendorSummary]);
 
   const saveEntry = useCallback(async () => {
+    if (!canWritePurchase) {
+      toast.error("You do not have permission to save purchase entries.");
+      return;
+    }
     if (!vendorSummary) {
       toast.error("Select vendor");
       return;
@@ -1152,57 +1249,85 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       toast.error("Add at least one product line");
       return;
     }
-    const proceed = window.confirm(`Save purchase ${mode} ${billNumber} for ${vendorSummary.vendor_name}?`);
+    if (mode === "challan" && !billNumber.trim()) {
+      toast.error("Enter a reference / challan number");
+      return;
+    }
+    const refNo = mode === "challan" ? billNumber.trim() : billNumber.trim() || `BILL-${Date.now()}`;
+    const proceed = window.confirm(`Save purchase ${mode} ${refNo} for ${vendorSummary.vendor_name}?`);
     if (!proceed) return;
+    let createdBillDetail: PurchaseEntrySaveDetail | undefined;
     setSaving(true);
     try {
-      const payload = {
-        vendor_id: vendorSummary.vendor_id,
-        warehouse_id: warehouseId,
-        reference_no: billNumber, // Required for PurchaseChallanCreate
-        bill_number: billNumber,
-        bill_date: billDate,
-        received_date: receivedDate,
-        payment_mode: paymentMode,
-        tax_type: taxType,
-        freight_amount: Number(freightAmount || 0),
-        entry_number: entryNumber,
-        notes: notes || null,
-        items: validLines.map((line, index) => ({
-          product_id: line.product?.product_id,
-          batch_no: `PBL-${billDate.replaceAll("-", "")}-${String(index + 1).padStart(3, "0")}`,
-          expiry_date: null,
-          quantity: lineBaseQuantity(line),
-          quantity_1st: Number(line.quantity1 || 0),
-          quantity_2nd: Number(line.quantity2 || 0),
-          quantity_3rd: Number(line.quantity3 || 0),
-          unit_1st_id: line.product?.unit_1st_id,
-          unit_2nd_id: line.product?.unit_2nd_id,
-          unit_3rd_id: line.product?.unit_3rd_id,
-          base_quantity: lineBaseQuantity(line),
-          mrp: Number(line.mrp || 0),
-          damaged_quantity: 0,
-          unit_price: lineUnitPrice(line),
-          rate_value: Number(line.rateValue || 0),
-          rate_unit_level: line.rateUnitLevel,
-          discount_percent: Number(line.discountPercent || 0),
-          discount_lumpsum: Number(line.discountLumpsum || 0),
-          line_total_amount: Number(computeLineAmount(line).toFixed(2)),
-        })),
-      };
-
-      const endpoint = mode === "challan" ? "/procurement/purchase-challans" : "/procurement/purchase-bills";
-
-      if (initialId) {
-        await patchBackend(`${endpoint}/${initialId}`, payload);
-        toast.success(`Purchase ${mode} updated`);
+      if (mode === "challan") {
+        const challanPayload = {
+          vendor_id: vendorSummary.vendor_id,
+          warehouse_id: warehouseId,
+          rack_id: null as string | null,
+          reference_no: refNo,
+          items: validLines.map((line) => ({
+            product_id: line.product?.product_id,
+            quantity: lineBaseQuantity(line),
+            expiry_date: null as string | null,
+          })),
+        };
+        if (initialId) {
+          await patchBackend(`/procurement/purchase-challans/${initialId}`, challanPayload);
+          toast.success("Purchase challan updated");
+        } else {
+          await postBackend("/procurement/purchase-challans", challanPayload);
+          toast.success("Purchase challan saved");
+        }
       } else {
-        await postBackend(mode === "challan" ? "/procurement/purchase-challans" : "/procurement/purchase-entry", payload);
-        toast.success(`Purchase ${mode} saved`);
+        const payload = {
+          vendor_id: vendorSummary.vendor_id,
+          warehouse_id: warehouseId,
+          reference_no: refNo,
+          bill_number: refNo,
+          bill_date: billDate,
+          received_date: receivedDate,
+          payment_mode: paymentMode,
+          tax_type: taxType,
+          freight_amount: Number(freightAmount || 0),
+          entry_number: entryNumber,
+          notes: notes || null,
+          items: validLines.map((line, index) => ({
+            product_id: line.product?.product_id,
+            batch_no: `PBL-${billDate.replaceAll("-", "")}-${String(index + 1).padStart(3, "0")}`,
+            expiry_date: null,
+            quantity: lineBaseQuantity(line),
+            quantity_1st: Number(line.quantity1 || 0),
+            quantity_2nd: Number(line.quantity2 || 0),
+            quantity_3rd: Number(line.quantity3 || 0),
+            unit_1st_id: line.product?.unit_1st_id,
+            unit_2nd_id: line.product?.unit_2nd_id,
+            unit_3rd_id: line.product?.unit_3rd_id,
+            base_quantity: lineBaseQuantity(line),
+            mrp: Number(line.mrp || 0),
+            damaged_quantity: 0,
+            unit_price: lineUnitPrice(line),
+            rate_value: Number(line.rateValue || 0),
+            rate_unit_level: line.rateUnitLevel,
+            discount_percent: Number(line.discountPercent || 0),
+            discount_lumpsum: Number(line.discountLumpsum || 0),
+            line_total_amount: Number(computeLineAmount(line).toFixed(2)),
+          })),
+        };
+        if (initialId) {
+          await patchBackend(`/procurement/purchase-bills/${initialId}`, payload);
+          toast.success("Purchase bill updated");
+        } else {
+          const created = asObject(await postBackend("/procurement/purchase-entry", payload));
+          createdBillDetail = {
+            purchaseBillId: String(created.id ?? ""),
+            vendorId: vendorSummary.vendor_id,
+          };
+          toast.success("Purchase bill saved");
+        }
       }
 
       if (onSaved) {
-        onSaved();
+        onSaved(createdBillDetail);
         return;
       }
       await showLedger();
@@ -1218,7 +1343,24 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     } finally {
       setSaving(false);
     }
-  }, [vendorSummary, lines, billNumber, mode, warehouseId, billDate, receivedDate, paymentMode, taxType, freightAmount, entryNumber, notes, initialId, onSaved, showLedger]);
+  }, [
+    canWritePurchase,
+    vendorSummary,
+    lines,
+    billNumber,
+    mode,
+    warehouseId,
+    billDate,
+    receivedDate,
+    paymentMode,
+    taxType,
+    freightAmount,
+    entryNumber,
+    notes,
+    initialId,
+    onSaved,
+    showLedger,
+  ]);
 
   const moveGridFocus = useCallback((rowIndex: number, field: LineField) => {
     setActiveRow(rowIndex);
@@ -1247,19 +1389,18 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       setTimeout(() => warehouseButtonRef.current?.focus(), 0);
       return;
     }
-    const boundedNextRow = Math.max(0, Math.min(lines.length - 1, nextRow));
-    moveGridFocus(boundedNextRow, field);
+    if (nextRow >= lines.length) {
+      focusFooterField("freight");
+      return;
+    }
+    moveGridFocus(nextRow, field);
   }, [lines, moveGridFocus]);
 
-  const focusFooterField = useCallback((field: "freight" | "notes" | "save") => {
+  const focusFooterField = useCallback((field: "freight" | "save") => {
     setTimeout(() => {
       if (field === "freight") {
         freightRef.current?.focus();
         freightRef.current?.select();
-        return;
-      }
-      if (field === "notes") {
-        notesRef.current?.focus();
         return;
       }
       saveButtonRef.current?.focus();
@@ -1308,6 +1449,14 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
       return;
     }
     if (field === "discountLumpsum") {
+      moveGridFocus(rowIndex, "taxable");
+      return;
+    }
+    if (field === "taxable") {
+      moveGridFocus(rowIndex, "lineAmount");
+      return;
+    }
+    if (field === "lineAmount") {
       const isLastFilledRow = rowIndex === lines.findLastIndex((line) => line.product !== null);
       if (isLastFilledRow) {
         focusFooterField("freight");
@@ -1449,7 +1598,9 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
           setTimeout(() => fields[nextIndex].current?.focus(), 0);
         } else if (nextIndex >= fields.length) {
           if (e.key === "Enter" || e.key === "ArrowRight" || e.key === "ArrowDown") {
-            setTimeout(() => productCellRef.current?.focus(), 0);
+            const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
+            const targetRow = lastFilledRow >= 0 ? lastFilledRow : 0;
+            setTimeout(() => focusLineField(targetRow, "product"), 0);
           }
         }
       };
@@ -1466,8 +1617,15 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
     <div className="bg-[#eef3ec] font-mono text-[#111714]">
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
         <div className="flex items-center justify-between border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
-          <span>Purchase {mode === "challan" ? "Challan" : "Entry"} Console</span>
-          {onClose && <Button variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>ESC to Back</Button>}
+          <span className="flex items-center gap-2">
+            Purchase {mode === "challan" ? "Challan" : "Entry"} Console
+            {!canWritePurchase ? <span className="rounded border border-white/40 px-2 py-0.5 text-[10px] font-normal normal-case tracking-normal">View</span> : null}
+          </span>
+          {onClose ? (
+            <Button type="button" variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>
+              Close
+            </Button>
+          ) : null}
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
@@ -1488,7 +1646,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             <div className="grid gap-px bg-border md:grid-cols-12">
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
                 <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Purchase Date</Label>
-                <div className="mt-2 grid gap-1">
+                <div className="mt-2 flex gap-2">
                   <Input
                     ref={billDateRef}
                     value={billDateInput}
@@ -1500,12 +1658,13 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       });
                     }}
                     placeholder="ddmmyyyy"
-                    className="h-11 w-full rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
+                    className="h-11 min-w-0 flex-1 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
                   />
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-8 w-full rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    aria-label="Open calendar"
+                    className="h-11 shrink-0 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
                     onClick={() => {
                       const node = billDatePickerRef.current;
                       if (!node) return;
@@ -1516,7 +1675,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       }
                     }}
                   >
-                    📅 Pick Date
+                    Date
                   </Button>
                   <input
                     ref={billDatePickerRef}
@@ -1530,8 +1689,10 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
+                <Label htmlFor="partySelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
                 <Button
+                  id="partySelect"
+                  name="partySelect"
                   ref={vendorButtonRef}
                   type="button"
                   variant="ghost"
@@ -1549,13 +1710,23 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 </Button>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
-                <Input ref={billNumberRef} value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => handleTopFieldKeyDown(e, 2, true)} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none" />
+                <Label htmlFor="billNumber" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
+                <Input 
+                  id="billNumber"
+                  name="billNumber"
+                  ref={billNumberRef} 
+                  value={billNumber} 
+                  onChange={(e) => setBillNumber(e.target.value)} 
+                  onKeyDown={(e) => handleTopFieldKeyDown(e, 2, true)} 
+                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none" 
+                />
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
-                <div className="mt-2 grid gap-1">
+                <Label htmlFor="receivedDate" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
+                <div className="mt-2 flex gap-2">
                   <Input
+                    id="receivedDate"
+                    name="receivedDate"
                     ref={receivedDateRef}
                     value={receivedDateInput}
                     onChange={(e) => setReceivedDateInput(e.target.value)}
@@ -1566,12 +1737,13 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       });
                     }}
                     placeholder="ddmmyyyy"
-                    className="h-11 w-full rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
+                    className="h-11 min-w-0 flex-1 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
                   />
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-8 w-full rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    aria-label="Open calendar"
+                    className="h-11 shrink-0 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
                     onClick={() => {
                       const node = receivedDatePickerRef.current;
                       if (!node) return;
@@ -1582,7 +1754,7 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       }
                     }}
                   >
-                    📅 Pick Date
+                    Date
                   </Button>
                   <input
                     ref={receivedDatePickerRef}
@@ -1596,8 +1768,10 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
+                <Label htmlFor="paymentModeSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
                 <Button
+                  id="paymentModeSelect"
+                  name="paymentModeSelect"
                   ref={paymentModeRef}
                   type="button"
                   variant="ghost"
@@ -1630,8 +1804,10 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                 <div className="mt-2 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{taxType}</div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</div>
+                <Label htmlFor="warehouseSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</Label>
                 <Button
+                  id="warehouseSelect"
+                  name="warehouseSelect"
                   ref={warehouseButtonRef}
                   type="button"
                   variant="ghost"
@@ -1717,13 +1893,16 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
                       <TableCell className="w-[80px] py-1.5">
                         <Button
+                          id={`line-${index}-rateUnitLevel`}
+                          name={`line-${index}-rateUnitLevel`}
+                          aria-label="Rate Unit"
                           ref={setLineRef(line.id, "rateUnitLevel")}
                           type="button"
                           variant="ghost"
@@ -1735,45 +1914,111 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
-                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
+                      <TableCell className="w-[70px] py-1.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[110px] py-1.5">
+                        <Input
+                          id={`line-${index}-taxable`}
+                          name={`line-${index}-taxable`}
+                          aria-label="Taxable amount"
+                          readOnly
+                          tabIndex={0}
+                          ref={setLineRef(line.id, "taxable")}
+                          value={computeLineTaxableAmount(line).toFixed(2)}
+                          onFocus={() => {
+                            setActiveRow(index);
+                            setActiveField("taxable");
+                          }}
+                          onKeyDown={(e) => handleLineFieldKeyDown(e, index, "taxable")}
+                          className={cn(
+                            "h-9 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-base font-semibold shadow-none",
+                            index === activeRow && activeField === "taxable" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
+                          )}
+                        />
+                      </TableCell>
+                      <TableCell className="w-[110px] py-1.5">
+                        <Input
+                          id={`line-${index}-lineAmount`}
+                          name={`line-${index}-lineAmount`}
+                          aria-label="Line amount"
+                          readOnly
+                          tabIndex={0}
+                          ref={setLineRef(line.id, "lineAmount")}
+                          value={Number(line.amount || 0).toFixed(2)}
+                          onFocus={() => {
+                            setActiveRow(index);
+                            setActiveField("lineAmount");
+                          }}
+                          onKeyDown={(e) => handleLineFieldKeyDown(e, index, "lineAmount")}
+                          className={cn(
+                            "h-9 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-base font-semibold shadow-none",
+                            index === activeRow && activeField === "lineAmount" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
+                          )}
+                        />
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
 
-            <div className="grid gap-px border-t bg-border md:grid-cols-[1.3fr_1fr]">
-              <div className="grid gap-px bg-border md:grid-cols-2">
-                <div className="bg-[#fbfcf7] p-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
-                  {activeLine?.product ? (
-                    <div className="mt-2 space-y-2">
-                      <div className="text-base font-semibold">{activeLine.product.name}</div>
-                      <div className="text-sm text-[#5b655f]">{activeLine.product.brand || "-"}</div>
+              <div className="bg-[#fbfcf7] p-3 text-sm">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
+                {activeLine?.product ? (
+                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div className="text-base font-semibold md:col-span-2">{activeLine.product.name}</div>
+                    <div className="text-sm text-[#5b655f] md:col-span-2">{activeLine.product.brand || "-"}</div>
                     <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
                     <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
-                    <div>SRATE: <span className="font-semibold">{Number(activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
-                    </div>
-                  ) : (
-                    <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
-                  )}
-                </div>
-                <div className="bg-[#fbfcf7] p-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Recent Product Bills</div>
-                  <div className="mt-2 space-y-2">
-                    {activeLine?.product?.recent_bills.length ? activeLine.product.recent_bills.slice(0, 3).map((bill) => (
-                        <div key={`${bill.bill_number}-${bill.bill_date}`} className="flex items-center justify-between border-b border-[#dde6dc] pb-1 text-xs">
-                        <span>{bill.bill_number}</span>
-                        <span>{formatDisplayDate(bill.bill_date)}</span>
-                        <span>{Number(bill.line_total_amount).toFixed(2)}</span>
-                      </div>
-                    )) : <div className="text-muted-foreground">No recent bills.</div>}
+                    <div className="md:col-span-2">COST: <span className="font-semibold">{Number(activeLine.product.cost_price).toFixed(2)}</span></div>
                   </div>
-                </div>
+                ) : (
+                  <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
+                )}
               </div>
+
+            {activeLine?.product && (
+              <div className="border-t bg-[#fbfcf7] p-3">
+                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.24em] text-[#6a746e]">Recent Interaction History</div>
+                {activeLine.product.recent_bills.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[#dde6dc] text-[10px] uppercase tracking-wider text-muted-foreground">
+                          <th className="pb-2 font-medium">Date</th>
+                          <th className="pb-2 font-medium">Bill No</th>
+                          <th className="pb-2 font-medium text-right">Qty</th>
+                          <th className="pb-2 font-medium">Unit</th>
+                          <th className="pb-2 font-medium text-right">MRP</th>
+                          <th className="pb-2 font-medium text-right">Price</th>
+                          <th className="pb-2 font-medium text-right">Disc %</th>
+                          <th className="pb-2 font-medium text-right">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeLine.product.recent_bills.map((bill) => (
+                          <tr key={`${bill.bill_number}-${bill.bill_date}`} className="border-b border-[#f0f4f0] last:border-0">
+                            <td className="py-2">{formatDisplayDate(bill.bill_date)}</td>
+                            <td className="py-2 font-medium">{bill.bill_number}</td>
+                            <td className="py-2 text-right">{Number(bill.quantity).toFixed(2)}</td>
+                            <td className="py-2">{bill.unit_name}</td>
+                            <td className="py-2 text-right">{Number(bill.mrp).toFixed(2)}</td>
+                            <td className="py-2 text-right">{Number(bill.rate_value).toFixed(2)}</td>
+                            <td className="py-2 text-right">{Number(bill.discount_percent).toFixed(2)}%</td>
+                            <td className="py-2 text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="py-4 text-center text-sm text-muted-foreground">No recent interactions found for this product.</div>
+                )}
+              </div>
+            )}
+
+            <div className="grid gap-px border-t bg-border md:grid-cols-[1.3fr_1fr]">
+              <div className="bg-transparent md:col-span-1"></div>
               <div className="bg-[#fbfcf7] p-3 text-sm">
                 <div className="grid grid-cols-2 gap-y-2">
                   <div>VALUE OF GOODS</div><div className="text-right font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
@@ -1781,7 +2026,10 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   <div>GST</div><div className="text-right font-semibold">{totals.gst.toFixed(2)}</div>
                   <div className="self-center">FREIGHT</div>
                   <div>
+                    <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
                     <Input
+                      id="freightAmount"
+                      name="freightAmount"
                       ref={freightRef}
                       className="h-9 rounded-none border-x-0 border-t-0 bg-transparent text-right font-semibold shadow-none"
                       value={freightAmount}
@@ -1789,12 +2037,15 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
                           e.preventDefault();
-                          focusFooterField("notes");
+                          focusFooterField("save");
+                        } else if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          focusFooterField("save");
                         } else if (e.key === "ArrowUp") {
                           e.preventDefault();
                           const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
                           if (lastFilledRow >= 0) {
-                            focusLineField(lastFilledRow, "discountPercent");
+                            focusLineField(lastFilledRow, "product");
                           }
                         }
                       }}
@@ -1804,29 +2055,23 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   <div className="pt-2 text-base font-semibold">FINAL BILL</div><div className="pt-2 text-right text-2xl font-bold">{totals.finalAmount.toFixed(2)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
-                  <Button ref={saveButtonRef} className="rounded-sm" onClick={() => void saveEntry()} disabled={saving}>{saving ? "Saving..." : `Save ${mode === "challan" ? "Challan" : "Bill"}`}</Button>
-                  <Button variant="outline" onClick={() => void showLedger()} disabled={!vendorSummary}>Ledger</Button>
-                  {activeLine?.product ? <Button variant="outline" onClick={() => void openProductEdit(activeLine.product!)}>Edit Product</Button> : null}
-                  {onClose && <Button variant="secondary" onClick={onClose}>Back</Button>}
-                </div>
-                <div className="mt-4">
-                  <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Narration</Label>
-                  <Textarea
-                    ref={notesRef}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    rows={3}
-                    className="mt-2 rounded-none border-x-0 border-t-0 bg-transparent shadow-none"
+                  <Button
+                    ref={saveButtonRef}
+                    className="rounded-sm"
+                    onClick={() => void saveEntry()}
+                    disabled={saving || !canWritePurchase}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        focusFooterField("save");
-                      } else if (e.key === "ArrowUp") {
+                      if (e.key === "ArrowUp") {
                         e.preventDefault();
                         focusFooterField("freight");
                       }
                     }}
-                  />
+                  >
+                    {saving ? "Saving..." : `Save ${mode === "challan" ? "Challan" : "Bill"}`}
+                  </Button>
+                  <Button variant="outline" onClick={() => void showLedger()} disabled={!vendorSummary}>Ledger</Button>
+                  {activeLine?.product ? <Button variant="outline" onClick={() => void openProductEdit(activeLine.product!)}>Edit Product</Button> : null}
+                  {onClose && <Button variant="secondary" onClick={onClose}>Back</Button>}
                 </div>
               </div>
             </div>
@@ -1864,46 +2109,38 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                     <div className="space-y-2">
                       {vendorSummary.open_challans.length ? vendorSummary.open_challans.map((challan) => (
                         <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
-                          <span>{challan.reference_no}</span>
+                          <span className="truncate">{challan.reference_no}</span>
                           <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
                           <span className="text-right font-semibold">{challan.item_count} items</span>
                         </div>
-                      )) : <div className="text-xs text-muted-foreground">No open challans.</div>}
+                      )) : <div className="text-xs text-muted-foreground">No specific challans for this vendor.</div>}
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="text-muted-foreground">Select vendor to view history.</div>
+                <div className="space-y-4">
+                  <div className="text-xs text-muted-foreground italic">Select vendor to view specific history.</div>
+                  <div className="border-t pt-3">
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">All Open Challans</div>
+                    <div className="space-y-3">
+                      {generalOpenChallans.length ? generalOpenChallans.map((challan) => (
+                        <div key={challan.challan_id} className="space-y-1 rounded border bg-[#fdfef9] p-2 text-xs shadow-sm">
+                          <div className="flex justify-between font-semibold">
+                            <span className="text-[#2f5d50]">{challan.vendor_name}</span>
+                            <span>{challan.reference_no}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px] text-muted-foreground">
+                             <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                             <span>{challan.item_count} items</span>
+                          </div>
+                        </div>
+                      )) : <div className="text-xs text-muted-foreground">No open challans available.</div>}
+                    </div>
+                  </div>
+                </div>
               )}
-            </div>
-            <div className="bg-[#fbfcf7] p-4 text-sm">
-              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Product Context</div>
-              {activeLine?.product ? (
-                <div className="space-y-3 text-xs">
-                  <div className="rounded-lg border bg-muted/40 p-3">
-                    <div className="font-semibold text-foreground">{activeLine.product.name}</div>
-                    <div className="mt-1 text-muted-foreground">{activeLine.product.sku}{activeLine.product.brand ? ` • ${activeLine.product.brand}` : ""}</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>Units</div>
-                    <div className="text-right font-semibold">
-                      {[activeLine.product.unit_1st_name, activeLine.product.unit_2nd_name, activeLine.product.unit_3rd_name].filter(Boolean).join(" / ")}
-                    </div>
-                    <div>Stock Ratio</div>
-                    <div className="text-right font-semibold">{activeLine.product.stock_ratio}</div>
-                    <div>Last Rate</div>
-                    <div className="text-right font-semibold">{Number(activeLine.product.latest_rate_value || activeLine.product.cost_price).toFixed(2)}</div>
-                    <div>Tax</div>
-                    <div className="text-right font-semibold">{Number(activeLine.product.tax_percent).toFixed(2)}%</div>
-                    <div>HSN</div>
-                    <div className="text-right font-semibold">{activeLine.product.hsn_code || "-"}</div>
-                    <div>Line Qty</div>
-                    <div className="text-right font-semibold">
-                      {activeLine.quantity1 || 0} / {activeLine.quantity2 || 0} / {activeLine.quantity3 || 0}
-                    </div>
-                  </div>
-                </div>
-              ) : (
+              <div className="border-t pt-3 mt-3">
+                <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Shortcuts</div>
                 <div className="space-y-2 text-xs text-muted-foreground">
                   <div><span className="font-semibold text-foreground">Enter</span> move next</div>
                   <div><span className="font-semibold text-foreground">Arrow Up/Down</span> selector navigation</div>
@@ -1911,13 +2148,14 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
                   <div><span className="font-semibold text-foreground">F4</span> edit active product</div>
                   <div><span className="font-semibold text-foreground">Ctrl+S</span> save bill</div>
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+        </div>
 
-      <Dialog open={paymentModeOpen} onOpenChange={setPaymentModeOpen}>
+        {/* Dialogs moved back inside the box container or siblings of the main grid */}
+        <Dialog open={paymentModeOpen} onOpenChange={setPaymentModeOpen}>
         <DialogContent className="max-w-sm border-0 bg-card p-0 font-mono">
           <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Mode</DialogTitle>
@@ -2263,41 +2501,82 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
           <DialogHeader><DialogTitle>Modify Product</DialogTitle></DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1"><Label>SKU</Label><Input value={productEditForm.sku} onChange={(e) => setProductEditForm((prev) => ({ ...prev, sku: e.target.value }))} /></div>
-            <div className="space-y-1"><Label>Name</Label><Input value={productEditForm.name} onChange={(e) => setProductEditForm((prev) => ({ ...prev, name: e.target.value }))} /></div>
-            <div className="space-y-1 md:col-span-2"><Label>Description</Label><Textarea value={productEditForm.description} onChange={(e) => setProductEditForm((prev) => ({ ...prev, description: e.target.value }))} rows={3} /></div>
+            <div className="space-y-1"><Label htmlFor="edit-product-sku">SKU</Label><Input id="edit-product-sku" name="sku" value={productEditForm.sku} onChange={(e) => setProductEditForm((prev) => ({ ...prev, sku: e.target.value }))} /></div>
+            <div className="space-y-1"><Label htmlFor="edit-product-name">Name</Label><Input id="edit-product-name" name="name" value={productEditForm.name} onChange={(e) => setProductEditForm((prev) => ({ ...prev, name: e.target.value }))} /></div>
+            <div className="space-y-1 md:col-span-2"><Label htmlFor="edit-product-description">Description</Label><Textarea id="edit-product-description" name="description" value={productEditForm.description} onChange={(e) => setProductEditForm((prev) => ({ ...prev, description: e.target.value }))} rows={3} /></div>
             <div className="space-y-1">
-              <Label>HSN</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.hsn_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, hsn_id: e.target.value, tax_percent: hsnOptions.find((item) => item.id === e.target.value)?.gst_percent || prev.tax_percent }))}>
+              <Label htmlFor="edit-product-hsn">HSN</Label>
+              <select id="edit-product-hsn" name="hsn_id" className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.hsn_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, hsn_id: e.target.value, tax_percent: hsnOptions.find((item) => item.id === e.target.value)?.gst_percent || prev.tax_percent }))}>
                 <option value="">Select HSN</option>
                 {hsnOptions.map((item) => <option key={item.id} value={item.id}>{item.hsn_code}</option>)}
               </select>
             </div>
-            <div className="space-y-1"><Label>GST %</Label><Input value={productEditForm.tax_percent} onChange={(e) => setProductEditForm((prev) => ({ ...prev, tax_percent: e.target.value }))} /></div>
+            <div className="space-y-1"><Label htmlFor="edit-product-tax">GST %</Label><Input id="edit-product-tax" name="tax_percent" value={productEditForm.tax_percent} onChange={(e) => setProductEditForm((prev) => ({ ...prev, tax_percent: e.target.value }))} /></div>
             <div className="space-y-1">
-              <Label>Primary Unit</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.primary_unit_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))}>
+              <Label htmlFor="edit-product-primary-unit">Primary Unit</Label>
+              <select
+                id="edit-product-primary-unit"
+                name="primary_unit_id"
+                disabled={productEditForm.has_interactions}
+                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm disabled:bg-muted disabled:opacity-50"
+                value={productEditForm.primary_unit_id}
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))}
+              >
                 <option value="">Select unit</option>
                 {unitOptions.map((item) => <option key={item.id} value={item.id}>{item.unit_code} - {item.unit_name}</option>)}
               </select>
             </div>
             <div className="space-y-1">
-              <Label>Secondary Unit</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.secondary_unit_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_id: e.target.value }))}>
+              <Label htmlFor="edit-product-secondary-unit">Secondary Unit</Label>
+              <select
+                id="edit-product-secondary-unit"
+                name="secondary_unit_id"
+                disabled={productEditForm.has_interactions}
+                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm disabled:bg-muted disabled:opacity-50"
+                value={productEditForm.secondary_unit_id}
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_id: e.target.value }))}
+              >
                 <option value="">Optional</option>
                 {unitOptions.map((item) => <option key={item.id} value={item.id}>{item.unit_code} - {item.unit_name}</option>)}
               </select>
             </div>
-            <div className="space-y-1"><Label>1 second = ? first</Label><Input value={productEditForm.secondary_unit_quantity} onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} /></div>
             <div className="space-y-1">
-              <Label>Third Unit</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.third_unit_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_id: e.target.value }))}>
+              <Label htmlFor="edit-product-sec-qty">1 second = ? first</Label>
+              <Input
+                id="edit-product-sec-qty"
+                name="secondary_unit_quantity"
+                disabled={productEditForm.has_interactions}
+                value={productEditForm.secondary_unit_quantity}
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))}
+                className="disabled:bg-muted"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="edit-product-third-unit">Third Unit</Label>
+              <select
+                id="edit-product-third-unit"
+                name="third_unit_id"
+                disabled={productEditForm.has_interactions}
+                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm disabled:bg-muted disabled:opacity-50"
+                value={productEditForm.third_unit_id}
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_id: e.target.value }))}
+              >
                 <option value="">Optional</option>
                 {unitOptions.map((item) => <option key={item.id} value={item.id}>{item.unit_code} - {item.unit_name}</option>)}
               </select>
             </div>
-            <div className="space-y-1"><Label>1 third = ? second</Label><Input value={productEditForm.third_unit_quantity} onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} /></div>
-            <div className="space-y-1"><Label>Weight in grams</Label><Input value={productEditForm.weight_in_grams} onChange={(e) => setProductEditForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} /></div>
+            <div className="space-y-1">
+              <Label htmlFor="edit-product-third-qty">1 third = ? second</Label>
+              <Input
+                id="edit-product-third-qty"
+                name="third_unit_quantity"
+                disabled={productEditForm.has_interactions}
+                value={productEditForm.third_unit_quantity}
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))}
+                className="disabled:bg-muted"
+              />
+            </div>
+            <div className="space-y-1"><Label htmlFor="edit-product-weight">Weight in grams</Label><Input id="edit-product-weight" name="weight_in_grams" value={productEditForm.weight_in_grams} onChange={(e) => setProductEditForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} /></div>
           </div>
           <div className="flex justify-end"><Button onClick={() => void saveProductEdit()}>Save Product</Button></div>
         </DialogContent>
@@ -2314,26 +2593,50 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Vendor</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setVendorCreateRef("firm_name")} value={vendorCreateForm.firm_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "firm_name")} /></div>
-            <div className="space-y-1"><Label>Type</Label><select ref={setVendorCreateRef("purchase_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.purchase_type} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, purchase_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select></div>
-            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} /></div>
-            <div className="space-y-1"><Label>PAN</Label><Input ref={setVendorCreateRef("pan")} value={vendorCreateForm.pan} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pan")} /></div>
-            <div className="space-y-1"><Label>Owner Name</Label><Input ref={setVendorCreateRef("owner_name")} value={vendorCreateForm.owner_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "owner_name")} /></div>
-            <div className="space-y-1"><Label>Phone</Label><Input ref={setVendorCreateRef("phone")} value={vendorCreateForm.phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "phone")} /></div>
-            <div className="space-y-1"><Label>Alternate Phone</Label><Input ref={setVendorCreateRef("alternate_phone")} value={vendorCreateForm.alternate_phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "alternate_phone")} /></div>
-            <div className="space-y-1"><Label>Email</Label><Input ref={setVendorCreateRef("email")} value={vendorCreateForm.email} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "email")} /></div>
-            <div className="space-y-1 md:col-span-2"><Label>Street</Label><Input ref={setVendorCreateRef("street")} value={vendorCreateForm.street} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "street")} /></div>
-            <div className="space-y-1"><Label>City</Label><Input ref={setVendorCreateRef("city")} value={vendorCreateForm.city} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "city")} /></div>
-            <div className="space-y-1"><Label>State</Label><Input ref={setVendorCreateRef("state")} value={vendorCreateForm.state} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "state")} /></div>
-            <div className="space-y-1"><Label>Pincode</Label><Input ref={setVendorCreateRef("pincode")} value={vendorCreateForm.pincode} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pincode")} /></div>
-            <div className="space-y-1"><Label>Bank Account Number</Label><Input ref={setVendorCreateRef("bank_account_number")} value={vendorCreateForm.bank_account_number} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "bank_account_number")} /></div>
-            <div className="space-y-1"><Label>IFSC Code</Label><Input ref={setVendorCreateRef("ifsc_code")} value={vendorCreateForm.ifsc_code} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "ifsc_code")} /></div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="vendor-firm-name">Firm Name</Label>
+              <Input id="vendor-firm-name" name="firm_name" ref={setVendorCreateRef("firm_name")} value={vendorCreateForm.firm_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "firm_name")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-purchase-type">Type</Label>
+              <select id="vendor-purchase-type" name="purchase_type" ref={setVendorCreateRef("purchase_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.purchase_type} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, purchase_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-gstin">GSTIN</Label>
+              <Input id="vendor-gstin" name="gstin" ref={setVendorCreateRef("gstin")} value={vendorCreateForm.gstin} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: derivePurchaseTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "gstin")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-pan">PAN</Label>
+              <Input id="vendor-pan" name="pan" ref={setVendorCreateRef("pan")} value={vendorCreateForm.pan} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pan")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-owner-name">Owner Name</Label>
+              <Input id="vendor-owner-name" name="owner_name" ref={setVendorCreateRef("owner_name")} value={vendorCreateForm.owner_name} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "owner_name")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-phone">Phone</Label>
+              <Input id="vendor-phone" name="phone" ref={setVendorCreateRef("phone")} value={vendorCreateForm.phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "phone")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-alt-phone">Alternate Phone</Label>
+              <Input id="vendor-alt-phone" name="alternate_phone" ref={setVendorCreateRef("alternate_phone")} value={vendorCreateForm.alternate_phone} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "alternate_phone")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vendor-email">Email</Label>
+              <Input id="vendor-email" name="email" ref={setVendorCreateRef("email")} value={vendorCreateForm.email} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "email")} />
+            </div>
+            <div className="space-y-1 md:col-span-2"><Label htmlFor="vendor-street">Street</Label><Input id="vendor-street" name="street" ref={setVendorCreateRef("street")} value={vendorCreateForm.street} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "street")} /></div>
+            <div className="space-y-1"><Label htmlFor="vendor-city">City</Label><Input id="vendor-city" name="city" ref={setVendorCreateRef("city")} value={vendorCreateForm.city} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "city")} /></div>
+            <div className="space-y-1"><Label htmlFor="vendor-state">State</Label><Input id="vendor-state" name="state" ref={setVendorCreateRef("state")} value={vendorCreateForm.state} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "state")} /></div>
+            <div className="space-y-1"><Label htmlFor="vendor-pincode">Pincode</Label><Input id="vendor-pincode" name="pincode" ref={setVendorCreateRef("pincode")} value={vendorCreateForm.pincode} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "pincode")} /></div>
+            <div className="space-y-1"><Label htmlFor="vendor-bank-acc">Bank Account Number</Label><Input id="vendor-bank-acc" name="bank_account_number" ref={setVendorCreateRef("bank_account_number")} value={vendorCreateForm.bank_account_number} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "bank_account_number")} /></div>
+            <div className="space-y-1"><Label htmlFor="vendor-ifsc">IFSC Code</Label><Input id="vendor-ifsc" name="ifsc_code" ref={setVendorCreateRef("ifsc_code")} value={vendorCreateForm.ifsc_code} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "ifsc_code")} /></div>
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
-                <Label>Account Category</Label>
+                <Label htmlFor="vendor-acc-cat">Account Category</Label>
                 <Button type="button" variant="outline" size="sm" onClick={() => setVendorCategoryCreateOpen(true)}>+ Add Account Category</Button>
               </div>
-              <select ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
+              <select id="vendor-acc-cat" name="account_category_id" ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label>Brands</Label>
@@ -2403,20 +2706,32 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Product</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1"><Label>SKU *</Label><Input ref={setProductCreateRef("sku")} value={productCreateForm.sku} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sku: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sku")} /></div>
-            <div className="space-y-1"><Label>Name *</Label><Input ref={setProductCreateRef("name")} value={productCreateForm.name} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, name: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "name")} /></div>
+            <div className="space-y-1"><Label htmlFor="product-sku">SKU *</Label><Input id="product-sku" name="sku" ref={setProductCreateRef("sku")} value={productCreateForm.sku} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sku: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sku")} /></div>
+            <div className="space-y-1"><Label htmlFor="product-name">Name *</Label><Input id="product-name" name="name" ref={setProductCreateRef("name")} value={productCreateForm.name} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, name: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "name")} /></div>
             <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Brand</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("brand")}>+ Add Brand</Button></div><select ref={setProductCreateRef("brand_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.brand_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, brand_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "brand_id")}><option value="">Select brand</option>{brandOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
             <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Category</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("category")}>+ Add Category</Button></div><select ref={setProductCreateRef("category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, category_id: e.target.value, sub_category_id: "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "category_id")}><option value="">Select category</option>{categoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
             <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Sub Category</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("subCategory")}>+ Add Sub Category</Button></div><select ref={setProductCreateRef("sub_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.sub_category_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, sub_category_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "sub_category_id")}><option value="">Select sub category</option>{(productCreateForm.category_id ? subCategoryOptions.filter((option) => !option.category_id || option.category_id === productCreateForm.category_id) : subCategoryOptions).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>
             <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>HSN</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("hsn")}>+ Add HSN</Button></div><select ref={setProductCreateRef("hsn_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.hsn_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, hsn_id: e.target.value, tax_percent: hsnOptions.find((item) => item.id === e.target.value)?.gst_percent || prev.tax_percent }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "hsn_id")}><option value="">Select HSN</option>{hsnOptions.map((option) => <option key={option.id} value={option.id}>{option.hsn_code} ({option.gst_percent}%)</option>)}</select></div>
-            <div className="space-y-1 md:col-span-2"><Label>Description</Label><Textarea ref={setProductCreateRef("description")} value={productCreateForm.description} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, description: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "description")} /></div>
-            <div className="space-y-1"><div className="flex items-center justify-between gap-2"><Label>Primary Unit *</Label><Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("unit")}>+ Add Unit</Button></div><select ref={setProductCreateRef("primary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.primary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "primary_unit_id")}><option value="">Select primary unit</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
-            <div className="space-y-1"><Label>Secondary Unit</Label><select ref={setProductCreateRef("secondary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.secondary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_id: e.target.value, third_unit_id: e.target.value ? prev.third_unit_id : "", secondary_unit_quantity: e.target.value ? prev.secondary_unit_quantity : "", third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_id")}><option value="">Optional</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
-            {productCreateForm.secondary_unit_id ? <div className="space-y-1"><Label>How many primary units in second unit</Label><Input ref={setProductCreateRef("secondary_unit_quantity")} value={productCreateForm.secondary_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_quantity")} /></div> : null}
-            <div className="space-y-1"><Label>Third Unit</Label><select ref={setProductCreateRef("third_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.third_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_id: e.target.value, third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_id")}><option value="">{productCreateForm.secondary_unit_id ? "Optional" : "Select secondary unit first"}</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select></div>
-            {productCreateForm.third_unit_id ? <div className="space-y-1"><Label>How many second units in third unit</Label><Input ref={setProductCreateRef("third_unit_quantity")} value={productCreateForm.third_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_quantity")} /></div> : null}
-            <div className="space-y-1"><Label>Weight in grams</Label><Input ref={setProductCreateRef("weight_in_grams")} value={productCreateForm.weight_in_grams} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "weight_in_grams")} /></div>
-            <div className="space-y-1"><Label>GST / Tax % *</Label><Input ref={setProductCreateRef("tax_percent")} value={productCreateForm.tax_percent} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, tax_percent: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "tax_percent")} /></div>
+            <div className="space-y-1 md:col-span-2"><Label htmlFor="product-description">Description</Label><Textarea id="product-description" name="description" ref={setProductCreateRef("description")} value={productCreateForm.description} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, description: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "description")} /></div>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="product-primary-unit">Primary Unit *</Label>
+                <Button type="button" variant="outline" size="sm" onClick={() => setQuickCreateType("unit")}>+ Add Unit</Button>
+              </div>
+              <select id="product-primary-unit" name="primary_unit_id" ref={setProductCreateRef("primary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.primary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "primary_unit_id")}><option value="">Select primary unit</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="product-secondary-unit">Secondary Unit</Label>
+              <select id="product-secondary-unit" name="secondary_unit_id" ref={setProductCreateRef("secondary_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.secondary_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_id: e.target.value, third_unit_id: e.target.value ? prev.third_unit_id : "", secondary_unit_quantity: e.target.value ? prev.secondary_unit_quantity : "", third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_id")}><option value="">Optional</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select>
+            </div>
+            {productCreateForm.secondary_unit_id ? <div className="space-y-1"><Label htmlFor="product-sec-qty">How many primary units in second unit</Label><Input id="product-sec-qty" name="secondary_unit_quantity" ref={setProductCreateRef("secondary_unit_quantity")} value={productCreateForm.secondary_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "secondary_unit_quantity")} /></div> : null}
+            <div className="space-y-1">
+              <Label htmlFor="product-third-unit">Third Unit</Label>
+              <select id="product-third-unit" name="third_unit_id" ref={setProductCreateRef("third_unit_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productCreateForm.third_unit_id} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_id: e.target.value, third_unit_quantity: e.target.value ? prev.third_unit_quantity : "" }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_id")}><option value="">{productCreateForm.secondary_unit_id ? "Optional" : "Select secondary unit first"}</option>{unitOptions.map((option) => <option key={option.id} value={option.id}>{option.unit_code} - {option.unit_name}</option>)}</select>
+            </div>
+            {productCreateForm.third_unit_id ? <div className="space-y-1"><Label htmlFor="product-third-qty">How many second units in third unit</Label><Input id="product-third-qty" name="third_unit_quantity" ref={setProductCreateRef("third_unit_quantity")} value={productCreateForm.third_unit_quantity} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "third_unit_quantity")} /></div> : null}
+            <div className="space-y-1"><Label htmlFor="product-weight">Weight in grams</Label><Input id="product-weight" name="weight_in_grams" ref={setProductCreateRef("weight_in_grams")} value={productCreateForm.weight_in_grams} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "weight_in_grams")} /></div>
+            <div className="space-y-1"><Label htmlFor="product-tax">GST / Tax % *</Label><Input id="product-tax" name="tax_percent" ref={setProductCreateRef("tax_percent")} value={productCreateForm.tax_percent} onChange={(e) => setProductCreateForm((prev) => ({ ...prev, tax_percent: e.target.value }))} onKeyDown={(e) => handleProductCreateKeyDown(e, "tax_percent")} /></div>
           </div>
           <div className="flex justify-end">
             <Button ref={productCreateSaveRef} type="button" disabled={creatingProduct || !productCreateForm.sku.trim() || !productCreateForm.name.trim() || !productCreateForm.primary_unit_id || !productCreateForm.tax_percent.trim()} onKeyDown={(e) => {
@@ -2477,20 +2792,22 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
           <div className="grid gap-3">
             {quickCreateType === "unit" || quickCreateType === "hsn" ? (
               <div className="space-y-1">
-                <Label>{quickCreateType === "unit" ? "Code" : "HSN Number"}</Label>
-                <Input value={quickCode} onChange={(e) => setQuickCode(e.target.value)} />
+                <Label htmlFor="quick-code">{quickCreateType === "unit" ? "Code" : "HSN Number"}</Label>
+                <Input id="quick-code" name="code" value={quickCode} onChange={(e) => setQuickCode(e.target.value)} />
               </div>
             ) : null}
             {quickCreateType !== "hsn" ? (
               <div className="space-y-1">
-                <Label>{quickCreateType === "unit" ? "Unit Name" : "Name"}</Label>
-                <Input value={quickName} onChange={(e) => setQuickName(e.target.value)} />
+                <Label htmlFor="quick-name">{quickCreateType === "unit" ? "Unit Name" : "Name"}</Label>
+                <Input id="quick-name" name="name" value={quickName} onChange={(e) => setQuickName(e.target.value)} />
               </div>
             ) : null}
             {quickCreateType === "subCategory" ? (
               <div className="space-y-1">
-                <Label>Category</Label>
+                <Label htmlFor="quick-category">Category</Label>
                 <select
+                  id="quick-category"
+                  name="category_id"
                   className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
                   value={quickCategoryId}
                   onChange={(e) => setQuickCategoryId(e.target.value)}
@@ -2505,12 +2822,12 @@ export function PurchaseEntryWorkspace({ onSaved, onClose, initialId, sourceChal
             {quickCreateType === "hsn" ? (
               <>
                 <div className="space-y-1">
-                  <Label>Description</Label>
-                  <Input value={quickDescription} onChange={(e) => setQuickDescription(e.target.value)} />
+                  <Label htmlFor="quick-description">Description</Label>
+                  <Input id="quick-description" name="description" value={quickDescription} onChange={(e) => setQuickDescription(e.target.value)} />
                 </div>
                 <div className="space-y-1">
-                  <Label>GST %</Label>
-                  <Input value={quickGst} onChange={(e) => setQuickGst(e.target.value)} />
+                  <Label htmlFor="quick-gst">GST %</Label>
+                  <Input id="quick-gst" name="gst_percent" value={quickGst} onChange={(e) => setQuickGst(e.target.value)} />
                 </div>
               </>
             ) : null}

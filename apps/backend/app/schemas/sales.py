@@ -150,6 +150,52 @@ class CustomerPendingSalesOrderItem(BaseModel):
     is_free_item: bool = False
 
 
+class SalesEntryBootstrap(BaseModel):
+    today: date
+    next_entry_number: str
+    default_warehouse_id: uuid.UUID | None = None
+    warehouses: list[dict]
+
+
+class RecentSalesBill(BaseModel):
+    bill_number: str
+    bill_date: date
+    quantity: Decimal
+    unit_name: str | None = None
+    mrp: Decimal
+    rate_value: Decimal
+    discount_percent: Decimal
+    line_total_amount: Decimal
+
+
+class SalesEntryProductSummary(BaseModel):
+    product_id: uuid.UUID
+    sku: str
+    name: str
+    brand: str | None = None
+    description: str | None = None
+    hsn_code: str | None = None
+    tax_percent: Decimal
+    mrp: Decimal
+    selling_price: Decimal
+    unit_1st_name: str | None = None
+    unit_2nd_name: str | None = None
+    unit_3rd_name: str | None = None
+    unit_1st_id: uuid.UUID | None = None
+    unit_2nd_id: uuid.UUID | None = None
+    unit_3rd_id: uuid.UUID | None = None
+    conv_2_to_1: Decimal | None = None
+    conv_3_to_2: Decimal | None = None
+    conv_3_to_1: Decimal | None = None
+    stock_base_quantity: Decimal
+    stock_ratio: str
+    latest_rate_value: Decimal | None = None
+    latest_rate_unit_level: int | None = None
+    latest_discount_percent: Decimal | None = None
+    has_interactions: bool = False
+    recent_bills: list[RecentSalesBill] = []
+
+
 class CustomerPendingSalesOrderSummary(BaseModel):
     sales_order_id: uuid.UUID
     invoice_number: str | None = None

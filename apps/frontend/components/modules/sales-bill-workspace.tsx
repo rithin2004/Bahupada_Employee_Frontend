@@ -38,7 +38,7 @@ type CustomerSummary = {
   last_sale_date: string | null;
   last_receipt_date: string | null;
   last_bills: Array<{ bill_number: string; bill_date: string; total_amount: string }>;
-  open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number }>;
+  open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number; customer_name?: string }>;
 };
 
 type ProductSummary = {
@@ -50,6 +50,8 @@ type ProductSummary = {
   hsn_code: string | null;
   tax_percent: string;
   mrp: string;
+  /** Category / list selling price from sales product summary */
+  selling_price: string;
   cost_price: string;
   unit_1st_name: string | null;
   unit_2nd_name: string | null;
@@ -60,12 +62,23 @@ type ProductSummary = {
   conv_2_to_1: string | null;
   conv_3_to_2: string | null;
   conv_3_to_1: string | null;
+  weight_in_grams: string | null;
   stock_base_quantity: string;
   stock_ratio: string;
   latest_rate_value: string | null;
   latest_rate_unit_level: number | null;
   latest_discount_percent: string | null;
-  recent_bills: Array<{ bill_number: string; bill_date: string; line_total_amount: string }>;
+  has_interactions: boolean;
+  recent_bills: Array<{
+    bill_number: string;
+    bill_date: string;
+    quantity: string;
+    mrp: string;
+    rate_value: string;
+    discount_percent: string;
+    line_total_amount: string;
+    unit_name: string;
+  }>;
 };
 
 type LedgerEntry = {
@@ -90,6 +103,7 @@ type ProductEditForm = {
   third_unit_quantity: string;
   weight_in_grams: string;
   tax_percent: string;
+  has_interactions: boolean;
 };
 
 type UnitOption = { id: string; unit_code: string; unit_name: string };
@@ -132,6 +146,8 @@ type ProductCreateForm = {
 type LineDraft = {
   id: string;
   product: ProductSummary | null;
+  /** Set when line came from a sales order (invoice from challan) */
+  salesOrderItemId?: string;
   quantity1: string;
   quantity2: string;
   quantity3: string;
@@ -155,6 +171,7 @@ const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   third_unit_quantity: "",
   weight_in_grams: "",
   tax_percent: "",
+  has_interactions: false,
 };
 const EMPTY_CUSTOMER_FORM: CustomerCreateForm = {
   firm_name: "",
@@ -193,27 +210,6 @@ const EMPTY_PRODUCT_FORM: ProductCreateForm = {
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
-}
-
-function createSalesBillNo() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const h = String(now.getHours()).padStart(2, "0");
-  const min = String(now.getMinutes()).padStart(2, "0");
-  return `SB-${y}${m}${d}-${h}${min}`;
-}
-
-function createSalesEntryNo() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const h = String(now.getHours()).padStart(2, "0");
-  const min = String(now.getMinutes()).padStart(2, "0");
-  const s = String(now.getSeconds()).padStart(2, "0");
-  return `SE-${y}${m}${d}-${h}${min}${s}`;
 }
 
 function formatDisplayDate(iso: string) {
@@ -275,8 +271,29 @@ function makeLine(): LineDraft {
   };
 }
 
-type LineField = "product" | "quantity1" | "quantity2" | "quantity3" | "mrp" | "rateValue" | "rateUnitLevel" | "discountPercent" | "discountLumpsum";
-const LINE_FIELD_ORDER: LineField[] = ["product", "quantity3", "quantity2", "quantity1", "mrp", "rateValue", "rateUnitLevel", "discountPercent", "discountLumpsum"];
+type LineField =
+  | "product"
+  | "quantity1"
+  | "quantity2"
+  | "quantity3"
+  | "rateValue"
+  | "rateUnitLevel"
+  | "discountPercent"
+  | "discountLumpsum"
+  | "taxable"
+  | "lineAmount";
+const LINE_FIELD_ORDER: LineField[] = [
+  "product",
+  "quantity3",
+  "quantity2",
+  "quantity1",
+  "rateValue",
+  "rateUnitLevel",
+  "discountPercent",
+  "discountLumpsum",
+  "taxable",
+  "lineAmount",
+];
 const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
 const CUSTOMER_CREATE_FIELD_ORDER = [
   "firm_name",
@@ -324,7 +341,16 @@ function getLineQuantityFields(line: LineDraft | null): LineField[] {
 }
 
 function getLineFieldOrder(line: LineDraft | null): LineField[] {
-  return ["product", ...getLineQuantityFields(line), "mrp", "rateValue", "rateUnitLevel", "discountPercent", "discountLumpsum"];
+  return [
+    "product",
+    ...getLineQuantityFields(line),
+    "rateValue",
+    "rateUnitLevel",
+    "discountPercent",
+    "discountLumpsum",
+    "taxable",
+    "lineAmount",
+  ];
 }
 
 function resolveFieldForLine(line: LineDraft | null, preferred: LineField): LineField {
@@ -365,7 +391,9 @@ function lineBaseQuantity(line: LineDraft) {
 
 function lineUnitPrice(line: LineDraft) {
   if (!line.product) return 0;
-  const rate = asDecimal(line.rateValue || line.product.latest_rate_value || line.product.cost_price);
+  const rate = asDecimal(
+    line.rateValue || line.product.latest_rate_value || line.product.selling_price || line.product.cost_price || "0"
+  );
   const conv2 = asDecimal(line.product.conv_2_to_1);
   const conv3 = asDecimal(line.product.conv_3_to_1);
   if (line.rateUnitLevel === 2 && conv2 > 0) return rate / conv2;
@@ -377,7 +405,7 @@ function computeLineAmount(line: LineDraft) {
   if (!line.product) return 0;
   const baseQty = lineBaseQuantity(line);
   const subtotal = baseQty * lineUnitPrice(line);
-  const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+  const discountPercent = asDecimal(line.discountPercent || "0");
   const discountLumpsum = asDecimal(line.discountLumpsum);
   const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
   const taxable = subtotal - discountAmount;
@@ -389,7 +417,7 @@ function computeLineTaxableAmount(line: LineDraft) {
   if (!line.product) return 0;
   const baseQty = lineBaseQuantity(line);
   const subtotal = baseQty * lineUnitPrice(line);
-  const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+  const discountPercent = asDecimal(line.discountPercent || "0");
   const discountLumpsum = asDecimal(line.discountLumpsum);
   const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
   return Math.max(0, subtotal - discountAmount);
@@ -430,6 +458,7 @@ function mapCustomerSummary(row: Record<string, unknown>): CustomerSummary {
       reference_no: String(challan.reference_no ?? ""),
       challan_date: challan.challan_date ? String(challan.challan_date) : null,
       item_count: Number(challan.item_count ?? 0),
+      customer_name: challan.customer_name ? String(challan.customer_name) : undefined,
     })),
   };
 }
@@ -444,7 +473,8 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
     hsn_code: row.hsn_code ? String(row.hsn_code) : null,
     tax_percent: String(row.tax_percent ?? "0"),
     mrp: String(row.mrp ?? "0"),
-    cost_price: String(row.cost_price ?? "0"),
+    selling_price: String(row.selling_price ?? row.cost_price ?? "0"),
+    cost_price: String(row.cost_price ?? row.selling_price ?? "0"),
     unit_1st_name: row.unit_1st_name ? String(row.unit_1st_name) : null,
     unit_2nd_name: row.unit_2nd_name ? String(row.unit_2nd_name) : null,
     unit_3rd_name: row.unit_3rd_name ? String(row.unit_3rd_name) : null,
@@ -454,15 +484,22 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
     conv_2_to_1: row.conv_2_to_1 ? String(row.conv_2_to_1) : null,
     conv_3_to_2: row.conv_3_to_2 ? String(row.conv_3_to_2) : null,
     conv_3_to_1: row.conv_3_to_1 ? String(row.conv_3_to_1) : null,
+    weight_in_grams: row.weight_in_grams != null && row.weight_in_grams !== "" ? String(row.weight_in_grams) : null,
     stock_base_quantity: String(row.stock_base_quantity ?? "0"),
     stock_ratio: String(row.stock_ratio ?? "0 : 0 : 0"),
     latest_rate_value: row.latest_rate_value ? String(row.latest_rate_value) : null,
     latest_rate_unit_level: row.latest_rate_unit_level ? Number(row.latest_rate_unit_level) : null,
     latest_discount_percent: row.latest_discount_percent ? String(row.latest_discount_percent) : null,
+    has_interactions: Boolean(row.has_interactions),
     recent_bills: asArray(row.recent_bills).map((bill) => ({
       bill_number: String(bill.bill_number ?? ""),
       bill_date: String(bill.bill_date ?? ""),
+      quantity: String(bill.quantity ?? "0"),
+      mrp: String(bill.mrp ?? "0"),
+      rate_value: String(bill.rate_value ?? "0"),
+      discount_percent: String(bill.discount_percent ?? "0"),
       line_total_amount: String(bill.line_total_amount ?? "0"),
+      unit_name: String(bill.unit_name ?? ""),
     })),
   };
 }
@@ -492,8 +529,8 @@ export function SalesBillWorkspace({
   const [warehouseState, setWarehouseState] = useState<string | null>(null);
   const [billDateInput, setBillDateInput] = useState(formatDisplayDate(todayIso()));
   const [billDate, setBillDate] = useState(todayIso());
-  const [billNumber, setBillNumber] = useState(createSalesBillNo);
-  const [entryNumber, setEntryNumber] = useState(createSalesEntryNo);
+  const [billNumber, setBillNumber] = useState("");
+  const [entryNumber, setEntryNumber] = useState("");
   const [receivedDateInput, setReceivedDateInput] = useState(formatDisplayDate(todayIso()));
   const [receivedDate, setReceivedDate] = useState(todayIso());
   const [paymentMode, setPaymentMode] = useState<"CREDIT" | "CASH">("CREDIT");
@@ -503,12 +540,12 @@ export function SalesBillWorkspace({
   const [warehouseIndex, setWarehouseIndex] = useState(0);
   const [taxType, setTaxType] = useState<"LOCAL" | "CENTRAL">("CENTRAL");
   const [freightAmount, setFreightAmount] = useState("0");
-  const [notes, setNotes] = useState("");
   const [customerSummary, setCustomerSummary] = useState<CustomerSummary | null>(null);
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerResults, setCustomerResults] = useState<CustomerSummary[]>([]);
   const [customerIndex, setCustomerIndex] = useState(0);
+  const [generalOpenChallans, setGeneralOpenChallans] = useState<CustomerSummary["open_challans"]>([]);
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [productResults, setProductResults] = useState<ProductSummary[]>([]);
@@ -553,7 +590,6 @@ export function SalesBillWorkspace({
   const paymentModeRef = useRef<HTMLButtonElement | null>(null);
   const warehouseButtonRef = useRef<HTMLButtonElement | null>(null);
   const freightRef = useRef<HTMLInputElement | null>(null);
-  const notesRef = useRef<HTMLTextAreaElement | null>(null);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const customerSearchRef = useRef<HTMLInputElement | null>(null);
   const productSearchRef = useRef<HTMLInputElement | null>(null);
@@ -650,7 +686,7 @@ export function SalesBillWorkspace({
       if (!line.product) return sum;
       const baseQty = lineBaseQuantity(line);
       const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+      const discountPercent = asDecimal(line.discountPercent || "0");
       const discountLumpsum = asDecimal(line.discountLumpsum);
       const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
       return sum + Math.max(0, subtotal - discountAmount);
@@ -659,7 +695,7 @@ export function SalesBillWorkspace({
       if (!line.product) return sum;
       const baseQty = lineBaseQuantity(line);
       const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+      const discountPercent = asDecimal(line.discountPercent || "0");
       const discountLumpsum = asDecimal(line.discountLumpsum);
       const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
       const taxable = Math.max(0, subtotal - discountAmount);
@@ -669,7 +705,7 @@ export function SalesBillWorkspace({
       if (!line.product) return sum;
       const baseQty = lineBaseQuantity(line);
       const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
+      const discountPercent = asDecimal(line.discountPercent || "0");
       const discountLumpsum = asDecimal(line.discountLumpsum);
       return sum + subtotal * (discountPercent / 100) + discountLumpsum;
     }, 0);
@@ -743,7 +779,7 @@ export function SalesBillWorkspace({
   const searchProducts = useCallback(async (query: string) => {
     const params = new URLSearchParams();
     if (query.trim()) params.set("q", query.trim());
-    const res = await fetchBackendFresh(`/procurement/purchase-entry/products/search?${params.toString()}`);
+    const res = await fetchBackendFresh(`/sales/sales-entry/products/search?${params.toString()}`);
     const items = asArray(asObject(res).items).map(mapProductSummary);
     setProductResults(items);
     setProductIndex(0);
@@ -776,7 +812,6 @@ export function SalesBillWorkspace({
         setPaymentMode(data.payment_mode === "CASH" ? "CASH" : "CREDIT");
         setWarehouseId(String(data.warehouse_id || ""));
         setFreightAmount(String(data.freight_amount || "0"));
-        setNotes(String(data.notes || ""));
 
         if (data.customer_id) {
           const v = asObject(await fetchBackend(`/masters/customers/${data.customer_id}`));
@@ -786,19 +821,21 @@ export function SalesBillWorkspace({
         const items = asArray(data.items);
         if (items.length > 0) {
           const mappedLines = await Promise.all(items.map(async (item) => {
-            const p = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${item.product_id}/summary`)));
+            const row = asObject(item);
+            const p = mapProductSummary(asObject(await fetchBackend(`/sales/sales-entry/products/${row.product_id}/summary`)));
             const line: LineDraft = {
               id: crypto.randomUUID(),
+              salesOrderItemId: row.id ? String(row.id) : undefined,
               product: p,
-              quantity1: String(item.quantity_1st || ""),
-              quantity2: String(item.quantity_2nd || ""),
-              quantity3: String(item.quantity_3rd || ""),
-              mrp: String(item.mrp || "0"),
-              rateValue: String(item.rate_value || "0"),
-              rateUnitLevel: (Number(item.rate_unit_level) || 1) as 1 | 2 | 3,
-              discountPercent: String(item.discount_percent || "0"),
-              discountLumpsum: String(item.discount_lumpsum || "0"),
-              amount: String(item.line_total_amount || "0"),
+              quantity1: String(row.quantity ?? row.quantity_1st ?? ""),
+              quantity2: String(row.quantity_2nd ?? ""),
+              quantity3: String(row.quantity_3rd ?? ""),
+              mrp: String(row.mrp ?? p.mrp ?? "0"),
+              rateValue: String(row.selling_price ?? row.rate_value ?? p.latest_rate_value ?? p.selling_price ?? "0"),
+              rateUnitLevel: (Number(row.rate_unit_level) || 1) as 1 | 2 | 3,
+              discountPercent: String(row.discount_percent ?? "0"),
+              discountLumpsum: String(row.discount_lumpsum ?? "0"),
+              amount: String(row.line_total_amount ?? row.total_amount ?? "0"),
             };
             return line;
           }));
@@ -820,6 +857,26 @@ export function SalesBillWorkspace({
   useEffect(() => {
     void loadCreateReferences();
   }, [loadCreateReferences]);
+
+  useEffect(() => {
+    async function fetchGeneralOpenChallans() {
+      try {
+        const raw = await fetchBackend("/sales/sales-orders?open_only=true");
+        // Check if raw is the Paginated response or direct list
+        const items = Array.isArray(raw) ? raw : (raw as any).items || [];
+        setGeneralOpenChallans(asArray(items).map((order: any) => ({
+          challan_id: String(order.id),
+          reference_no: String(order.invoice_number),
+          challan_date: order.created_at ? String(order.created_at).split("T")[0] : null,
+          item_count: Number(order.item_count || 0),
+          customer_name: String(order.customer_name || ""),
+        })));
+      } catch (err) {
+        console.error("Failed to fetch general open sales orders", err);
+      }
+    }
+    void fetchGeneralOpenChallans();
+  }, []);
 
   useEffect(() => {
     if (!customerSearchOpen) return;
@@ -882,10 +939,16 @@ export function SalesBillWorkspace({
       if (event.key !== "Escape") {
         return;
       }
+      if (productSearchOpen) {
+        event.preventDefault();
+        setProductSearchOpen(false);
+        setTimeout(() => focusLineField(activeRow, "product"), 0);
+        return;
+      }
       if (customerSearchOpen) {
         event.preventDefault();
         setCustomerSearchOpen(false);
-        setTimeout(() => focusLineField(activeRow, "product"), 0);
+        setTimeout(() => customerButtonRef.current?.focus(), 0);
         return;
       }
       if (rateUnitPicker) {
@@ -907,15 +970,14 @@ export function SalesBillWorkspace({
         setTimeout(() => warehouseButtonRef.current?.focus(), 0);
         return;
       }
-      if (customerSearchOpen) {
+      if (onClose) {
         event.preventDefault();
-        setCustomerSearchOpen(false);
-        setTimeout(() => customerButtonRef.current?.focus(), 0);
+        onClose();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, paymentModeOpen, productSearchOpen, rateUnitPicker, customerSearchOpen, warehousePickerOpen]);
+  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, customerSearchOpen, warehousePickerOpen]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -1002,21 +1064,39 @@ export function SalesBillWorkspace({
     });
   }, []);
 
-  const selectProduct = useCallback((product: ProductSummary, targetRow = productTargetRow) => {
-    updateLine(targetRow, {
-      product,
-      mrp: product.mrp ? Number(product.mrp).toFixed(2) : "0.00",
-      rateValue: product.latest_rate_value || product.cost_price || "0",
-      rateUnitLevel: (product.latest_rate_unit_level as 1 | 2 | 3 | null) ?? 1,
-      discountPercent: product.latest_discount_percent || "0",
-    });
-    setProductSearchOpen(false);
-    setProductSearch("");
-    ensureTrailingEmptyLine();
-    setActiveRow(targetRow);
-    setActiveField(getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1");
-    setTimeout(() => focusLineField(targetRow, getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1"), 0);
-  }, [ensureTrailingEmptyLine, focusLineField, productTargetRow, updateLine]);
+  const selectProduct = useCallback(
+    async (product: ProductSummary, targetRow = productTargetRow) => {
+      let rateValue = product.latest_rate_value || product.selling_price || "0";
+      if (customerSummary?.customer_id) {
+        try {
+          const rp = asObject(
+            await fetchBackend(
+              `/sales/sales-entry/products/${product.product_id}/resolved-price?customer_id=${customerSummary.customer_id}`
+            )
+          );
+          if (rp.unit_price != null) {
+            rateValue = String(rp.unit_price);
+          }
+        } catch {
+          /* keep summary defaults */
+        }
+      }
+      updateLine(targetRow, {
+        product,
+        mrp: product.mrp ? Number(product.mrp).toFixed(2) : "0.00",
+        rateValue,
+        rateUnitLevel: (product.latest_rate_unit_level as 1 | 2 | 3 | null) ?? 1,
+        discountPercent: "0",
+      });
+      setProductSearchOpen(false);
+      setProductSearch("");
+      ensureTrailingEmptyLine();
+      setActiveRow(targetRow);
+      setActiveField(getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1");
+      setTimeout(() => focusLineField(targetRow, getLineQuantityFields({ ...makeLine(), product })[0] ?? "quantity1"), 0);
+    },
+    [customerSummary?.customer_id, ensureTrailingEmptyLine, focusLineField, productTargetRow, updateLine]
+  );
 
   const openProductSelector = useCallback((rowIndex = activeRow) => {
     if (!customerSummary?.customer_id) {
@@ -1039,7 +1119,7 @@ export function SalesBillWorkspace({
   }, [warehouseId, warehouses]);
 
   const openProductEdit = useCallback(async (product: ProductSummary) => {
-    const full = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${product.product_id}/summary`)));
+    const full = mapProductSummary(asObject(await fetchBackend(`/sales/sales-entry/products/${product.product_id}/summary`)));
     setProductEditForm({
       sku: full.sku,
       name: full.name,
@@ -1050,8 +1130,9 @@ export function SalesBillWorkspace({
       third_unit_id: full.unit_3rd_id || "",
       secondary_unit_quantity: full.conv_2_to_1 || "",
       third_unit_quantity: full.conv_3_to_2 || "",
-      weight_in_grams: full.stock_base_quantity ? "" : "",
+      weight_in_grams: full.weight_in_grams || "",
       tax_percent: full.tax_percent,
+      has_interactions: full.has_interactions,
     });
     setProductEditOpen(true);
   }, [hsnOptions]);
@@ -1072,7 +1153,7 @@ export function SalesBillWorkspace({
         weight_in_grams: productEditForm.weight_in_grams ? Number(productEditForm.weight_in_grams) : null,
         tax_percent: Number(productEditForm.tax_percent || 0),
       });
-      const refreshed = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${activeLine.product.product_id}/summary`)));
+      const refreshed = mapProductSummary(asObject(await fetchBackend(`/sales/sales-entry/products/${activeLine.product.product_id}/summary`)));
       updateLine(activeRow, { product: refreshed, amount: computeLineAmount({ ...activeLine, product: refreshed }).toFixed(2) });
       setProductEditOpen(false);
       toast.success("Product updated");
@@ -1149,7 +1230,7 @@ export function SalesBillWorkspace({
   const showLedger = useCallback(async () => {
     if (!customerSummary) return;
     try {
-      const res = asObject(await fetchBackend(`/finance/party-ledger/customer/${customerSummary.customer_id}`));
+      const res = asObject(await fetchBackend(`/sales/sales-entry/customers/${customerSummary.customer_id}/ledger`));
       setLedgerRows(asArray(res.items).map((item) => ({
         entry_id: String(item.entry_id ?? ""),
         entry_date: String(item.entry_date ?? ""),
@@ -1179,58 +1260,70 @@ export function SalesBillWorkspace({
       toast.error("Add at least one product line");
       return;
     }
-    const proceed = window.confirm(`Save sales ${mode === "challan" ? "order" : "invoice"} ${billNumber} for ${customerSummary.customer_name}?`);
+    const convertChallanToBill = Boolean(localSourceChallanId) && mode === "bill" && !initialId;
+    if (convertChallanToBill) {
+      const missing = validLines.filter((l) => !l.salesOrderItemId);
+      if (missing.length) {
+        toast.error("Each line must be linked to the sales order. Re-open this invoice from the challan list.");
+        return;
+      }
+    }
+    const proceed = window.confirm(
+      `Save sales ${mode === "challan" ? "order" : "invoice"} ${billNumber.trim() || "(auto)"} for ${customerSummary.customer_name}?`
+    );
     if (!proceed) return;
     setSaving(true);
     try {
-      const payload = {
-        customer_id: customerSummary.customer_id,
-        warehouse_id: warehouseId,
-        source: "ADMIN", // Required for SalesOrderCreate
-        invoice_number: billNumber,
-        invoice_date: billDate,
-        delivery_date: receivedDate,
-        payment_mode: paymentMode,
-        tax_type: taxType,
-        freight_amount: Number(freightAmount || 0),
-        entry_number: entryNumber,
-        notes: notes || null,
-        items: validLines.map((line, index) => ({
-          product_id: line.product?.product_id,
-          batch_no: `${mode === "challan" ? "ORD" : "INV"}-${billDate.replaceAll("-", "")}-${String(index + 1).padStart(3, "0")}`,
-          expiry_date: null,
-          quantity: lineBaseQuantity(line),
-          quantity_1st: Number(line.quantity1 || 0),
-          quantity_2nd: Number(line.quantity2 || 0),
-          quantity_3rd: Number(line.quantity3 || 0),
-          unit_1st_id: line.product?.unit_1st_id,
-          unit_2nd_id: line.product?.unit_2nd_id,
-          unit_3rd_id: line.product?.unit_3rd_id,
-          base_quantity: lineBaseQuantity(line),
-          mrp: Number(line.mrp || 0),
-          damaged_quantity: 0,
-          unit_price: lineUnitPrice(line),
-          rate_value: Number(line.rateValue || 0),
-          rate_unit_level: line.rateUnitLevel,
-          discount_percent: Number(line.discountPercent || 0),
-          discount_lumpsum: Number(line.discountLumpsum || 0),
-          line_total_amount: Number(computeLineAmount(line).toFixed(2)),
-        })),
-      };
+      const invNo = billNumber.trim() || null;
+      const orderItems = validLines.map((line) => ({
+        product_id: line.product!.product_id,
+        quantity: lineBaseQuantity(line),
+      }));
 
-      const isConversion = Boolean(localSourceChallanId);
-      const endpoint = mode === "challan" ? "/sales/sales-orders" : (isConversion ? "/sales/sales-final-invoices/from-sales-order" : "/sales/sales-final-invoices/direct");
-
-      if (initialId) {
-        await patchBackend(`${mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices"}/${initialId}`, payload);
-        toast.success(`Sales ${mode === "challan" ? "order" : "invoice"} updated`);
-      } else {
-        if (mode === "bill" && isConversion) {
-            // Need to map product_id back to sales_order_item_id or just use direct for now if item IDs aren't tracked
-            // Actually, for simplicity and since we only drafted `product_id` in lines, direct invoice is safest fallback
+      if (mode === "challan") {
+        const body = {
+          warehouse_id: warehouseId,
+          customer_id: customerSummary.customer_id,
+          source: "ADMIN",
+          invoice_number: invNo,
+          items: orderItems,
+        };
+        if (initialId) {
+          await patchBackend(`/sales/sales-orders/${initialId}`, body);
+          toast.success("Sales order updated");
+        } else {
+          await postBackend("/sales/sales-orders", body);
+          toast.success("Sales order saved");
         }
-        await postBackend(mode === "challan" ? "/sales/sales-orders" : "/sales/sales-final-invoices/direct", payload);
-        toast.success(`Sales ${mode === "challan" ? "order" : "invoice"} saved`);
+      } else if (initialId) {
+        await postBackend(`/sales/sales-final-invoices/${initialId}/edit`, {
+          subtotal: totals.valueOfGoods,
+          gst_amount: totals.gst,
+          total_amount: totals.finalAmount,
+          reason: "Sales workspace edit",
+          auto_note: true,
+        });
+        toast.success("Sales invoice updated");
+      } else if (convertChallanToBill) {
+        await postBackend("/sales/sales-final-invoices/from-sales-order", {
+          sales_order_id: localSourceChallanId,
+          invoice_number: invNo,
+          invoice_date: billDate,
+          items: validLines.map((line) => ({
+            sales_order_item_id: line.salesOrderItemId!,
+            quantity: lineBaseQuantity(line),
+          })),
+        });
+        toast.success("Sales invoice saved");
+      } else {
+        await postBackend("/sales/sales-final-invoices/direct", {
+          customer_id: customerSummary.customer_id,
+          warehouse_id: warehouseId,
+          invoice_number: invNo,
+          invoice_date: billDate,
+          items: orderItems,
+        });
+        toast.success("Sales invoice saved");
       }
 
       if (onSaved) {
@@ -1239,11 +1332,9 @@ export function SalesBillWorkspace({
       }
       await showLedger();
       setLines([makeLine()]);
-      setNotes("");
       setFreightAmount("0");
       setActiveRow(0);
-      setEntryNumber(createSalesEntryNo(entryNumber));
-      setBillNumber(createSalesBillNo(billNumber));
+      void loadBootstrap();
       setTimeout(() => productCellRef.current?.focus(), 0);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : `Failed to save ${mode}`);
@@ -1258,15 +1349,14 @@ export function SalesBillWorkspace({
     mode,
     warehouseId,
     billDate,
-    receivedDate,
-    paymentMode,
-    taxType,
-    freightAmount,
-    entryNumber,
-    notes,
     initialId,
+    localSourceChallanId,
     onSaved,
     showLedger,
+    loadBootstrap,
+    totals.finalAmount,
+    totals.gst,
+    totals.valueOfGoods,
   ]);
 
   const moveGridFocus = useCallback((rowIndex: number, field: LineField) => {
@@ -1296,19 +1386,18 @@ export function SalesBillWorkspace({
       setTimeout(() => warehouseButtonRef.current?.focus(), 0);
       return;
     }
-    const boundedNextRow = Math.max(0, Math.min(lines.length - 1, nextRow));
-    moveGridFocus(boundedNextRow, field);
+    if (nextRow >= lines.length) {
+      focusFooterField("freight");
+      return;
+    }
+    moveGridFocus(nextRow, field);
   }, [lines, moveGridFocus]);
 
-  const focusFooterField = useCallback((field: "freight" | "notes" | "save") => {
+  const focusFooterField = useCallback((field: "freight" | "save") => {
     setTimeout(() => {
       if (field === "freight") {
         freightRef.current?.focus();
         freightRef.current?.select();
-        return;
-      }
-      if (field === "notes") {
-        notesRef.current?.focus();
         return;
       }
       saveButtonRef.current?.focus();
@@ -1335,10 +1424,6 @@ export function SalesBillWorkspace({
       return;
     }
     if (field === "quantity1") {
-      moveGridFocus(rowIndex, "mrp");
-      return;
-    }
-    if (field === "mrp") {
       moveGridFocus(rowIndex, "rateValue");
       return;
     }
@@ -1357,6 +1442,14 @@ export function SalesBillWorkspace({
       return;
     }
     if (field === "discountLumpsum") {
+      moveGridFocus(rowIndex, "taxable");
+      return;
+    }
+    if (field === "taxable") {
+      moveGridFocus(rowIndex, "lineAmount");
+      return;
+    }
+    if (field === "lineAmount") {
       const isLastFilledRow = rowIndex === lines.findLastIndex((line) => line.product !== null);
       if (isLastFilledRow) {
         focusFooterField("freight");
@@ -1498,7 +1591,9 @@ export function SalesBillWorkspace({
           setTimeout(() => fields[nextIndex].current?.focus(), 0);
         } else if (nextIndex >= fields.length) {
           if (e.key === "Enter" || e.key === "ArrowRight" || e.key === "ArrowDown") {
-            setTimeout(() => productCellRef.current?.focus(), 0);
+            const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
+            const targetRow = lastFilledRow >= 0 ? lastFilledRow : 0;
+            setTimeout(() => focusLineField(targetRow, "product"), 0);
           }
         }
       };
@@ -1515,8 +1610,10 @@ export function SalesBillWorkspace({
     <div className="bg-[#eef3ec] font-mono text-[#111714]">
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
         <div className="flex items-center justify-between border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
-          <span>Sales {mode === "challan" ? "Challan" : "Invoice"} Console</span>
-          {onClose && <Button variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>ESC to Back</Button>}
+          <span className="flex items-center gap-2">
+            Sales {mode === "challan" ? "Challan" : "Invoice"} Console
+            {!canWriteSales ? <span className="rounded border border-white/40 px-2 py-0.5 text-[10px] font-normal normal-case tracking-normal">View</span> : null}
+          </span>
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
@@ -1536,9 +1633,11 @@ export function SalesBillWorkspace({
 
             <div className="grid gap-px bg-border md:grid-cols-12">
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Invoice Date</Label>
+                <Label htmlFor="invoiceDate" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Invoice Date</Label>
                 <div className="mt-2 flex gap-2">
                   <Input
+                    id="invoiceDate"
+                    name="invoiceDate"
                     ref={billDateRef}
                     value={billDateInput}
                     onChange={(e) => setBillDateInput(e.target.value)}
@@ -1579,8 +1678,10 @@ export function SalesBillWorkspace({
                 </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Customer</Label>
+                <Label htmlFor="customerSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Customer</Label>
                 <Button
+                  id="customerSelect"
+                  name="customerSelect"
                   ref={customerButtonRef}
                   type="button"
                   variant="ghost"
@@ -1598,13 +1699,24 @@ export function SalesBillWorkspace({
                 </Button>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
-                <Input ref={billNumberRef} placeholder="AUTO-GENERATED" value={billNumber} onChange={(e) => setBillNumber(e.target.value)} onKeyDown={(e) => handleTopFieldKeyDown(e, 2, true)} className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none placeholder:text-muted-foreground/50" />
+                <Label htmlFor="billNumber" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
+                <Input 
+                  id="billNumber"
+                  name="billNumber"
+                  ref={billNumberRef} 
+                  placeholder="AUTO-GENERATED" 
+                  value={billNumber} 
+                  onChange={(e) => setBillNumber(e.target.value)} 
+                  onKeyDown={(e) => handleTopFieldKeyDown(e, 2, true)} 
+                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none placeholder:text-muted-foreground/50" 
+                />
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
+                <Label htmlFor="deliveryDate" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
                 <div className="mt-2 flex gap-2">
                   <Input
+                    id="deliveryDate"
+                    name="deliveryDate"
                     ref={receivedDateRef}
                     value={receivedDateInput}
                     onChange={(e) => setReceivedDateInput(e.target.value)}
@@ -1645,8 +1757,10 @@ export function SalesBillWorkspace({
                 </div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
+                <Label htmlFor="paymentModeSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
                 <Button
+                  id="paymentModeSelect"
+                  name="paymentModeSelect"
                   ref={paymentModeRef}
                   type="button"
                   variant="ghost"
@@ -1666,11 +1780,7 @@ export function SalesBillWorkspace({
             </div>
 
             <div className="grid gap-px border-t bg-border md:grid-cols-12">
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Station</div>
-                <div className="mt-2 text-sm font-semibold">{warehouses.find((warehouse) => warehouse.id === warehouseId)?.name || "-"}</div>
-              </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
+              <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
                 <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
                 <div className="mt-2 h-10 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold text-muted-foreground/70">{entryNumber || "AUTO-GENERATED"}</div>
               </div>
@@ -1679,8 +1789,10 @@ export function SalesBillWorkspace({
                 <div className="mt-2 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{taxType}</div>
               </div>
               <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</div>
+                <Label htmlFor="warehouseSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</Label>
                 <Button
+                  id="warehouseSelect"
+                  name="warehouseSelect"
                   ref={warehouseButtonRef}
                   type="button"
                   variant="ghost"
@@ -1709,8 +1821,7 @@ export function SalesBillWorkspace({
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
-                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">MRP</TableHead>
-                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
+                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">RATE</TableHead>
                     <TableHead className="w-[80px] text-center text-sm font-semibold text-foreground">UNIT</TableHead>
                     <TableHead className="w-[70px] text-center text-sm font-semibold text-foreground">DISC%</TableHead>
                     <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">DISC AMT</TableHead>
@@ -1722,23 +1833,9 @@ export function SalesBillWorkspace({
                   {lines.map((line, index) => (
                     <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors group/row")}>
                       <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
-                        {line.product ? (
-                          <span className="relative inline-flex min-w-7 items-center justify-center">
-                            <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1 group-hover/row:invisible", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
-                              {index + 1}
-                            </span>
-                            <button
-                              type="button"
-                              className="absolute inset-0 hidden items-center justify-center rounded-sm bg-red-100 text-red-600 hover:bg-red-200 group-hover/row:flex"
-                              onClick={() => deleteLine(index)}
-                              title="Delete line (F8)"
-                            >✕</button>
-                          </span>
-                        ) : (
-                          <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
-                            {index + 1}
-                          </span>
-                        )}
+                        <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
+                          {index + 1}
+                        </span>
                       </TableCell>
                       <TableCell className="py-1.5 overflow-hidden">
                         <Button
@@ -1766,13 +1863,15 @@ export function SalesBillWorkspace({
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[90px] py-1.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
                       <TableCell className="w-[80px] py-1.5">
                         <Button
+                          id={`line-${index}-rateUnitLevel`}
+                          name={`line-${index}-rateUnitLevel`}
+                          aria-label="Rate Unit"
                           ref={setLineRef(line.id, "rateUnitLevel")}
                           type="button"
                           variant="ghost"
@@ -1784,45 +1883,111 @@ export function SalesBillWorkspace({
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[70px] py-1.5"><Input ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{computeLineTaxableAmount(line).toFixed(2)}</TableCell>
-                      <TableCell className="w-[110px] py-1.5 text-right text-base font-semibold">{Number(line.amount || 0).toFixed(2)}</TableCell>
+                      <TableCell className="w-[70px] py-1.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[110px] py-1.5">
+                        <Input
+                          id={`line-${index}-taxable`}
+                          name={`line-${index}-taxable`}
+                          aria-label="Taxable amount"
+                          readOnly
+                          tabIndex={0}
+                          ref={setLineRef(line.id, "taxable")}
+                          value={computeLineTaxableAmount(line).toFixed(2)}
+                          onFocus={() => {
+                            setActiveRow(index);
+                            setActiveField("taxable");
+                          }}
+                          onKeyDown={(e) => handleLineFieldKeyDown(e, index, "taxable")}
+                          className={cn(
+                            "h-9 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-base font-semibold shadow-none",
+                            index === activeRow && activeField === "taxable" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
+                          )}
+                        />
+                      </TableCell>
+                      <TableCell className="w-[110px] py-1.5">
+                        <Input
+                          id={`line-${index}-lineAmount`}
+                          name={`line-${index}-lineAmount`}
+                          aria-label="Line amount"
+                          readOnly
+                          tabIndex={0}
+                          ref={setLineRef(line.id, "lineAmount")}
+                          value={Number(line.amount || 0).toFixed(2)}
+                          onFocus={() => {
+                            setActiveRow(index);
+                            setActiveField("lineAmount");
+                          }}
+                          onKeyDown={(e) => handleLineFieldKeyDown(e, index, "lineAmount")}
+                          className={cn(
+                            "h-9 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-base font-semibold shadow-none",
+                            index === activeRow && activeField === "lineAmount" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
+                          )}
+                        />
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
 
-            <div className="grid gap-px border-t bg-border md:grid-cols-[1.3fr_1fr]">
-              <div className="grid gap-px bg-border md:grid-cols-2">
-                <div className="bg-[#fbfcf7] p-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
-                  {activeLine?.product ? (
-                    <div className="mt-2 space-y-2">
-                      <div className="text-base font-semibold">{activeLine.product.name}</div>
-                      <div className="text-sm text-[#5b655f]">{activeLine.product.brand || "-"}</div>
+              <div className="bg-[#fbfcf7] p-3 text-sm">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
+                {activeLine?.product ? (
+                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div className="text-base font-semibold md:col-span-2">{activeLine.product.name}</div>
+                    <div className="text-sm text-[#5b655f] md:col-span-2">{activeLine.product.brand || "-"}</div>
                     <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
                     <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
-                    <div>SRATE: <span className="font-semibold">{Number(activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
-                    </div>
-                  ) : (
-                    <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
-                  )}
-                </div>
-                <div className="bg-[#fbfcf7] p-3 text-sm">
-                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Recent Product Bills</div>
-                  <div className="mt-2 space-y-2">
-                    {activeLine?.product?.recent_bills.length ? activeLine.product.recent_bills.slice(0, 3).map((bill) => (
-                        <div key={`${bill.bill_number}-${bill.bill_date}`} className="flex items-center justify-between border-b border-[#dde6dc] pb-1 text-xs">
-                        <span>{bill.bill_number}</span>
-                        <span>{formatDisplayDate(bill.bill_date)}</span>
-                        <span>{Number(bill.line_total_amount).toFixed(2)}</span>
-                      </div>
-                    )) : <div className="text-muted-foreground">No recent bills.</div>}
+                    <div className="md:col-span-2">Selling: <span className="font-semibold">{Number(activeLine.product.selling_price || activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
                   </div>
-                </div>
+                ) : (
+                  <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
+                )}
               </div>
+
+            {activeLine?.product && (
+              <div className="border-t bg-[#fbfcf7] p-3">
+                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.24em] text-[#6a746e]">Recent Interaction History</div>
+                {activeLine.product.recent_bills.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[#dde6dc] text-[10px] uppercase tracking-wider text-muted-foreground">
+                          <th className="pb-2 font-medium">Date</th>
+                          <th className="pb-2 font-medium">Bill No</th>
+                          <th className="pb-2 font-medium text-right">Qty</th>
+                          <th className="pb-2 font-medium">Unit</th>
+                          <th className="pb-2 font-medium text-right">MRP</th>
+                          <th className="pb-2 font-medium text-right">Price</th>
+                          <th className="pb-2 font-medium text-right">Disc %</th>
+                          <th className="pb-2 font-medium text-right">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeLine.product.recent_bills.map((bill) => (
+                          <tr key={`${bill.bill_number}-${bill.bill_date}`} className="border-b border-[#f0f4f0] last:border-0">
+                            <td className="py-2">{formatDisplayDate(bill.bill_date)}</td>
+                            <td className="py-2 font-medium">{bill.bill_number}</td>
+                            <td className="py-2 text-right">{Number(bill.quantity).toFixed(2)}</td>
+                            <td className="py-2">{bill.unit_name}</td>
+                            <td className="py-2 text-right">{Number(bill.mrp).toFixed(2)}</td>
+                            <td className="py-2 text-right">{Number(bill.rate_value).toFixed(2)}</td>
+                            <td className="py-2 text-right">{Number(bill.discount_percent).toFixed(2)}%</td>
+                            <td className="py-2 text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="py-4 text-center text-sm text-muted-foreground">No recent interactions found for this product.</div>
+                )}
+              </div>
+            )}
+
+            <div className="grid gap-px border-t bg-border md:grid-cols-[1.3fr_1fr]">
+              <div className="bg-transparent md:col-span-1"></div>
               <div className="bg-[#fbfcf7] p-3 text-sm">
                 <div className="grid grid-cols-2 gap-y-2">
                   <div>VALUE OF GOODS</div><div className="text-right font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
@@ -1830,7 +1995,10 @@ export function SalesBillWorkspace({
                   <div>GST</div><div className="text-right font-semibold">{totals.gst.toFixed(2)}</div>
                   <div className="self-center">FREIGHT</div>
                   <div>
+                    <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
                     <Input
+                      id="freightAmount"
+                      name="freightAmount"
                       ref={freightRef}
                       className="h-9 rounded-none border-x-0 border-t-0 bg-transparent text-right font-semibold shadow-none"
                       value={freightAmount}
@@ -1838,12 +2006,15 @@ export function SalesBillWorkspace({
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
                           e.preventDefault();
-                          focusFooterField("notes");
+                          focusFooterField("save");
+                        } else if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          focusFooterField("save");
                         } else if (e.key === "ArrowUp") {
                           e.preventDefault();
                           const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
                           if (lastFilledRow >= 0) {
-                            focusLineField(lastFilledRow, "discountPercent");
+                            focusLineField(lastFilledRow, "product");
                           }
                         }
                       }}
@@ -1863,26 +2034,6 @@ export function SalesBillWorkspace({
                   </Button>
                   <Button variant="outline" onClick={() => void showLedger()} disabled={!customerSummary}>Ledger</Button>
                   {activeLine?.product ? <Button variant="outline" onClick={() => void openProductEdit(activeLine.product!)}>Edit Product</Button> : null}
-                  {onClose && <Button variant="secondary" onClick={onClose}>Back</Button>}
-                </div>
-                <div className="mt-4">
-                  <Label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Narration</Label>
-                  <Textarea
-                    ref={notesRef}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    rows={3}
-                    className="mt-2 rounded-none border-x-0 border-t-0 bg-transparent shadow-none"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        focusFooterField("save");
-                      } else if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        focusFooterField("freight");
-                      }
-                    }}
-                  />
                 </div>
               </div>
             </div>
@@ -1932,60 +2083,52 @@ export function SalesBillWorkspace({
                              setLocalSourceChallanId(challan.challan_id);
                           }}
                         >
-                          <span>{challan.reference_no}</span>
+                          <span className="truncate">{challan.reference_no}</span>
                           <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
                           <span className="text-right font-semibold">{challan.item_count} items</span>
                         </button>
-                      )) : <div className="text-xs text-muted-foreground">No open challans.</div>}
+                      )) : <div className="text-xs text-muted-foreground">No specific challans for this customer.</div>}
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="text-muted-foreground">Select customer to view history.</div>
+                <div className="space-y-4">
+                  <div className="text-xs text-muted-foreground italic">Select customer to view specific history.</div>
+                  <div className="border-t pt-3">
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">All Pending Orders</div>
+                    <div className="space-y-3">
+                      {generalOpenChallans.length ? generalOpenChallans.map((challan) => (
+                        <div key={challan.challan_id} className="space-y-1 rounded border bg-[#fdfef9] p-2 text-xs shadow-sm">
+                          <div className="flex justify-between font-semibold">
+                            <span className="text-[#2f5d50]">{challan.customer_name}</span>
+                            <span>{challan.reference_no}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px] text-muted-foreground">
+                             <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                             <span>{challan.item_count} items</span>
+                          </div>
+                        </div>
+                      )) : <div className="text-xs text-muted-foreground">No pending orders available.</div>}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
             <div className="bg-[#fbfcf7] p-4 text-sm">
-              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Product Context</div>
-              {activeLine?.product ? (
-                <div className="space-y-3 text-xs">
-                  <div className="rounded-lg border bg-muted/40 p-3">
-                    <div className="font-semibold text-foreground">{activeLine.product.name}</div>
-                    <div className="mt-1 text-muted-foreground">{activeLine.product.sku}{activeLine.product.brand ? ` • ${activeLine.product.brand}` : ""}</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>Units</div>
-                    <div className="text-right font-semibold">
-                      {[activeLine.product.unit_1st_name, activeLine.product.unit_2nd_name, activeLine.product.unit_3rd_name].filter(Boolean).join(" / ")}
-                    </div>
-                    <div>Stock Ratio</div>
-                    <div className="text-right font-semibold">{activeLine.product.stock_ratio}</div>
-                    <div>Last Rate</div>
-                    <div className="text-right font-semibold">{Number(activeLine.product.latest_rate_value || activeLine.product.cost_price).toFixed(2)}</div>
-                    <div>Tax</div>
-                    <div className="text-right font-semibold">{Number(activeLine.product.tax_percent).toFixed(2)}%</div>
-                    <div>HSN</div>
-                    <div className="text-right font-semibold">{activeLine.product.hsn_code || "-"}</div>
-                    <div>Line Qty</div>
-                    <div className="text-right font-semibold">
-                      {activeLine.quantity1 || 0} / {activeLine.quantity2 || 0} / {activeLine.quantity3 || 0}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2 text-xs text-muted-foreground">
-                  <div><span className="font-semibold text-foreground">Enter</span> move next</div>
-                  <div><span className="font-semibold text-foreground">Arrow Up/Down</span> selector navigation</div>
-                  <div><span className="font-semibold text-foreground">Esc</span> close current selector</div>
-                  <div><span className="font-semibold text-foreground">F4</span> edit active product</div>
-                  <div><span className="font-semibold text-foreground">Ctrl+S</span> save bill</div>
-                </div>
-              )}
+              <div className="space-y-2 text-xs text-muted-foreground">
+                <div><span className="font-semibold text-foreground">Enter</span> move next</div>
+                <div><span className="font-semibold text-foreground">Arrow keys</span> navigate grid</div>
+                <div><span className="font-semibold text-foreground">Esc</span> close selector</div>
+                <div><span className="font-semibold text-foreground">F4</span> edit product</div>
+                <div><span className="font-semibold text-foreground">Ctrl+S</span> save</div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+        </div>
 
-      <Dialog open={paymentModeOpen} onOpenChange={setPaymentModeOpen}>
+        {/* Dialogs moved back inside or to stable position */}
+        <Dialog open={paymentModeOpen} onOpenChange={setPaymentModeOpen}>
         <DialogContent className="max-w-sm border-0 bg-card p-0 font-mono">
           <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Mode</DialogTitle>
@@ -2246,7 +2389,6 @@ export function SalesBillWorkspace({
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
               <span>Product Selector</span>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => { setProductTargetRow(activeRow); setProductCreateOpen(true); }}>+ Add Product</Button>
                 <Button variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setProductSearchOpen(false)}>Esc</Button>
               </div>
             </div>
@@ -2268,7 +2410,7 @@ export function SalesBillWorkspace({
                   }
                   if (e.key === "Enter" && productResults[productIndex]) {
                     e.preventDefault();
-                    selectProduct(productResults[productIndex], productTargetRow);
+                    void selectProduct(productResults[productIndex], productTargetRow);
                   }
                 }}
               />
@@ -2289,7 +2431,7 @@ export function SalesBillWorkspace({
                       index === productIndex ? "bg-[#2f5d50] text-white" : "hover:bg-muted/50"
                     )}
                     onMouseEnter={() => setProductIndex(index)}
-                    onClick={() => selectProduct(product, productTargetRow)}
+                    onClick={() => void selectProduct(product, productTargetRow)}
                   >
                     <div>
                       <div className="font-semibold">{product.name}</div>
@@ -2298,7 +2440,7 @@ export function SalesBillWorkspace({
                       </div>
                     </div>
                     <span className="text-right font-semibold">{product.stock_ratio}</span>
-                    <span className="text-right font-semibold">{Number(product.latest_rate_value || product.cost_price).toFixed(2)}</span>
+                    <span className="text-right font-semibold">{Number(product.selling_price || product.latest_rate_value || 0).toFixed(2)}</span>
                   </button>
                 ))
               ) : (
@@ -2315,7 +2457,7 @@ export function SalesBillWorkspace({
                   <div>Stock</div><div className="text-right font-semibold">{productResults[productIndex].stock_ratio}</div>
                   <div>Units</div><div className="text-right font-semibold">{[productResults[productIndex].unit_1st_name, productResults[productIndex].unit_2nd_name, productResults[productIndex].unit_3rd_name].filter(Boolean).join(" / ")}</div>
                   <div>MRP</div><div className="text-right font-semibold">{Number(productResults[productIndex].mrp).toFixed(2)}</div>
-                  <div>Price</div><div className="text-right font-semibold">{Number(productResults[productIndex].latest_rate_value || productResults[productIndex].cost_price).toFixed(2)}</div>
+                  <div>Price</div><div className="text-right font-semibold">{Number(productResults[productIndex].selling_price || productResults[productIndex].latest_rate_value || 0).toFixed(2)}</div>
                   <div>Tax</div><div className="text-right font-semibold">{Number(productResults[productIndex].tax_percent).toFixed(2)}%</div>
                   <div>HSN</div><div className="text-right font-semibold">{productResults[productIndex].hsn_code || "-"}</div>
                 </div>
@@ -2354,27 +2496,58 @@ export function SalesBillWorkspace({
             <div className="space-y-1"><Label>GST %</Label><Input value={productEditForm.tax_percent} onChange={(e) => setProductEditForm((prev) => ({ ...prev, tax_percent: e.target.value }))} /></div>
             <div className="space-y-1">
               <Label>Primary Unit</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.primary_unit_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))}>
+              <select 
+                disabled={productEditForm.has_interactions}
+                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm disabled:bg-muted disabled:opacity-50" 
+                value={productEditForm.primary_unit_id} 
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, primary_unit_id: e.target.value }))}
+              >
                 <option value="">Select unit</option>
                 {unitOptions.map((item) => <option key={item.id} value={item.id}>{item.unit_code} - {item.unit_name}</option>)}
               </select>
             </div>
             <div className="space-y-1">
               <Label>Secondary Unit</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.secondary_unit_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_id: e.target.value }))}>
+              <select 
+                disabled={productEditForm.has_interactions}
+                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm disabled:bg-muted disabled:opacity-50" 
+                value={productEditForm.secondary_unit_id} 
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_id: e.target.value }))}
+              >
                 <option value="">Optional</option>
                 {unitOptions.map((item) => <option key={item.id} value={item.id}>{item.unit_code} - {item.unit_name}</option>)}
               </select>
             </div>
-            <div className="space-y-1"><Label>1 second = ? first</Label><Input value={productEditForm.secondary_unit_quantity} onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} /></div>
+            <div className="space-y-1">
+              <Label>1 second = ? first</Label>
+              <Input 
+                disabled={productEditForm.has_interactions}
+                value={productEditForm.secondary_unit_quantity} 
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, secondary_unit_quantity: e.target.value }))} 
+                className="disabled:bg-muted"
+              />
+            </div>
             <div className="space-y-1">
               <Label>Third Unit</Label>
-              <select className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={productEditForm.third_unit_id} onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_id: e.target.value }))}>
+              <select 
+                disabled={productEditForm.has_interactions}
+                className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm disabled:bg-muted disabled:opacity-50" 
+                value={productEditForm.third_unit_id} 
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_id: e.target.value }))}
+              >
                 <option value="">Optional</option>
                 {unitOptions.map((item) => <option key={item.id} value={item.id}>{item.unit_code} - {item.unit_name}</option>)}
               </select>
             </div>
-            <div className="space-y-1"><Label>1 third = ? second</Label><Input value={productEditForm.third_unit_quantity} onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} /></div>
+            <div className="space-y-1">
+              <Label>1 third = ? second</Label>
+              <Input 
+                disabled={productEditForm.has_interactions}
+                value={productEditForm.third_unit_quantity} 
+                onChange={(e) => setProductEditForm((prev) => ({ ...prev, third_unit_quantity: e.target.value }))} 
+                className="disabled:bg-muted"
+              />
+            </div>
             <div className="space-y-1"><Label>Weight in grams</Label><Input value={productEditForm.weight_in_grams} onChange={(e) => setProductEditForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} /></div>
           </div>
           <div className="flex justify-end"><Button onClick={() => void saveProductEdit()}>Save Product</Button></div>
@@ -2392,26 +2565,68 @@ export function SalesBillWorkspace({
             <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Customer</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1 md:col-span-2"><Label>Firm Name</Label><Input ref={setCustomerCreateRef("firm_name")} value={customerCreateForm.firm_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "firm_name")} /></div>
-            <div className="space-y-1"><Label>Type</Label><select ref={setCustomerCreateRef("sales_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.sales_type} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, sales_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "sales_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select></div>
-            <div className="space-y-1"><Label>GSTIN</Label><Input ref={setCustomerCreateRef("gstin")} value={customerCreateForm.gstin} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, gstin: e.target.value, sales_type: deriveSalesTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "gstin")} /></div>
-            <div className="space-y-1"><Label>PAN</Label><Input ref={setCustomerCreateRef("pan")} value={customerCreateForm.pan} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pan")} /></div>
-            <div className="space-y-1"><Label>Owner Name</Label><Input ref={setCustomerCreateRef("owner_name")} value={customerCreateForm.owner_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "owner_name")} /></div>
-            <div className="space-y-1"><Label>Phone</Label><Input ref={setCustomerCreateRef("phone")} value={customerCreateForm.phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "phone")} /></div>
-            <div className="space-y-1"><Label>Alternate Phone</Label><Input ref={setCustomerCreateRef("alternate_phone")} value={customerCreateForm.alternate_phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "alternate_phone")} /></div>
-            <div className="space-y-1"><Label>Email</Label><Input ref={setCustomerCreateRef("email")} value={customerCreateForm.email} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "email")} /></div>
-            <div className="space-y-1 md:col-span-2"><Label>Street</Label><Input ref={setCustomerCreateRef("street")} value={customerCreateForm.street} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street")} /></div>
-            <div className="space-y-1"><Label>City</Label><Input ref={setCustomerCreateRef("city")} value={customerCreateForm.city} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "city")} /></div>
-            <div className="space-y-1"><Label>State</Label><Input ref={setCustomerCreateRef("state")} value={customerCreateForm.state} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "state")} /></div>
-            <div className="space-y-1"><Label>Pincode</Label><Input ref={setCustomerCreateRef("pincode")} value={customerCreateForm.pincode} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pincode")} /></div>
-            <div className="space-y-1"><Label>Bank Account Number</Label><Input ref={setCustomerCreateRef("bank_account_number")} value={customerCreateForm.bank_account_number} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "bank_account_number")} /></div>
-            <div className="space-y-1"><Label>IFSC Code</Label><Input ref={setCustomerCreateRef("ifsc_code")} value={customerCreateForm.ifsc_code} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "ifsc_code")} /></div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="customer-firm-name">Firm Name</Label>
+              <Input id="customer-firm-name" name="firm_name" ref={setCustomerCreateRef("firm_name")} value={customerCreateForm.firm_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "firm_name")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-sales-type">Type</Label>
+              <select id="customer-sales-type" name="sales_type" ref={setCustomerCreateRef("sales_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.sales_type} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, sales_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "sales_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-gstin">GSTIN</Label>
+              <Input id="customer-gstin" name="gstin" ref={setCustomerCreateRef("gstin")} value={customerCreateForm.gstin} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, gstin: e.target.value, sales_type: deriveSalesTypeFromGstin(e.target.value) }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "gstin")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-pan">PAN</Label>
+              <Input id="customer-pan" name="pan" ref={setCustomerCreateRef("pan")} value={customerCreateForm.pan} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pan: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pan")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-owner-name">Owner Name</Label>
+              <Input id="customer-owner-name" name="owner_name" ref={setCustomerCreateRef("owner_name")} value={customerCreateForm.owner_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "owner_name")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-phone">Phone</Label>
+              <Input id="customer-phone" name="phone" ref={setCustomerCreateRef("phone")} value={customerCreateForm.phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "phone")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-alt-phone">Alternate Phone</Label>
+              <Input id="customer-alt-phone" name="alternate_phone" ref={setCustomerCreateRef("alternate_phone")} value={customerCreateForm.alternate_phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "alternate_phone")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-email">Email</Label>
+              <Input id="customer-email" name="email" ref={setCustomerCreateRef("email")} value={customerCreateForm.email} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "email")} />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="customer-street">Street</Label>
+              <Input id="customer-street" name="street" ref={setCustomerCreateRef("street")} value={customerCreateForm.street} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-city">City</Label>
+              <Input id="customer-city" name="city" ref={setCustomerCreateRef("city")} value={customerCreateForm.city} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, city: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "city")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-state">State</Label>
+              <Input id="customer-state" name="state" ref={setCustomerCreateRef("state")} value={customerCreateForm.state} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, state: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "state")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-pincode">Pincode</Label>
+              <Input id="customer-pincode" name="pincode" ref={setCustomerCreateRef("pincode")} value={customerCreateForm.pincode} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pincode")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-bank-acc">Bank Account Number</Label>
+              <Input id="customer-bank-acc" name="bank_account_number" ref={setCustomerCreateRef("bank_account_number")} value={customerCreateForm.bank_account_number} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "bank_account_number")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-ifsc">IFSC Code</Label>
+              <Input id="customer-ifsc" name="ifsc_code" ref={setCustomerCreateRef("ifsc_code")} value={customerCreateForm.ifsc_code} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "ifsc_code")} />
+            </div>
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
-                <Label>Account Category</Label>
+                <Label htmlFor="customer-acc-cat">Account Category</Label>
                 <Button type="button" variant="outline" size="sm" onClick={() => setCustomerCategoryCreateOpen(true)}>+ Add Account Category</Button>
               </div>
-              <select ref={setCustomerCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.account_category_id} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{customerCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
+              <select id="customer-acc-cat" name="account_category_id" ref={setCustomerCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.account_category_id} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{customerCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label>Brands</Label>
@@ -2522,10 +2737,10 @@ export function SalesBillWorkspace({
                   weight_in_grams: toNullableNumber(productCreateForm.weight_in_grams),
                   tax_percent: Number(productCreateForm.tax_percent || "0"),
                 }));
-                const createdSummary = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${String(created.id ?? "")}/summary`)));
+                const createdSummary = mapProductSummary(asObject(await fetchBackend(`/sales/sales-entry/products/${String(created.id ?? "")}/summary`)));
                 setProductCreateOpen(false);
                 setProductCreateForm({ ...EMPTY_PRODUCT_FORM });
-                selectProduct(createdSummary, productTargetRow);
+                void selectProduct(createdSummary, productTargetRow);
                 toast.success("Product created");
               } catch (error) {
                 toast.error(error instanceof Error ? error.message : "Failed to create product");
@@ -2555,20 +2770,22 @@ export function SalesBillWorkspace({
           <div className="grid gap-3">
             {quickCreateType === "unit" || quickCreateType === "hsn" ? (
               <div className="space-y-1">
-                <Label>{quickCreateType === "unit" ? "Code" : "HSN Number"}</Label>
-                <Input value={quickCode} onChange={(e) => setQuickCode(e.target.value)} />
+                <Label htmlFor="quick-code-sales">{quickCreateType === "unit" ? "Code" : "HSN Number"}</Label>
+                <Input id="quick-code-sales" name="code" value={quickCode} onChange={(e) => setQuickCode(e.target.value)} />
               </div>
             ) : null}
             {quickCreateType !== "hsn" ? (
               <div className="space-y-1">
-                <Label>{quickCreateType === "unit" ? "Unit Name" : "Name"}</Label>
-                <Input value={quickName} onChange={(e) => setQuickName(e.target.value)} />
+                <Label htmlFor="quick-name-sales">{quickCreateType === "unit" ? "Unit Name" : "Name"}</Label>
+                <Input id="quick-name-sales" name="name" value={quickName} onChange={(e) => setQuickName(e.target.value)} />
               </div>
             ) : null}
             {quickCreateType === "subCategory" ? (
               <div className="space-y-1">
-                <Label>Category</Label>
+                <Label htmlFor="quick-category-sales">Category</Label>
                 <select
+                  id="quick-category-sales"
+                  name="category_id"
                   className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm"
                   value={quickCategoryId}
                   onChange={(e) => setQuickCategoryId(e.target.value)}
@@ -2583,12 +2800,12 @@ export function SalesBillWorkspace({
             {quickCreateType === "hsn" ? (
               <>
                 <div className="space-y-1">
-                  <Label>Description</Label>
-                  <Input value={quickDescription} onChange={(e) => setQuickDescription(e.target.value)} />
+                  <Label htmlFor="quick-description-sales">Description</Label>
+                  <Input id="quick-description-sales" name="description" value={quickDescription} onChange={(e) => setQuickDescription(e.target.value)} />
                 </div>
                 <div className="space-y-1">
-                  <Label>GST %</Label>
-                  <Input value={quickGst} onChange={(e) => setQuickGst(e.target.value)} />
+                  <Label htmlFor="quick-gst-sales">GST %</Label>
+                  <Input id="quick-gst-sales" name="gst_percent" value={quickGst} onChange={(e) => setQuickGst(e.target.value)} />
                 </div>
               </>
             ) : null}

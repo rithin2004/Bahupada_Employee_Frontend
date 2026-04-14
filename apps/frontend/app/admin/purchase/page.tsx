@@ -1,23 +1,74 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { PortalAuthGate } from "@/components/auth/portal-auth-gate";
 import { AppShell } from "@/components/layout/app-shell";
+import { PurchaseBillRefWizard } from "@/components/modules/purchase-bill-ref-wizard";
 import { ProcurementCreateFlow } from "@/components/modules/procurement-create-flow";
 import { PurchaseEntryWorkspace } from "@/components/modules/purchase-entry-workspace";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { asObject, fetchPortalMe, readPortalSession } from "@/lib/backend-api";
+
+function hasAdminAccessToken() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return Boolean(readPortalSession().accessToken);
+}
 
 export default function AdminPurchasePage() {
   const [activeTab, setActiveTab] = useState<"challan" | "bill">("challan");
   const [showPurchaseEntry, setShowPurchaseEntry] = useState(false);
   const [billListRefreshKey, setBillListRefreshKey] = useState(0);
 
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [canReadPurchase, setCanReadPurchase] = useState(false);
+  const [canWritePurchase, setCanWritePurchase] = useState(false);
+
+  const [billRefWizardOpen, setBillRefWizardOpen] = useState(false);
+  const [billRefWizardCtx, setBillRefWizardCtx] = useState<{ vendorId: string; purchaseBillId?: string } | null>(null);
+
+  useEffect(() => {
+    if (!hasAdminAccessToken()) {
+      setPermissionsLoaded(true);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const payload = asObject(await fetchPortalMe());
+        const isSuperAdmin = Boolean(payload.is_super_admin);
+        const purchasePermission = asObject(asObject(payload.admin_permissions).purchase);
+        const canRead = isSuperAdmin || Boolean(purchasePermission.read) || Boolean(purchasePermission.write);
+        const canWrite = isSuperAdmin || Boolean(purchasePermission.write);
+        if (!active) return;
+        setCanReadPurchase(canRead);
+        setCanWritePurchase(canWrite);
+        setPermissionsLoaded(true);
+      } catch {
+        if (!active) return;
+        setCanReadPurchase(false);
+        setCanWritePurchase(false);
+        setPermissionsLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <PortalAuthGate portal="ADMIN">
       <AppShell role="admin" activeKey="purchase" userName="Admin User">
         <div className="space-y-4">
+          {permissionsLoaded && canReadPurchase && !canWritePurchase ? (
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              Read-only access. Create and update actions are limited.
+            </p>
+          ) : null}
+
           <Tabs
             value={activeTab}
             onValueChange={(value) => {
@@ -42,17 +93,27 @@ export default function AdminPurchasePage() {
               <div className="space-y-4">
                 {showPurchaseEntry ? (
                   <PurchaseEntryWorkspace
-                    onSaved={() => {
+                    canWritePurchase={canWritePurchase}
+                    onSaved={(detail) => {
                       setShowPurchaseEntry(false);
                       setActiveTab("bill");
                       setBillListRefreshKey((prev) => prev + 1);
+                      if (detail) {
+                        setBillRefWizardCtx({ vendorId: detail.vendorId, purchaseBillId: detail.purchaseBillId });
+                        setBillRefWizardOpen(true);
+                      }
                     }}
                     onClose={() => setShowPurchaseEntry(false)}
                   />
                 ) : (
                   <>
                     <div className="flex items-center justify-end">
-                      <Button onClick={() => setShowPurchaseEntry(true)}>Create Purchase Bill</Button>
+                      <Button
+                        onClick={() => setShowPurchaseEntry(true)}
+                        disabled={!permissionsLoaded || !canWritePurchase}
+                      >
+                        Create Purchase Bill
+                      </Button>
                     </div>
                     <ProcurementCreateFlow key={`bill-list-${billListRefreshKey}`} initialTab="bill" hideTabs hideBillCreateButton />
                   </>
@@ -61,6 +122,20 @@ export default function AdminPurchasePage() {
             </TabsContent>
           </Tabs>
         </div>
+
+        {billRefWizardCtx ? (
+          <PurchaseBillRefWizard
+            open={billRefWizardOpen}
+            onOpenChange={(open) => {
+              setBillRefWizardOpen(open);
+              if (!open) {
+                setBillRefWizardCtx(null);
+              }
+            }}
+            vendorId={billRefWizardCtx.vendorId}
+            highlightPurchaseBillId={billRefWizardCtx.purchaseBillId}
+          />
+        ) : null}
       </AppShell>
     </PortalAuthGate>
   );
