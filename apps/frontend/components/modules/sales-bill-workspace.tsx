@@ -195,6 +195,27 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function createSalesBillNo() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  return `SB-${y}${m}${d}-${h}${min}`;
+}
+
+function createSalesEntryNo() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const s = String(now.getSeconds()).padStart(2, "0");
+  return `SE-${y}${m}${d}-${h}${min}${s}`;
+}
+
 function formatDisplayDate(iso: string) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
@@ -471,7 +492,8 @@ export function SalesBillWorkspace({
   const [warehouseState, setWarehouseState] = useState<string | null>(null);
   const [billDateInput, setBillDateInput] = useState(formatDisplayDate(todayIso()));
   const [billDate, setBillDate] = useState(todayIso());
-  const [billNumber, setBillNumber] = useState("");
+  const [billNumber, setBillNumber] = useState(createSalesBillNo);
+  const [entryNumber, setEntryNumber] = useState(createSalesEntryNo);
   const [receivedDateInput, setReceivedDateInput] = useState(formatDisplayDate(todayIso()));
   const [receivedDate, setReceivedDate] = useState(todayIso());
   const [paymentMode, setPaymentMode] = useState<"CREDIT" | "CASH">("CREDIT");
@@ -1221,8 +1243,8 @@ export function SalesBillWorkspace({
       setNotes("");
       setFreightAmount("0");
       setActiveRow(0);
-      setEntryNumber(`${entryNumber}-N`);
-      setBillNumber(`${billNumber}-N`);
+      setEntryNumber(createSalesEntryNo(entryNumber));
+      setBillNumber(createSalesBillNo(billNumber));
       setTimeout(() => productCellRef.current?.focus(), 0);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : `Failed to save ${mode}`);
