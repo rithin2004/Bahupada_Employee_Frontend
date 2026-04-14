@@ -504,7 +504,6 @@ export function SalesBillWorkspace({
   const [taxType, setTaxType] = useState<"LOCAL" | "CENTRAL">("CENTRAL");
   const [freightAmount, setFreightAmount] = useState("0");
   const [notes, setNotes] = useState("");
-  const [entryNumber, setEntryNumber] = useState("");
   const [customerSummary, setCustomerSummary] = useState<CustomerSummary | null>(null);
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [customerSearch, setCustomerSearch] = useState("");
