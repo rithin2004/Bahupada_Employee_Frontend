@@ -61,6 +61,7 @@ type ChallanItem = {
 type ChallanForBill = {
   id: string;
   reference_no: string;
+  vendor_id: string | null;
   vendor_name: string;
   warehouse_name: string;
   items: Array<{
@@ -453,6 +454,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   const [workspaceMode, setWorkspaceMode] = useState<"challan" | "bill">("bill");
   const [editingId, setEditingId] = useState("");
   const [conversionId, setConversionId] = useState("");
+  const [initialViewOnly, setInitialViewOnly] = useState(false);
   
   const [vendors, setVendors] = useState<Option[]>([]);
   const [warehouses, setWarehouses] = useState<Option[]>([]);
@@ -732,6 +734,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
       const mapped = res.map((row) => ({
         id: String(row.id ?? ""),
         reference_no: String(row.reference_no ?? ""),
+        vendor_id: row.vendor_id ? String(row.vendor_id) : null,
         vendor_name: String(row.vendor_name ?? ""),
         warehouse_name: String(row.warehouse_name ?? ""),
         items: asArray(row.items).map((item) => ({
@@ -1118,7 +1121,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
 
   useEffect(() => {
     if (billEntryMode === "challan") {
-      setBillVendorId("");
+      // Don't clear vendor ID - vendor-first flow requires vendor selection first
       setBillWarehouseId("");
       setBillRackId("");
       setBillProductSearch("");
@@ -1142,7 +1145,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     if (!billNumber.trim() || !billDate || billItems.length === 0) {
       return false;
     }
-    if (billEntryMode === "challan" && !selectedChallanId) {
+    if (billEntryMode === "challan" && (!selectedChallanId || !billVendorId)) {
       return false;
     }
     if (billEntryMode === "direct" && (!billVendorId || !billWarehouseId)) {
@@ -1167,17 +1170,22 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
 
   const filteredChallans = useMemo(() => {
     const term = challanSearch.trim().toLowerCase();
-    if (!term) {
-      return challans;
+    let filtered = challans;
+    // In challan mode, filter by selected vendor
+    if (billEntryMode === "challan" && billVendorId) {
+      filtered = challans.filter((row) => row.vendor_id === billVendorId);
     }
-    return challans.filter((row) => {
+    if (!term) {
+      return filtered;
+    }
+    return filtered.filter((row) => {
       return (
         row.reference_no.toLowerCase().includes(term) ||
         row.vendor_name.toLowerCase().includes(term) ||
         row.warehouse_name.toLowerCase().includes(term)
       );
     });
-  }, [challans, challanSearch]);
+  }, [challanSearch, challans, billEntryMode, billVendorId]);
 
   const filteredBills = useMemo(() => {
     const term = billSearch.trim().toLowerCase();
@@ -1508,10 +1516,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         mode={workspaceMode}
         initialId={editingId}
         sourceChallanId={conversionId}
+        initialViewOnly={initialViewOnly}
         onSaved={(detail) => {
           setShowWorkspace(false);
           setEditingId("");
           setConversionId("");
+          setInitialViewOnly(false);
           setActiveTab(workspaceMode);
           void loadChallans();
           void loadBills();
@@ -1524,6 +1534,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
           setShowWorkspace(false);
           setEditingId("");
           setConversionId("");
+          setInitialViewOnly(false);
           setActiveTab(workspaceMode);
         }}
       />
@@ -1613,12 +1624,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2">Created</td>
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
-                            <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("challan"); setEditingId(challan.id); setShowWorkspace(true); }}>
+                            <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("challan"); setEditingId(challan.id); setInitialViewOnly(true); setShowWorkspace(true); }}>
                               View
                             </Button>
                             {canWritePurchase ? (
                               <>
-                                <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("challan"); setEditingId(challan.id); setShowWorkspace(true); }}>
+                                <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("challan"); setEditingId(challan.id); setInitialViewOnly(false); setShowWorkspace(true); }}>
                                   Edit
                                 </Button>
                                 <Button size="sm" variant="outline" className="text-destructive hover:bg-destructive hover:text-white" onClick={() => deletePurchaseChallanRow(challan.id)} disabled={deletingChallanId === challan.id}>
@@ -1817,12 +1828,12 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-2">
                             {canReadPurchase ? (
-                              <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setEditingId(bill.id); setShowWorkspace(true); }}>
+                              <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setEditingId(bill.id); setInitialViewOnly(true); setShowWorkspace(true); }}>
                                 View
                               </Button>
                             ) : null}
                             {canWritePurchase ? (
-                              <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setEditingId(bill.id); setShowWorkspace(true); }}>
+                              <Button size="sm" variant="outline" onClick={() => { setWorkspaceMode("bill"); setEditingId(bill.id); setInitialViewOnly(false); setShowWorkspace(true); }}>
                                 Edit
                               </Button>
                             ) : null}

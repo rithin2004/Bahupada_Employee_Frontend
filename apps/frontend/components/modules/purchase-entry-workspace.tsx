@@ -37,7 +37,7 @@ type VendorSummary = {
   balance_side: string;
   last_purchase_date: string | null;
   last_payment_date: string | null;
-  last_bills: Array<{ bill_number: string; bill_date: string; total_amount: string }>;
+  last_bills: Array<{ bill_number: string; bill_date: string; total_amount: string; item_count: number }>;
   open_challans: Array<{ challan_id: string; reference_no: string; challan_date: string | null; item_count: number; vendor_name?: string }>;
 };
 
@@ -77,6 +77,8 @@ type ProductSummary = {
     line_total_amount: string;
     unit_name: string;
   }>;
+  category_name: string | null;
+  sub_category_name: string | null;
 };
 
 type LedgerEntry = {
@@ -370,6 +372,55 @@ function deriveTaxType(warehouseState?: string | null, vendorState?: string | nu
   return (warehouseState || "").trim().toUpperCase() === (vendorState || "").trim().toUpperCase() ? "LOCAL" : "CENTRAL";
 }
 
+function derivePurchaseTaxType(companyGstin: string | null, vendorGstin: string | null): "LOCAL" | "CENTRAL" {
+  // Normalize GSTINs to uppercase and extract first 2 characters
+  const companyPrefix = (companyGstin || "").trim().toUpperCase().slice(0, 2);
+  const vendorPrefix = (vendorGstin || "").trim().toUpperCase().slice(0, 2);
+
+  // If either GSTIN is missing or too short, default to CENTRAL
+  if (!companyPrefix || !vendorPrefix || companyPrefix.length < 2 || vendorPrefix.length < 2) {
+    return "CENTRAL";
+  }
+
+  // Compare prefixes: same → LOCAL, different → CENTRAL
+  return companyPrefix === vendorPrefix ? "LOCAL" : "CENTRAL";
+}
+
+function canDerivePurchaseTaxFromGstin(companyGstin: string | null, vendorGstin: string | null): boolean {
+  const c = (companyGstin || "").trim().toUpperCase().slice(0, 2);
+  const v = (vendorGstin || "").trim().toUpperCase().slice(0, 2);
+  return c.length === 2 && v.length === 2;
+}
+
+function resolvePurchaseTaxType(
+  companyGstin: string | null,
+  vendorGstin: string | null,
+  vendorPurchaseType: "LOCAL" | "CENTRAL" | null | undefined,
+): "LOCAL" | "CENTRAL" {
+  if (canDerivePurchaseTaxFromGstin(companyGstin, vendorGstin)) {
+    return derivePurchaseTaxType(companyGstin, vendorGstin);
+  }
+  if (vendorPurchaseType === "LOCAL" || vendorPurchaseType === "CENTRAL") {
+    return vendorPurchaseType;
+  }
+  return "CENTRAL";
+}
+
+function purchaseProductSummaryUrl(productId: string, vendorId?: string | null) {
+  const base = `/procurement/purchase-entry/products/${productId}/summary`;
+  if (vendorId) {
+    return `${base}?vendor_id=${encodeURIComponent(vendorId)}`;
+  }
+  return base;
+}
+
+function snapshotLinesForUndo(lines: LineDraft[]): LineDraft[] {
+  return lines.map((line) => ({
+    ...line,
+    product: line.product ? { ...line.product } : null,
+  }));
+}
+
 function derivePurchaseTypeFromGstin(gstin: string) {
   const normalized = gstin.trim().toUpperCase();
   if (normalized.length < 2) {
@@ -450,11 +501,12 @@ function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
     balance: String(row.balance ?? "0"),
     balance_side: String(row.balance_side ?? "CR"),
     last_purchase_date: row.last_purchase_date ? String(row.last_purchase_date) : null,
-  last_payment_date: row.last_payment_date ? String(row.last_payment_date) : null,
-  last_bills: asArray(row.last_bills).map((bill) => ({
+    last_payment_date: row.last_payment_date ? String(row.last_payment_date) : null,
+    last_bills: asArray(row.last_bills).map((bill) => ({
       bill_number: String(bill.bill_number ?? ""),
       bill_date: String(bill.bill_date ?? ""),
       total_amount: String(bill.total_amount ?? "0"),
+      item_count: Number(bill.item_count ?? 0),
     })),
     open_challans: asArray(row.open_challans).map((challan) => ({
       challan_id: String(challan.challan_id ?? ""),
@@ -503,6 +555,8 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
       line_total_amount: String(bill.line_total_amount ?? "0"),
       unit_name: String(bill.unit_name ?? ""),
     })),
+    category_name: row.category_name ? String(row.category_name) : null,
+    sub_category_name: row.sub_category_name ? String(row.sub_category_name) : null,
   };
 }
 
@@ -520,6 +574,8 @@ type PurchaseEntryWorkspaceProps = {
   mode?: "bill" | "challan";
   /** When false, saving is disabled (read-only purchase permission). */
   canWritePurchase?: boolean;
+  /** When true, opens in view-only mode with an Edit button to enable editing. */
+  initialViewOnly?: boolean;
 };
 
 export function PurchaseEntryWorkspace({
@@ -529,11 +585,14 @@ export function PurchaseEntryWorkspace({
   sourceChallanId,
   mode = "bill",
   canWritePurchase = true,
+  initialViewOnly = false,
 }: PurchaseEntryWorkspaceProps) {
   const [loading, setLoading] = useState(true);
+  const [viewOnly, setViewOnly] = useState(initialViewOnly);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
   const [warehouseState, setWarehouseState] = useState<string | null>(null);
+  const [companyGstin, setCompanyGstin] = useState<string | null>(null);
   const [billDateInput, setBillDateInput] = useState(formatDisplayDate(todayIso()));
   const [billDate, setBillDate] = useState(todayIso());
   const [billNumber, setBillNumber] = useState("");
@@ -561,6 +620,9 @@ export function PurchaseEntryWorkspace({
   const [activeRow, setActiveRow] = useState(0);
   const [activeField, setActiveField] = useState<LineField>("product");
   const [lines, setLines] = useState<LineDraft[]>([makeLine()]);
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
+  const [lineHistory, setLineHistory] = useState<LineDraft[][]>([]);
   const [rateUnitPicker, setRateUnitPicker] = useState<{ rowIndex: number; optionIndex: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
@@ -741,6 +803,7 @@ export function PurchaseEntryWorkspace({
       setWarehouseId(String(bootstrap.default_warehouse_id ?? warehouseItems[0]?.id ?? ""));
       setEntryNumber(String(bootstrap.next_entry_number ?? ""));
       setBillNumber(String(bootstrap.next_entry_number ?? ""));
+      setCompanyGstin(typeof bootstrap.company_gstin === "string" ? bootstrap.company_gstin : null);
       setHsnOptions(asArray(asObject(hsnRes).items).map((item) => ({ id: String(item.id ?? ""), hsn_code: String(item.hsn_code ?? ""), gst_percent: String(item.gst_percent ?? "0") })));
       setUnitOptions(asArray(asObject(unitRes).items).map((item) => ({ id: String(item.id ?? ""), unit_code: String(item.unit_code ?? ""), unit_name: String(item.unit_name ?? "") })));
       const activeWarehouse = warehouseItems.find((item) => item.id === String(bootstrap.default_warehouse_id ?? "")) ?? warehouseItems[0];
@@ -830,11 +893,20 @@ export function PurchaseEntryWorkspace({
         const items = asArray(data.items);
         if (items.length > 0) {
           const mappedLines = await Promise.all(items.map(async (item) => {
-            const p = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${item.product_id}/summary`)));
+            const p = mapProductSummary(
+              asObject(
+                await fetchBackend(
+                  purchaseProductSummaryUrl(String(item.product_id), data.vendor_id ? String(data.vendor_id) : null),
+                ),
+              ),
+            );
+            // For challan mode, API returns 'quantity' field, not quantity_1st/2nd/3rd
+            // Map it to primary quantity field (quantity1)
+            const itemQuantity = String(item.quantity || item.quantity_1st || "");
             const line: LineDraft = {
               id: crypto.randomUUID(),
               product: p,
-              quantity1: String(item.quantity_1st || ""),
+              quantity1: itemQuantity,
               quantity2: String(item.quantity_2nd || ""),
               quantity3: String(item.quantity_3rd || ""),
               mrp: String(item.mrp || "0"),
@@ -878,7 +950,7 @@ export function PurchaseEntryWorkspace({
           challan_id: String(challan.id),
           reference_no: String(challan.reference_no),
           challan_date: challan.challan_date ? String(challan.challan_date) : null,
-          item_count: Number(challan.item_rows?.length || 0),
+          item_count: Array.isArray(challan.items) ? challan.items.length : 0,
           vendor_name: String(challan.vendor_name || ""),
         })));
       } catch (err) {
@@ -898,9 +970,9 @@ export function PurchaseEntryWorkspace({
     const nextWarehouseState = selectedWarehouse?.state ?? null;
     setWarehouseState(nextWarehouseState);
     if (vendorSummary) {
-      setTaxType((vendorSummary.purchase_type || deriveTaxType(nextWarehouseState, vendorSummary.state)) as "LOCAL" | "CENTRAL");
+      setTaxType(resolvePurchaseTaxType(companyGstin, vendorSummary.gstin, vendorSummary.purchase_type));
     }
-  }, [vendorSummary, warehouseId, warehouses]);
+  }, [vendorSummary, warehouseId, warehouses, companyGstin]);
 
   useEffect(() => {
     if (vendorSearchOpen) {
@@ -941,48 +1013,56 @@ export function PurchaseEntryWorkspace({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") {
-        return;
+      if (event.key === "Escape") {
+        if (productSearchOpen) {
+          event.preventDefault();
+          setProductSearchOpen(false);
+          setTimeout(() => focusLineField(activeRow, "product"), 0);
+          return;
+        }
+        if (rateUnitPicker) {
+          event.preventDefault();
+          const rowIndex = rateUnitPicker.rowIndex;
+          setRateUnitPicker(null);
+          setTimeout(() => focusLineField(rowIndex, "rateUnitLevel"), 0);
+          return;
+        }
+        if (vendorSearchOpen) {
+          event.preventDefault();
+          setVendorSearchOpen(false);
+          setTimeout(() => vendorButtonRef.current?.focus(), 0);
+          return;
+        }
+        if (warehousePickerOpen) {
+          event.preventDefault();
+          setWarehousePickerOpen(false);
+          setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+          return;
+        }
+        if (paymentModeOpen) {
+          event.preventDefault();
+          setPaymentModeOpen(false);
+          setTimeout(() => paymentModeRef.current?.focus(), 0);
+          return;
+        }
+        if (onClose) {
+          event.preventDefault();
+          onClose();
+        }
       }
-      if (productSearchOpen) {
+      if (event.key === "z" && (event.ctrlKey || event.metaKey) && !viewOnly) {
         event.preventDefault();
-        setProductSearchOpen(false);
-        setTimeout(() => focusLineField(activeRow, "product"), 0);
-        return;
-      }
-      if (rateUnitPicker) {
-        event.preventDefault();
-        const rowIndex = rateUnitPicker.rowIndex;
-        setRateUnitPicker(null);
-        setTimeout(() => focusLineField(rowIndex, "rateUnitLevel"), 0);
-        return;
-      }
-      if (paymentModeOpen) {
-        event.preventDefault();
-        setPaymentModeOpen(false);
-        setTimeout(() => paymentModeRef.current?.focus(), 0);
-        return;
-      }
-      if (warehousePickerOpen) {
-        event.preventDefault();
-        setWarehousePickerOpen(false);
-        setTimeout(() => warehouseButtonRef.current?.focus(), 0);
-        return;
-      }
-      if (vendorSearchOpen) {
-        event.preventDefault();
-        setVendorSearchOpen(false);
-        setTimeout(() => vendorButtonRef.current?.focus(), 0);
-        return;
-      }
-      if (onClose) {
-        event.preventDefault();
-        onClose();
+        if (lineHistory.length > 0) {
+          const previousState = lineHistory[lineHistory.length - 1];
+          setLines(previousState);
+          setLineHistory((prev) => prev.slice(0, -1));
+          toast.info("Undo applied");
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen]);
+  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen, lineHistory, viewOnly]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -1003,36 +1083,49 @@ export function PurchaseEntryWorkspace({
 
   const selectVendor = useCallback((vendor: VendorSummary) => {
     setVendorSummary(vendor);
-    setTaxType((vendor.purchase_type || deriveTaxType(warehouseState, vendor.state)) as "LOCAL" | "CENTRAL");
+    setTaxType(resolvePurchaseTaxType(companyGstin, vendor.gstin, vendor.purchase_type));
     setVendorSearchOpen(false);
     setVendorSearch("");
     setTimeout(() => billNumberRef.current?.focus(), 0);
-  }, [warehouseState]);
+  }, [companyGstin]);
+
+  const handleEditClick = useCallback(() => {
+    if (window.confirm("Are you sure you want to edit?")) {
+      setViewOnly(false);
+    }
+  }, []);
 
   const updateLine = useCallback((index: number, patch: Partial<LineDraft>) => {
-    setLines((prev) => prev.map((line, idx) => {
-      if (idx !== index) return line;
-      let next = { ...line, ...patch };
-      
-      // Bi-directional discount calculation (per-unit basis)
-      if (next.product) {
-        const rate = asDecimal(next.rateValue || next.product.latest_rate_value || next.product.cost_price);
-        
-        if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
-          const pct = asDecimal(patch.discountPercent);
-          next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
-        } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
-          const amt = asDecimal(patch.discountLumpsum);
-          next.discountPercent = rate > 0 ? ((amt / rate) * 100).toFixed(2) : "0.00";
-        } else if (("rateValue" in patch || "rateUnitLevel" in patch)) {
-          // If rate changes, keep percent and update per-unit discount amount
-          const pct = asDecimal(next.discountPercent);
-          next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
-        }
-      }
+    setLineHistory((history) => {
+      const snap = snapshotLinesForUndo(linesRef.current);
+      const newHistory = [...history, snap];
+      return newHistory.length > 50 ? newHistory.slice(-50) : newHistory;
+    });
+    setLines((prev) =>
+      prev.map((line, idx) => {
+        if (idx !== index) return line;
+        let next = { ...line, ...patch };
 
-      return { ...next, amount: computeLineAmount(next).toFixed(2) };
-    }));
+        // Bi-directional discount calculation (per-unit basis)
+        if (next.product) {
+          const rate = asDecimal(next.rateValue || next.product.latest_rate_value || next.product.cost_price);
+
+          if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
+            const pct = asDecimal(patch.discountPercent);
+            next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
+          } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
+            const amt = asDecimal(patch.discountLumpsum);
+            next.discountPercent = rate > 0 ? ((amt / rate) * 100).toFixed(2) : "0.00";
+          } else if ("rateValue" in patch || "rateUnitLevel" in patch) {
+            // If rate changes, keep percent and update per-unit discount amount
+            const pct = asDecimal(next.discountPercent);
+            next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
+          }
+        }
+
+        return { ...next, amount: computeLineAmount(next).toFixed(2) };
+      }),
+    );
   }, []);
 
    const ensureTrailingEmptyLine = useCallback(() => {
@@ -1051,18 +1144,25 @@ export function PurchaseEntryWorkspace({
   }, []);
 
   const deleteLine = useCallback((rowIndex: number) => {
-    setLines((prev) => {
-      const line = prev[rowIndex];
-      if (!line || !line.product) return prev; // Don't delete empty rows
-      if (prev.filter((l) => l.product !== null).length === 0) return prev; // Keep at least one
-      const next = prev.filter((_, idx) => idx !== rowIndex);
-      // Ensure there's always a trailing empty line
+    const prev = linesRef.current;
+    const line = prev[rowIndex];
+    if (!line || !line.product) return;
+    if (prev.filter((l) => l.product !== null).length === 0) return;
+
+    setLineHistory((history) => {
+      const newHistory = [...history, snapshotLinesForUndo(prev)];
+      return newHistory.length > 50 ? newHistory.slice(-50) : newHistory;
+    });
+    setLines((p) => {
+      const row = p[rowIndex];
+      if (!row || !row.product) return p;
+      if (p.filter((l) => l.product !== null).length === 0) return p;
+      const next = p.filter((_, idx) => idx !== rowIndex);
       if (next.every((l) => l.product !== null)) {
         next.push(makeLine());
       }
       return next;
     });
-    // Move focus to previous row or stay at same index
     const newIndex = Math.max(0, rowIndex - 1);
     setActiveRow(newIndex);
     setTimeout(() => focusLineField(newIndex, "product"), 80);
@@ -1108,7 +1208,9 @@ export function PurchaseEntryWorkspace({
   }, [warehouseId, warehouses]);
 
   const openProductEdit = useCallback(async (product: ProductSummary) => {
-    const full = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${product.product_id}/summary`)));
+    const full = mapProductSummary(
+      asObject(await fetchBackend(purchaseProductSummaryUrl(product.product_id, vendorSummary?.vendor_id))),
+    );
     setProductEditForm({
       sku: full.sku,
       name: full.name,
@@ -1124,7 +1226,7 @@ export function PurchaseEntryWorkspace({
       has_interactions: full.has_interactions,
     });
     setProductEditOpen(true);
-  }, [hsnOptions]);
+  }, [hsnOptions, vendorSummary?.vendor_id]);
 
   async function saveProductEdit() {
     if (!activeLine?.product) return;
@@ -1142,7 +1244,9 @@ export function PurchaseEntryWorkspace({
         weight_in_grams: productEditForm.weight_in_grams ? Number(productEditForm.weight_in_grams) : null,
         tax_percent: Number(productEditForm.tax_percent || 0),
       });
-      const refreshed = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${activeLine.product.product_id}/summary`)));
+      const refreshed = mapProductSummary(
+        asObject(await fetchBackend(purchaseProductSummaryUrl(activeLine.product.product_id, vendorSummary?.vendor_id))),
+      );
       updateLine(activeRow, { product: refreshed, amount: computeLineAmount({ ...activeLine, product: refreshed }).toFixed(2) });
       setProductEditOpen(false);
       toast.success("Product updated");
@@ -1621,11 +1725,18 @@ export function PurchaseEntryWorkspace({
             Purchase {mode === "challan" ? "Challan" : "Entry"} Console
             {!canWritePurchase ? <span className="rounded border border-white/40 px-2 py-0.5 text-[10px] font-normal normal-case tracking-normal">View</span> : null}
           </span>
-          {onClose ? (
-            <Button type="button" variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>
-              Close
-            </Button>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {viewOnly && canWritePurchase ? (
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={handleEditClick}>
+                Edit
+              </Button>
+            ) : null}
+            {onClose ? (
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>
+                Close
+              </Button>
+            ) : null}
+          </div>
         </div>
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
@@ -2438,7 +2549,7 @@ export function PurchaseEntryWorkspace({
               <span className="text-right">Stock</span>
               <span className="text-right">Rate</span>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="max-h-[400px] min-h-0 flex-1 overflow-y-auto">
               {productResults.length ? (
                 productResults.map((product, index) => (
                   <button
@@ -2759,7 +2870,9 @@ export function PurchaseEntryWorkspace({
                   weight_in_grams: toNullableNumber(productCreateForm.weight_in_grams),
                   tax_percent: Number(productCreateForm.tax_percent || "0"),
                 }));
-                const createdSummary = mapProductSummary(asObject(await fetchBackend(`/procurement/purchase-entry/products/${String(created.id ?? "")}/summary`)));
+                const createdSummary = mapProductSummary(
+                  asObject(await fetchBackend(purchaseProductSummaryUrl(String(created.id ?? ""), vendorSummary?.vendor_id))),
+                );
                 setProductCreateOpen(false);
                 setProductCreateForm({ ...EMPTY_PRODUCT_FORM });
                 selectProduct(createdSummary, productTargetRow);

@@ -137,6 +137,8 @@ class PurchaseEntryProductSummary(BaseModel):
     latest_discount_percent: Decimal | None = None
     has_interactions: bool = False
     recent_bills: list[RecentPurchaseBill] = []
+    category_name: str | None = None
+    sub_category_name: str | None = None
 
 
 class PurchaseEntryBootstrap(BaseModel):
@@ -144,6 +146,7 @@ class PurchaseEntryBootstrap(BaseModel):
     next_entry_number: str
     default_warehouse_id: uuid.UUID | None = None
     warehouses: list[dict]
+    company_gstin: str | None = None
 
 
 class PurchaseReturnItemIn(BaseModel):

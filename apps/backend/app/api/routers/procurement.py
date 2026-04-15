@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.models.entities import (
+    Company,
     HSNMaster,
     InventoryBatch,
     PartyLedgerAccount,
@@ -175,8 +176,15 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
     ).scalar_one_or_none()
     last_bills_rows = (
         await db.execute(
-            select(PurchaseBill.bill_number, PurchaseBill.bill_date, PurchaseBill.total_amount)
+            select(
+                PurchaseBill.bill_number,
+                PurchaseBill.bill_date,
+                PurchaseBill.total_amount,
+                func.count(PurchaseBillItem.id).label("item_count"),
+            )
+            .outerjoin(PurchaseBillItem, PurchaseBillItem.purchase_bill_id == PurchaseBill.id)
             .where(PurchaseBill.vendor_id == vendor.id, PurchaseBill.deleted_at.is_(None))
+            .group_by(PurchaseBill.id, PurchaseBill.bill_number, PurchaseBill.bill_date, PurchaseBill.total_amount)
             .order_by(PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc())
             .limit(3)
         )
@@ -268,7 +276,7 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
         last_purchase_date=last_purchase_date,
         last_payment_date=last_payment_date,
         last_bills=[
-            {"bill_number": row[0], "bill_date": row[1], "total_amount": Decimal(row[2] or 0)}
+            {"bill_number": row[0], "bill_date": row[1], "total_amount": Decimal(row[2] or 0), "item_count": int(row[3] or 0)}
             for row in last_bills_rows
         ],
         open_challans=[
@@ -283,33 +291,37 @@ async def _build_vendor_summary(db: AsyncSession, vendor: Vendor) -> PurchaseEnt
     )
 
 
-async def _build_product_summary(db: AsyncSession, product: Product) -> PurchaseEntryProductSummary:
+async def _build_product_summary(db: AsyncSession, product: Product, vendor_id: uuid.UUID | None = None) -> PurchaseEntryProductSummary:
     pricing = (
         await db.execute(select(Pricing).where(Pricing.product_id == product.id))
     ).scalar_one_or_none()
     hsn = await db.get(HSNMaster, product.hsn_id) if product.hsn_id else None
+    category = await db.get(ProductCategory, product.category_id) if product.category_id else None
+    sub_category = await db.get(ProductSubCategory, product.sub_category_id) if product.sub_category_id else None
     stock_total = (
         await db.execute(
             select(func.coalesce(func.sum(InventoryBatch.available_quantity), Decimal("0"))).where(InventoryBatch.product_id == product.id)
         )
     ).scalar_one()
-    latest_line = (
-        await db.execute(
-            select(
-                PurchaseBillItem.rate_value,
-                PurchaseBillItem.rate_unit_level,
-                PurchaseBillItem.discount_percent,
-                PurchaseBill.bill_number,
-                PurchaseBill.bill_date,
-                PurchaseBillItem.line_total_amount,
-                PurchaseBillItem.quantity,
-            )
-            .join(PurchaseBill, PurchaseBill.id == PurchaseBillItem.purchase_bill_id)
-            .where(PurchaseBillItem.product_id == product.id, PurchaseBill.deleted_at.is_(None))
-            .order_by(PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc(), PurchaseBillItem.id.desc())
-            .limit(3)
+    latest_stmt = (
+        select(
+            PurchaseBillItem.rate_value,
+            PurchaseBillItem.rate_unit_level,
+            PurchaseBillItem.discount_percent,
+            PurchaseBill.bill_number,
+            PurchaseBill.bill_date,
+            PurchaseBillItem.line_total_amount,
+            PurchaseBillItem.quantity,
         )
-    ).all()
+        .join(PurchaseBill, PurchaseBill.id == PurchaseBillItem.purchase_bill_id)
+        .where(PurchaseBillItem.product_id == product.id, PurchaseBill.deleted_at.is_(None))
+    )
+    if vendor_id is not None:
+        latest_stmt = latest_stmt.where(PurchaseBill.vendor_id == vendor_id)
+    latest_stmt = latest_stmt.order_by(
+        PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc(), PurchaseBillItem.id.desc()
+    ).limit(3)
+    latest_line = (await db.execute(latest_stmt)).all()
     conv2 = Decimal(product.conv_2_to_1 or 0)
     conv3 = Decimal(product.conv_3_to_1 or 0)
     stock_ratio, _ = _normalize_unit_ratio(Decimal(stock_total or 0), conv2, conv3)
@@ -363,6 +375,8 @@ async def _build_product_summary(db: AsyncSession, product: Product) -> Purchase
             }
             for row in latest_line
         ],
+        category_name=category.name if category else None,
+        sub_category_name=sub_category.name if sub_category else None,
     )
 
 
@@ -1371,11 +1385,17 @@ async def purchase_entry_bootstrap(db: AsyncSession = Depends(get_db)):
     warehouses = (
         await db.execute(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.name.asc()))
     ).scalars().all()
+    # Load active company for GSTIN (first active company or default)
+    company = (
+        await db.execute(select(Company).where(Company.is_active.is_(True)).order_by(Company.name.asc()).limit(1))
+    ).scalar_one_or_none()
+    company_gstin = company.gstin if company else None
     return PurchaseEntryBootstrap(
         today=datetime.now(timezone.utc).date(),
         next_entry_number=_purchase_entry_number(),
         default_warehouse_id=warehouses[0].id if warehouses else None,
         warehouses=[{"id": warehouse.id, "name": warehouse.name, "code": warehouse.code} for warehouse in warehouses],
+        company_gstin=company_gstin,
     )
 
 
@@ -1524,11 +1544,15 @@ async def search_purchase_entry_products(
 
 
 @router.get("/purchase-entry/products/{product_id}/summary", dependencies=[Depends(require_permission("purchase", "read"))], response_model=PurchaseEntryProductSummary)
-async def get_purchase_entry_product_summary(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_purchase_entry_product_summary(
+    product_id: uuid.UUID,
+    vendor_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     product = await db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
-    return await _build_product_summary(db, product)
+    return await _build_product_summary(db, product, vendor_id)
 
 
 @router.post("/purchase-entry", dependencies=[Depends(require_permission("purchase", "create"))])
