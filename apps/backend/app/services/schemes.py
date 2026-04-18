@@ -6,10 +6,10 @@ from datetime import date
 from decimal import Decimal
 import uuid
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.entities import Customer, Product, SalesOrder, SalesOrderItem, Scheme
+from app.models.entities import Customer, CustomerCategory, Product, ProductBrand, SalesOrder, SalesOrderItem, Scheme
 from app.services.pricing import resolve_price_for_customer
 
 
@@ -30,9 +30,28 @@ class PreviewLine:
     is_free_item: bool = False
 
 
-def _matches_scope(product: Product, scheme: Scheme) -> bool:
-    if scheme.brand and (product.brand or "") != scheme.brand:
-        return False
+def _scheme_applies_to_customer_sql(customer: Customer):
+    """Universal schemes (NULL customer_category_id) apply to everyone; otherwise must match customer's category."""
+    if customer.customer_category_id is None:
+        return Scheme.customer_category_id.is_(None)
+    return or_(
+        Scheme.customer_category_id.is_(None),
+        Scheme.customer_category_id == customer.customer_category_id,
+    )
+
+
+def _matches_scope(
+    product: Product,
+    scheme: Scheme,
+    *,
+    brand_name_by_id: dict[uuid.UUID, str] | None = None,
+) -> bool:
+    if scheme.brand:
+        pb = (product.brand or "").strip()
+        if not pb and product.brand_id and brand_name_by_id:
+            pb = (brand_name_by_id.get(product.brand_id) or "").strip()
+        if pb != scheme.brand:
+            return False
     if scheme.category and (product.category or "") != scheme.category:
         return False
     if scheme.sub_category and (product.sub_category or "") != scheme.sub_category:
@@ -90,23 +109,20 @@ async def build_sales_order_preview(
 
     schemes: list[Scheme] = []
     reward_product_ids: set[uuid.UUID] = set()
-    if customer.customer_category_id is not None:
-        schemes_res = await session.execute(
-            select(Scheme).where(
-                and_(
-                    Scheme.customer_category_id == customer.customer_category_id,
-                    Scheme.is_active.is_(True),
-                    Scheme.start_date <= current_date,
-                    Scheme.end_date >= current_date,
-                )
+    schemes_res = await session.execute(
+        select(Scheme).where(
+            and_(
+                _scheme_applies_to_customer_sql(customer),
+                Scheme.is_active.is_(True),
+                Scheme.start_date <= current_date,
+                Scheme.end_date >= current_date,
             )
         )
-        schemes = schemes_res.scalars().all()
-        reward_product_ids = {
-            scheme.reward_product_id
-            for scheme in schemes
-            if scheme.reward_product_id is not None
-        }
+    )
+    schemes = schemes_res.scalars().all()
+    reward_product_ids = {
+        scheme.reward_product_id for scheme in schemes if scheme.reward_product_id is not None
+    }
 
     product_ids = set(aggregated_qty.keys()) | reward_product_ids
     products_res = await session.execute(select(Product).where(Product.id.in_(product_ids)))
@@ -147,8 +163,18 @@ async def build_sales_order_preview(
     best_discount_by_product: dict[uuid.UUID, Decimal] = {}
     free_qty_by_product: dict[uuid.UUID, Decimal] = defaultdict(lambda: Decimal("0"))
 
+    brand_ids = {p.brand_id for p in product_by_id.values() if p.brand_id}
+    brand_name_by_id: dict[uuid.UUID, str] = {}
+    if brand_ids:
+        br = await session.execute(select(ProductBrand.id, ProductBrand.name).where(ProductBrand.id.in_(brand_ids)))
+        brand_name_by_id = {row[0]: row[1] for row in br.all()}
+
     for scheme in schemes:
-        matching_items = [item for item in base_line_items if _matches_scope(product_by_id[item.product_id], scheme)]
+        matching_items = [
+            item
+            for item in base_line_items
+            if _matches_scope(product_by_id[item.product_id], scheme, brand_name_by_id=brand_name_by_id)
+        ]
         if not matching_items:
             continue
 
@@ -219,13 +245,14 @@ async def apply_schemes_to_sales_order(
         row[0]
         for row in (
             await session.execute(
-                select(Scheme.reward_product_id)
-                .where(
-                    Scheme.customer_category_id == customer.customer_category_id,
-                    Scheme.is_active.is_(True),
-                    Scheme.start_date <= current_date,
-                    Scheme.end_date >= current_date,
-                    Scheme.reward_product_id.is_not(None),
+                select(Scheme.reward_product_id).where(
+                    and_(
+                        _scheme_applies_to_customer_sql(customer),
+                        Scheme.is_active.is_(True),
+                        Scheme.start_date <= current_date,
+                        Scheme.end_date >= current_date,
+                        Scheme.reward_product_id.is_not(None),
+                    )
                 )
             )
         ).all()
@@ -246,7 +273,7 @@ async def apply_schemes_to_sales_order(
         item.discount_percent = None
         item.selling_price = unit_price
 
-    if customer.customer_category_id is None or not base_items:
+    if not base_items:
         for free_item in free_items:
             await session.delete(free_item)
         return
@@ -254,7 +281,7 @@ async def apply_schemes_to_sales_order(
     schemes_res = await session.execute(
         select(Scheme).where(
             and_(
-                Scheme.customer_category_id == customer.customer_category_id,
+                _scheme_applies_to_customer_sql(customer),
                 Scheme.is_active.is_(True),
                 Scheme.start_date <= current_date,
                 Scheme.end_date >= current_date,
@@ -266,8 +293,18 @@ async def apply_schemes_to_sales_order(
     best_discount_by_product: dict[uuid.UUID, Decimal] = {}
     free_qty_by_product: dict[uuid.UUID, Decimal] = defaultdict(lambda: Decimal("0"))
 
+    brand_ids = {p.brand_id for p in product_by_id.values() if p.brand_id}
+    brand_name_by_id: dict[uuid.UUID, str] = {}
+    if brand_ids:
+        br = await session.execute(select(ProductBrand.id, ProductBrand.name).where(ProductBrand.id.in_(brand_ids)))
+        brand_name_by_id = {row[0]: row[1] for row in br.all()}
+
     for scheme in schemes:
-        matching_items = [item for item in base_items if _matches_scope(product_by_id[item.product_id], scheme)]
+        matching_items = [
+            item
+            for item in base_items
+            if _matches_scope(product_by_id[item.product_id], scheme, brand_name_by_id=brand_name_by_id)
+        ]
         if not matching_items:
             continue
 
@@ -321,3 +358,69 @@ async def apply_schemes_to_sales_order(
             existing.discount_percent = Decimal("100")
             existing.is_bundle_child = True
             existing.is_bundle_parent = False
+
+
+async def split_schemes_for_product_line(
+    session: AsyncSession,
+    *,
+    customer: Customer,
+    product: Product,
+    as_of_date: date,
+) -> tuple[list[Scheme], list[Scheme]]:
+    """Active schemes for customer/date, split into (matches this product scope, does not match)."""
+    schemes_res = await session.execute(
+        select(Scheme)
+        .where(
+            and_(
+                _scheme_applies_to_customer_sql(customer),
+                Scheme.is_active.is_(True),
+                Scheme.start_date <= as_of_date,
+                Scheme.end_date >= as_of_date,
+            )
+        )
+        .order_by(Scheme.scheme_name.asc())
+    )
+    schemes = list(schemes_res.scalars().all())
+    brand_ids = {product.brand_id} if product.brand_id else set()
+    brand_name_by_id: dict[uuid.UUID, str] = {}
+    if brand_ids:
+        br = await session.execute(select(ProductBrand.id, ProductBrand.name).where(ProductBrand.id.in_(brand_ids)))
+        brand_name_by_id = {row[0]: row[1] for row in br.all()}
+    matching: list[Scheme] = []
+    for s in schemes:
+        if _matches_scope(product, s, brand_name_by_id=brand_name_by_id):
+            matching.append(s)
+    matching_ids = {s.id for s in matching}
+    other = [s for s in schemes if s.id not in matching_ids]
+    return matching, other
+
+
+async def serialize_scheme_for_sales_popup(session: AsyncSession, scheme: Scheme) -> dict[str, object]:
+    if scheme.customer_category_id is not None:
+        category_name = (
+            await session.execute(select(CustomerCategory.name).where(CustomerCategory.id == scheme.customer_category_id))
+        ).scalar_one()
+    else:
+        category_name = "All categories"
+    reward_product_name: str | None = None
+    if scheme.reward_product_id:
+        rp = await session.get(Product, scheme.reward_product_id)
+        if rp is not None:
+            reward_product_name = str(rp.display_name or rp.name)
+    return {
+        "id": scheme.id,
+        "scheme_name": scheme.scheme_name,
+        "customer_category_name": category_name,
+        "condition_basis": scheme.condition_basis,
+        "threshold_value": scheme.threshold_value,
+        "threshold_unit": scheme.threshold_unit,
+        "reward_type": scheme.reward_type,
+        "reward_discount_percent": scheme.reward_discount_percent,
+        "reward_product_id": scheme.reward_product_id,
+        "reward_product_name": reward_product_name,
+        "reward_product_quantity": scheme.reward_product_quantity,
+        "brand": scheme.brand,
+        "category": scheme.category,
+        "sub_category": scheme.sub_category,
+        "product_id": scheme.product_id,
+    }

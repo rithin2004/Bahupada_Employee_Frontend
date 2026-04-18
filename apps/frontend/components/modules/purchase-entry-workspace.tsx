@@ -7,11 +7,18 @@ import { toast } from "sonner";
 import { asArray, asObject, fetchBackend, fetchBackendFresh, patchBackend, postBackend } from "@/lib/backend-api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Calendar } from "@/components/ui/calendar";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { PurchaseEntrySkeleton } from "@/components/ui/purchase-entry-skeleton";
 
 type WarehouseOption = { id: string; name: string; code: string; state: string | null };
 type LookupOption = { id: string; name: string };
@@ -156,6 +163,52 @@ type LineDraft = {
   discountLumpsum: string;
   amount: string;
 };
+
+/** Stable JSON snapshot for unsaved-change detection (purchase entry draft). */
+function serializePurchaseEntryDraft(d: {
+  billDate: string;
+  billDateInput: string;
+  billNumber: string;
+  receivedDate: string;
+  receivedDateInput: string;
+  paymentMode: string;
+  warehouseId: string;
+  freightAmount: string;
+  notes: string;
+  taxType: string;
+  entryNumber: string;
+  vendorId: string | null;
+  lines: LineDraft[];
+}) {
+  const linePayload = d.lines.map((line, idx) => ({
+    i: idx,
+    pid: line.product?.product_id ?? "",
+    q1: line.quantity1,
+    q2: line.quantity2,
+    q3: line.quantity3,
+    mrp: line.mrp,
+    rv: line.rateValue,
+    rul: line.rateUnitLevel,
+    dp: line.discountPercent,
+    dl: line.discountLumpsum,
+    amt: line.amount,
+  }));
+  return JSON.stringify({
+    billDate: d.billDate,
+    billDateInput: d.billDateInput,
+    billNumber: d.billNumber.trim(),
+    receivedDate: d.receivedDate,
+    receivedDateInput: d.receivedDateInput,
+    paymentMode: d.paymentMode,
+    warehouseId: d.warehouseId,
+    freightAmount: d.freightAmount,
+    notes: d.notes,
+    taxType: d.taxType,
+    entryNumber: d.entryNumber.trim(),
+    vendorId: d.vendorId ?? "",
+    lines: linePayload,
+  });
+}
 
 const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   sku: "",
@@ -373,23 +426,21 @@ function deriveTaxType(warehouseState?: string | null, vendorState?: string | nu
 }
 
 function derivePurchaseTaxType(companyGstin: string | null, vendorGstin: string | null): "LOCAL" | "CENTRAL" {
-  // Normalize GSTINs to uppercase and extract first 2 characters
-  const companyPrefix = (companyGstin || "").trim().toUpperCase().slice(0, 2);
+  // Normalize vendor GSTIN to uppercase and extract first 2 characters
   const vendorPrefix = (vendorGstin || "").trim().toUpperCase().slice(0, 2);
 
-  // If either GSTIN is missing or too short, default to CENTRAL
-  if (!companyPrefix || !vendorPrefix || companyPrefix.length < 2 || vendorPrefix.length < 2) {
+  // If vendor GSTIN is missing or too short, default to CENTRAL
+  if (!vendorPrefix || vendorPrefix.length < 2) {
     return "CENTRAL";
   }
 
-  // Compare prefixes: same → LOCAL, different → CENTRAL
-  return companyPrefix === vendorPrefix ? "LOCAL" : "CENTRAL";
+  // If vendor GSTIN starts with 37 (Andhra Pradesh), it's LOCAL, else CENTRAL
+  return vendorPrefix === "37" ? "LOCAL" : "CENTRAL";
 }
 
 function canDerivePurchaseTaxFromGstin(companyGstin: string | null, vendorGstin: string | null): boolean {
-  const c = (companyGstin || "").trim().toUpperCase().slice(0, 2);
   const v = (vendorGstin || "").trim().toUpperCase().slice(0, 2);
-  return c.length === 2 && v.length === 2;
+  return v.length === 2;
 }
 
 function resolvePurchaseTaxType(
@@ -427,6 +478,36 @@ function derivePurchaseTypeFromGstin(gstin: string) {
     return "CENTRAL" as const;
   }
   return normalized.startsWith("37") ? "LOCAL" as const : "CENTRAL" as const;
+}
+
+/** Human-readable conversion factors for Selected Item panel (matches masters: conv_2_to_1 = 1st per 2nd, etc.). */
+function formatConversionQty(value: string | null | undefined): string | null {
+  if (value == null || String(value).trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (Number.isInteger(n)) return String(n);
+  const t = n.toFixed(6).replace(/\.?0+$/, "");
+  return t || null;
+}
+
+function productUnitConversionLines(p: ProductSummary): string[] {
+  const u1 = p.unit_1st_name?.trim() || "Primary";
+  const u2 = p.unit_2nd_name?.trim();
+  const u3 = p.unit_3rd_name?.trim();
+  const c21 = formatConversionQty(p.conv_2_to_1);
+  const c32 = formatConversionQty(p.conv_3_to_2);
+  const c31 = formatConversionQty(p.conv_3_to_1);
+  const lines: string[] = [];
+  if (u2 && c21) {
+    lines.push(`1 ${u2} = ${c21} ${u1}`);
+  }
+  if (u3 && u2 && c32) {
+    lines.push(`1 ${u3} = ${c32} ${u2}`);
+  }
+  if (u3 && c31 && !(u2 && c32)) {
+    lines.push(`1 ${u3} = ${c31} ${u1}`);
+  }
+  return lines;
 }
 
 function lineBaseQuantity(line: LineDraft) {
@@ -588,6 +669,9 @@ export function PurchaseEntryWorkspace({
   initialViewOnly = false,
 }: PurchaseEntryWorkspaceProps) {
   const [loading, setLoading] = useState(true);
+  /** True until bill/challan + vendor + line product summaries finish loading (View/Edit with id). */
+  const [initialDocLoading, setInitialDocLoading] = useState(() => Boolean(initialId || sourceChallanId));
+  const [challanLoading, setChallanLoading] = useState(false);
   const [viewOnly, setViewOnly] = useState(initialViewOnly);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
@@ -862,20 +946,25 @@ export function PurchaseEntryWorkspace({
   }, [loadBootstrap]);
 
   useEffect(() => {
-    if (!initialId && !sourceChallanId) return;
+    if (!initialId && !sourceChallanId) {
+      setInitialDocLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setInitialDocLoading(true);
     void (async () => {
       try {
         const isConversion = Boolean(sourceChallanId);
         const effectiveId = sourceChallanId || initialId;
         const fetchEndpoint = isConversion ? "/procurement/purchase-challans" : (mode === "challan" ? "/procurement/purchase-challans" : "/procurement/purchase-bills");
-        
+
         const data = asObject(await fetchBackend(`${fetchEndpoint}/${effectiveId}`));
-        
+
         if (!isConversion) {
           setEntryNumber(String(data.entry_number || ""));
           setBillNumber(String(data.bill_number || data.reference_no || ""));
         }
-        
+
         setBillDate(String(data.bill_date || data.challan_date || todayIso()));
         setBillDateInput(formatDisplayDate(String(data.bill_date || data.challan_date || todayIso())));
         setReceivedDate(String(data.received_date || todayIso()));
@@ -922,16 +1011,125 @@ export function PurchaseEntryWorkspace({
         }
       } catch (error) {
         toast.error("Failed to load initial data");
+      } finally {
+        if (!cancelled) {
+          setInitialDocLoading(false);
+        }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [initialId, sourceChallanId, mode]);
 
   useEffect(() => {
-    if (!loading) {
+    setViewOnly(initialViewOnly);
+  }, [initialViewOnly]);
+
+  useEffect(() => {
+    if (!loading && !initialDocLoading && !viewOnly) {
       billDateRef.current?.focus();
       billDateRef.current?.select();
     }
-  }, [loading]);
+  }, [loading, initialDocLoading, viewOnly]);
+
+  const draftSessionKey = useMemo(
+    () => `${initialId ?? ""}|${sourceChallanId ?? ""}|${mode}`,
+    [initialId, sourceChallanId, mode],
+  );
+  const [baselineSnapshot, setBaselineSnapshot] = useState<string | null>(null);
+  const prevViewOnlyRef = useRef(viewOnly);
+
+  const currentDraftSnapshot = useMemo(
+    () =>
+      serializePurchaseEntryDraft({
+        billDate,
+        billDateInput,
+        billNumber,
+        receivedDate,
+        receivedDateInput,
+        paymentMode,
+        warehouseId,
+        freightAmount,
+        notes,
+        taxType,
+        entryNumber,
+        vendorId: vendorSummary?.vendor_id ?? null,
+        lines,
+      }),
+    [
+      billDate,
+      billDateInput,
+      billNumber,
+      receivedDate,
+      receivedDateInput,
+      paymentMode,
+      warehouseId,
+      freightAmount,
+      notes,
+      taxType,
+      entryNumber,
+      vendorSummary?.vendor_id,
+      lines,
+    ],
+  );
+
+  const isDraftDirty =
+    baselineSnapshot !== null &&
+    currentDraftSnapshot !== baselineSnapshot &&
+    !viewOnly &&
+    canWritePurchase;
+
+  const draftBaselineReadyRef = useRef(false);
+  const prevDraftSessionKeyRef = useRef(draftSessionKey);
+
+  useEffect(() => {
+    if (prevDraftSessionKeyRef.current !== draftSessionKey) {
+      prevDraftSessionKeyRef.current = draftSessionKey;
+      draftBaselineReadyRef.current = false;
+    }
+    const ready = !loading && !initialDocLoading && !challanLoading;
+    if (!ready) {
+      draftBaselineReadyRef.current = false;
+      return;
+    }
+    if (!draftBaselineReadyRef.current) {
+      draftBaselineReadyRef.current = true;
+      setBaselineSnapshot(currentDraftSnapshot);
+    }
+  }, [loading, initialDocLoading, challanLoading, draftSessionKey, currentDraftSnapshot]);
+
+  useEffect(() => {
+    const wasView = prevViewOnlyRef.current;
+    prevViewOnlyRef.current = viewOnly;
+    if (wasView && !viewOnly && !loading && !initialDocLoading && !challanLoading) {
+      setBaselineSnapshot(currentDraftSnapshot);
+    }
+  }, [viewOnly, loading, initialDocLoading, challanLoading, currentDraftSnapshot]);
+
+  const requestClose = useCallback(() => {
+    if (!onClose) {
+      return;
+    }
+    if (isDraftDirty) {
+      const ok = window.confirm("You have unsaved changes. Leave and discard them?");
+      if (!ok) {
+        return;
+      }
+    }
+    onClose();
+  }, [isDraftDirty, onClose]);
+
+  useEffect(() => {
+    if (!isDraftDirty) {
+      return;
+    }
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDraftDirty]);
 
   useEffect(() => {
     void loadCreateReferences();
@@ -959,6 +1157,84 @@ export function PurchaseEntryWorkspace({
     }
     void fetchGeneralOpenChallans();
   }, []);
+
+  const loadChallanToBill = useCallback(async (challanId: string) => {
+    console.log("loadChallanToBill called with:", challanId);
+    setChallanLoading(true);
+    try {
+      const data = asObject(await fetchBackend(`/procurement/purchase-challans/${challanId}`));
+      console.log("Challan data:", JSON.stringify(data, null, 2));
+      console.log("Challan items:", data.items);
+      
+      setBillDate(String(data.challan_date || todayIso()));
+      setBillDateInput(formatDisplayDate(String(data.challan_date || todayIso())));
+      setReceivedDate(String(data.received_date || todayIso()));
+      setReceivedDateInput(formatDisplayDate(String(data.received_date || todayIso())));
+      setPaymentMode(data.payment_mode === "CASH" ? "CASH" : "CREDIT");
+      setWarehouseId(String(data.warehouse_id || ""));
+      setFreightAmount(String(data.freight_amount || "0"));
+      setNotes(String(data.notes || ""));
+      
+      if (data.vendor_id) {
+        const v = asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${data.vendor_id}/summary`));
+        const vendorSummary = mapVendorSummary(v);
+        setVendorSummary(vendorSummary);
+        setTaxType(resolvePurchaseTaxType(companyGstin, vendorSummary.gstin, vendorSummary.purchase_type));
+      }
+      
+      const items = asArray(data.items);
+      console.log("Items array length:", items.length);
+      if (items.length > 0) {
+        const mappedLines = await Promise.all(items.map(async (item, idx) => {
+          console.log(`Processing item ${idx}:`, JSON.stringify(item, null, 2));
+          console.log("item keys:", Object.keys(item));
+          
+          let p;
+          if (item.product) {
+            p = mapProductSummary(asObject(item.product));
+          } else if (item.product_id) {
+            p = mapProductSummary(
+              asObject(
+                await fetchBackend(
+                  purchaseProductSummaryUrl(String(item.product_id), data.vendor_id ? String(data.vendor_id) : null),
+                ),
+              ),
+            );
+          } else {
+            console.error("No product or product_id in item:", item);
+            return null;
+          }
+          
+          const itemQuantity = String(item.quantity || item.quantity_1st || item.quantity1 || "");
+          const line: LineDraft = {
+            id: crypto.randomUUID(),
+            product: p,
+            quantity1: itemQuantity,
+            quantity2: String(item.quantity_2nd || item.quantity2 || ""),
+            quantity3: String(item.quantity_3rd || item.quantity3 || ""),
+            mrp: String(item.mrp || "0"),
+            rateValue: String(item.rate_value || item.rateValue || "0"),
+            rateUnitLevel: (item.rate_unit_level === 1 || item.rate_unit_level === 2 || item.rate_unit_level === 3) ? item.rate_unit_level : 1,
+            discountPercent: String(item.discount_percent || item.discountPercent || "0"),
+            discountLumpsum: String(item.discount_lumpsum || item.discountLumpsum || "0"),
+            amount: String(item.line_total_amount || item.amount || "0"),
+          };
+          console.log("Mapped line:", line);
+          return line;
+        }));
+        const validLines = mappedLines.filter((line): line is LineDraft => line !== null);
+        console.log("Setting lines:", validLines);
+        setLines([...validLines, makeLine()]);
+      }
+      
+      toast.success("Challan loaded successfully");
+    } catch (error) {
+      console.error("Failed to load challan:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to load challan");
+    } finally {
+      setChallanLoading(false);
+    }
+  }, [companyGstin]);
 
   useEffect(() => {
     if (!productSearchOpen) return;
@@ -1047,7 +1323,7 @@ export function PurchaseEntryWorkspace({
         }
         if (onClose) {
           event.preventDefault();
-          onClose();
+          requestClose();
         }
       }
       if (event.key === "z" && (event.ctrlKey || event.metaKey) && !viewOnly) {
@@ -1062,7 +1338,7 @@ export function PurchaseEntryWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, vendorSearchOpen, warehousePickerOpen, lineHistory, viewOnly]);
+  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, requestClose, vendorSearchOpen, warehousePickerOpen, lineHistory, viewOnly]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -1086,7 +1362,7 @@ export function PurchaseEntryWorkspace({
     setTaxType(resolvePurchaseTaxType(companyGstin, vendor.gstin, vendor.purchase_type));
     setVendorSearchOpen(false);
     setVendorSearch("");
-    setTimeout(() => billNumberRef.current?.focus(), 0);
+    setTimeout(() => paymentModeRef.current?.focus(), 0);
   }, [companyGstin]);
 
   const handleEditClick = useCallback(() => {
@@ -1372,6 +1648,25 @@ export function PurchaseEntryWorkspace({
           items: validLines.map((line) => ({
             product_id: line.product?.product_id,
             quantity: lineBaseQuantity(line),
+            quantity_1st: line.quantity1 ? parseFloat(line.quantity1) || null : null,
+            quantity_2nd: line.quantity2 ? parseFloat(line.quantity2) || null : null,
+            quantity_3rd: line.quantity3 ? parseFloat(line.quantity3) || null : null,
+            unit_1st_id: line.product?.unit_1st_id || null,
+            unit_2nd_id: line.product?.unit_2nd_id || null,
+            unit_3rd_id: line.product?.unit_3rd_id || null,
+            base_quantity: null,
+            damaged_quantity: 0,
+            unit_price: line.rateValue ? parseFloat(line.rateValue) || null : null,
+            purchase_price: line.mrp ? parseFloat(line.mrp) || null : null,
+            rate_value: line.rateValue ? parseFloat(line.rateValue) || null : null,
+            rate_unit_level: line.rateUnitLevel || null,
+            discount_percent: line.discountPercent ? parseFloat(line.discountPercent) || null : null,
+            discount_lumpsum: line.discountLumpsum ? parseFloat(line.discountLumpsum) || null : null,
+            line_subtotal: null,
+            line_discount_amount: null,
+            line_taxable_amount: null,
+            line_tax_amount: null,
+            line_total_amount: line.amount ? parseFloat(line.amount) || null : null,
             expiry_date: null as string | null,
           })),
         };
@@ -1588,6 +1883,7 @@ export function PurchaseEntryWorkspace({
   }, []);
 
   const handleLineFieldKeyDown = useCallback((event: ReactKeyboardEvent, rowIndex: number, field: LineField) => {
+    if (viewOnly) return;
     if (event.key === "Enter") {
       handleLineFieldEnter(event, rowIndex, field);
       return;
@@ -1634,10 +1930,11 @@ export function PurchaseEntryWorkspace({
       event.preventDefault();
       navigateGridByDelta(rowIndex, field, -1, 0);
     }
-  }, [deleteLine, handleLineFieldEnter, lines, navigateGridByDelta]);
+  }, [deleteLine, handleLineFieldEnter, lines, navigateGridByDelta, viewOnly]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (viewOnly) return;
       if (event.key === "F4" && activeLine?.product) {
         event.preventDefault();
         void openProductEdit(activeLine.product);
@@ -1649,11 +1946,17 @@ export function PurchaseEntryWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeLine, openProductEdit, saveEntry]);
+  }, [activeLine, openProductEdit, saveEntry, viewOnly]);
 
-  if (loading) {
-    return <div className="rounded-xl border bg-card px-4 py-10 text-sm text-muted-foreground">Loading purchase entry...</div>;
+  if (loading || initialDocLoading || challanLoading) {
+    return <PurchaseEntrySkeleton />;
   }
+
+  const viewReadOnlyInput =
+    "read-only:cursor-default read-only:opacity-100 read-only:text-[#111714] read-only:bg-[#eef1ea]";
+  const viewReadOnlyLineInput =
+    "read-only:cursor-default read-only:opacity-100 read-only:text-[#111714] read-only:bg-transparent";
+  const viewOnlyButtonClass = viewOnly ? "pointer-events-none cursor-default opacity-100" : "";
 
   const handleTopFieldKeyDown = (
     e: React.KeyboardEvent<HTMLElement>,
@@ -1662,7 +1965,7 @@ export function PurchaseEntryWorkspace({
     onNavigateAway?: (next: () => void) => void
   ) => {
     let nextIndex = currentIndex;
-    
+
     if (e.key === "Enter" && isInput) {
       nextIndex = currentIndex + 1;
     } else if (e.key === "ArrowRight") {
@@ -1691,9 +1994,9 @@ export function PurchaseEntryWorkspace({
       const fields = [
         billDateRef,
         vendorButtonRef,
+        paymentModeRef,
         billNumberRef,
         receivedDateRef,
-        paymentModeRef,
         warehouseButtonRef
       ];
       
@@ -1732,7 +2035,7 @@ export function PurchaseEntryWorkspace({
               </Button>
             ) : null}
             {onClose ? (
-              <Button type="button" variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={onClose}>
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-white hover:bg-white/20 hover:text-white" onClick={requestClose}>
                 Close
               </Button>
             ) : null}
@@ -1741,42 +2044,65 @@ export function PurchaseEntryWorkspace({
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="border-r border-[#cad5cb]">
             {vendorSummary ? (
-              <div className="border-b bg-[#fbfcf7] px-4 py-3">
-                <div className="truncate text-lg font-semibold">{vendorSummary.vendor_name} <span className="text-primary">[{paymentMode}]</span></div>
-                <div className="mt-1 truncate text-xs text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</div>
-                <div className="mt-2 flex gap-4 text-xs text-[#5b655f]">
-                  <span>Allowed Brands: {vendorSummary.brand_names.length ? vendorSummary.brand_names.join(", ") : "None linked"}</span>
-                  <span>•</span>
-                  <span>Vendor Type: {vendorSummary.purchase_type || "Not set"}</span>
-                  <span>•</span>
-                  <span>GSTIN: {vendorSummary.gstin || "-"}</span>
+              <div className="border-b bg-[#fbfcf7] px-3 py-2">
+                <div className="grid gap-1 text-[10px]">
+                  <div className="flex flex-wrap gap-x-6 gap-y-1">
+                    <span className="font-semibold">Firm Name:</span>
+                    <span className="text-[#5b655f]">{vendorSummary.vendor_name}</span>
+                    <span className="font-semibold">Owner Name:</span>
+                    <span className="text-[#5b655f]">{vendorSummary.owner_name || "-"}</span>
+                    <span className="font-semibold">Phone:</span>
+                    <span className="text-[#5b655f]">{vendorSummary.phone || "-"}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-6 gap-y-1">
+                    <span className="font-semibold">Address:</span>
+                    <span className="text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-6 gap-y-1">
+                    <span className="font-semibold">GSTIN:</span>
+                    <span className="text-[#5b655f]">{vendorSummary.gstin || "-"}</span>
+                    <span className="font-semibold">Type:</span>
+                    <span className="text-[#5b655f]">{taxType} (auto from GSTIN)</span>
+                    <span className="font-semibold">Mode:</span>
+                    <span className="text-[#5b655f]">{paymentMode}</span>
+                  </div>
                 </div>
               </div>
             ) : null}
 
             <div className="grid gap-px bg-border md:grid-cols-12">
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Purchase Date</Label>
-                <div className="mt-2 flex gap-2">
+              <div className="bg-[#fbfcf7] p-1.5 md:col-span-3">
+                <Label className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Purchase Date</Label>
+                <div className="mt-1 flex gap-1">
                   <Input
                     ref={billDateRef}
                     value={billDateInput}
+                    readOnly={viewOnly}
                     onChange={(e) => setBillDateInput(e.target.value)}
                     onFocus={() => setActiveField("product")}
                     onKeyDown={(e) => {
+                      if (viewOnly) return;
                       handleTopFieldKeyDown(e, 0, true, (next) => {
                         void confirmDate(billDateInput, setBillDate, setBillDateInput, next);
                       });
                     }}
                     placeholder="ddmmyyyy"
-                    className="h-11 min-w-0 flex-1 rounded-sm border-0 bg-[#eef1ea] text-lg font-semibold tracking-[0.2em] shadow-none"
+                    className={cn(
+                      "h-7 min-w-0 flex-1 rounded-sm border-0 bg-[#eef1ea] text-xs font-semibold tracking-[0.2em] shadow-none",
+                      viewReadOnlyInput,
+                    )}
                   />
                   <Button
                     type="button"
                     variant="ghost"
                     aria-label="Open calendar"
-                    className="h-11 shrink-0 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    tabIndex={viewOnly ? -1 : 0}
+                    className={cn(
+                      "h-7 shrink-0 rounded-sm border border-transparent bg-[#eef1ea] px-1.5 text-[10px] font-semibold shadow-none",
+                      viewOnlyButtonClass,
+                    )}
                     onClick={() => {
+                      if (viewOnly) return;
                       const node = billDatePickerRef.current;
                       if (!node) return;
                       if (typeof node.showPicker === "function") {
@@ -1799,17 +2125,25 @@ export function PurchaseEntryWorkspace({
                   />
                 </div>
               </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <Label htmlFor="partySelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
+              <div className="bg-[#fbfcf7] p-1.5 md:col-span-5">
+                <Label htmlFor="partySelect" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Party</Label>
                 <Button
                   id="partySelect"
                   name="partySelect"
                   ref={vendorButtonRef}
                   type="button"
                   variant="ghost"
-                  className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
-                  onClick={() => setVendorSearchOpen(true)}
+                  tabIndex={viewOnly ? -1 : 0}
+                  className={cn(
+                    "mt-1 h-7 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-2 text-left text-xs font-semibold text-[#111714] shadow-none",
+                    viewOnlyButtonClass,
+                  )}
+                  onClick={() => {
+                    if (viewOnly) return;
+                    setVendorSearchOpen(true);
+                  }}
                   onKeyDown={(e) => {
+                    if (viewOnly) return;
                     handleTopFieldKeyDown(e, 1, false);
                     if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
                       e.preventDefault();
@@ -1820,42 +2154,87 @@ export function PurchaseEntryWorkspace({
                   {vendorSummary ? vendorSummary.vendor_name : "Select vendor"}
                 </Button>
               </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label htmlFor="billNumber" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
-                <Input 
+              <div className="bg-[#fbfcf7] p-1.5 md:col-span-2">
+                <Label htmlFor="paymentModeSelect" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
+                <Button
+                  id="paymentModeSelect"
+                  name="paymentModeSelect"
+                  ref={paymentModeRef}
+                  type="button"
+                  variant="ghost"
+                  tabIndex={viewOnly ? -1 : 0}
+                  className={cn(
+                    "mt-1 h-7 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-2 text-left text-xs font-semibold text-[#111714] shadow-none",
+                    viewOnlyButtonClass,
+                  )}
+                  onClick={() => {
+                    if (viewOnly) return;
+                    openPaymentModePicker();
+                  }}
+                  onKeyDown={(e) => {
+                    if (viewOnly) return;
+                    handleTopFieldKeyDown(e, 2, false);
+                    if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
+                      e.preventDefault();
+                      openPaymentModePicker();
+                    }
+                  }}
+                >
+                  {paymentMode}
+                </Button>
+              </div>
+              <div className="bg-[#fbfcf7] p-1.5 md:col-span-2">
+                <Label htmlFor="billNumber" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Bill No</Label>
+                <Input
                   id="billNumber"
                   name="billNumber"
-                  ref={billNumberRef} 
-                  value={billNumber} 
-                  onChange={(e) => setBillNumber(e.target.value)} 
-                  onKeyDown={(e) => handleTopFieldKeyDown(e, 2, true)} 
-                  className="mt-2 h-11 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold shadow-none" 
+                  ref={billNumberRef}
+                  value={billNumber}
+                  readOnly={viewOnly}
+                  onChange={(e) => setBillNumber(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (viewOnly) return;
+                    handleTopFieldKeyDown(e, 3, true);
+                  }}
+                  className={cn("mt-1 h-7 rounded-sm border-0 bg-[#eef1ea] text-xs font-semibold text-[#111714] shadow-none", viewReadOnlyInput)}
                 />
               </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label htmlFor="receivedDate" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
-                <div className="mt-2 flex gap-2">
+            </div>
+
+            <div className="grid gap-px border-t bg-border md:grid-cols-12">
+              <div className="bg-[#fbfcf7] p-1 md:col-span-4">
+                <Label htmlFor="receivedDate" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Delivery Date</Label>
+                <div className="mt-1 flex gap-1">
                   <Input
                     id="receivedDate"
                     name="receivedDate"
                     ref={receivedDateRef}
                     value={receivedDateInput}
+                    readOnly={viewOnly}
                     onChange={(e) => setReceivedDateInput(e.target.value)}
-                    onFocus={() => setActiveField("product")}
                     onKeyDown={(e) => {
-                      handleTopFieldKeyDown(e, 3, true, (next) => {
+                      if (viewOnly) return;
+                      handleTopFieldKeyDown(e, 4, true, (next) => {
                         void confirmDate(receivedDateInput, setReceivedDate, setReceivedDateInput, next);
                       });
                     }}
                     placeholder="ddmmyyyy"
-                    className="h-11 min-w-0 flex-1 rounded-sm border-0 bg-[#eef1ea] text-base font-semibold tracking-[0.12em] shadow-none"
+                    className={cn(
+                      "h-8 min-w-0 flex-1 rounded-sm border-0 bg-[#eef1ea] text-xs font-semibold tracking-[0.12em] shadow-none",
+                      viewReadOnlyInput,
+                    )}
                   />
                   <Button
                     type="button"
                     variant="ghost"
                     aria-label="Open calendar"
-                    className="h-11 shrink-0 rounded-sm border border-transparent bg-[#eef1ea] px-3 text-sm font-semibold shadow-none"
+                    tabIndex={viewOnly ? -1 : 0}
+                    className={cn(
+                      "h-8 shrink-0 rounded-sm border border-transparent bg-[#eef1ea] px-1.5 text-[10px] font-semibold shadow-none",
+                      viewOnlyButtonClass,
+                    )}
                     onClick={() => {
+                      if (viewOnly) return;
                       const node = receivedDatePickerRef.current;
                       if (!node) return;
                       if (typeof node.showPicker === "function") {
@@ -1878,53 +2257,29 @@ export function PurchaseEntryWorkspace({
                   />
                 </div>
               </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <Label htmlFor="paymentModeSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Mode</Label>
-                <Button
-                  id="paymentModeSelect"
-                  name="paymentModeSelect"
-                  ref={paymentModeRef}
-                  type="button"
-                  variant="ghost"
-                  className="mt-2 h-11 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-base font-semibold shadow-none"
-                  onClick={openPaymentModePicker}
-                  onKeyDown={(e) => {
-                    handleTopFieldKeyDown(e, 4, false);
-                    if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
-                      e.preventDefault();
-                      openPaymentModePicker();
-                    }
-                  }}
-                >
-                  {paymentMode}
-                </Button>
+              <div className="bg-[#fbfcf7] p-1 md:col-span-4">
+                <div className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
+                <div className="mt-1 h-8 rounded-sm bg-[#eef1ea] px-2 py-1.5 text-xs font-semibold">{entryNumber}</div>
               </div>
-            </div>
-
-            <div className="grid gap-px border-t bg-border md:grid-cols-12">
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Station</div>
-                <div className="mt-2 text-sm font-semibold">{warehouses.find((warehouse) => warehouse.id === warehouseId)?.name || "-"}</div>
-              </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-3">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
-                <div className="mt-2 h-10 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{entryNumber}</div>
-              </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-2">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Type</div>
-                <div className="mt-2 rounded-sm bg-[#eef1ea] px-3 py-2 text-sm font-semibold">{taxType}</div>
-              </div>
-              <div className="bg-[#fbfcf7] p-2.5 md:col-span-4">
-                <Label htmlFor="warehouseSelect" className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</Label>
+              <div className="bg-[#fbfcf7] p-1 md:col-span-4">
+                <Label htmlFor="warehouseSelect" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</Label>
                 <Button
                   id="warehouseSelect"
                   name="warehouseSelect"
                   ref={warehouseButtonRef}
                   type="button"
                   variant="ghost"
-                  className="mt-2 h-10 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-3 text-left text-sm font-semibold shadow-none"
-                  onClick={openWarehousePicker}
+                  tabIndex={viewOnly ? -1 : 0}
+                  className={cn(
+                    "mt-1 h-8 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-2 text-left text-xs font-semibold text-[#111714] shadow-none",
+                    viewOnlyButtonClass,
+                  )}
+                  onClick={() => {
+                    if (viewOnly) return;
+                    openWarehousePicker();
+                  }}
                   onKeyDown={(e) => {
+                    if (viewOnly) return;
                     handleTopFieldKeyDown(e, 5, false);
                     if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
                       e.preventDefault();
@@ -1939,38 +2294,49 @@ export function PurchaseEntryWorkspace({
             </div>
 
             <div className="border-t overflow-x-auto">
-              <Table className="min-w-[1200px] table-fixed">
+              <Table className="min-w-[800px] table-fixed">
                 <TableHeader>
                   <TableRow className="bg-[#e7f0cb] hover:bg-[#e7f0cb]">
-                    <TableHead className="w-[44px] text-center text-sm font-semibold text-foreground">#</TableHead>
-                    <TableHead className="text-sm font-semibold text-foreground">PRODUCT</TableHead>
-                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
-                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
-                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
-                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">MRP</TableHead>
-                    <TableHead className="w-[90px] text-center text-sm font-semibold text-foreground">P.RATE</TableHead>
-                    <TableHead className="w-[80px] text-center text-sm font-semibold text-foreground">UNIT</TableHead>
-                    <TableHead className="w-[70px] text-center text-sm font-semibold text-foreground">DISC%</TableHead>
-                    <TableHead className="w-[85px] text-center text-sm font-semibold text-foreground">DISC AMT</TableHead>
-                    <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">TAXABLE</TableHead>
-                    <TableHead className="w-[110px] text-right text-sm font-semibold text-foreground">AMOUNT</TableHead>
+                    <TableHead className="w-[30px] text-center text-[10px] font-semibold text-foreground">#</TableHead>
+                    <TableHead className="text-[10px] font-semibold text-foreground">PRODUCT</TableHead>
+                    <TableHead className="w-[60px] text-center text-[10px] font-semibold text-foreground">{activeLine?.product?.unit_3rd_name || "3rd"}</TableHead>
+                    <TableHead className="w-[60px] text-center text-[10px] font-semibold text-foreground">{activeLine?.product?.unit_2nd_name || "2nd"}</TableHead>
+                    <TableHead className="w-[60px] text-center text-[10px] font-semibold text-foreground">{activeLine?.product?.unit_1st_name || "1st"}</TableHead>
+                    <TableHead className="w-[65px] text-center text-[10px] font-semibold text-foreground">MRP</TableHead>
+                    <TableHead className="w-[65px] text-center text-[10px] font-semibold text-foreground">P.RATE</TableHead>
+                    <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">UNIT</TableHead>
+                    <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">DISC%</TableHead>
+                    <TableHead className="w-[75px] text-center text-[10px] font-semibold text-foreground">DISC AMT</TableHead>
+                    <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">TAXABLE</TableHead>
+                    <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lines.map((line, index) => (
                     <TableRow key={line.id} className={cn(index === activeRow ? "bg-[#dfede5]" : "bg-[#fbfcf7]", "transition-colors group/row")}>
-                      <TableCell className="py-1.5 text-center text-sm font-semibold text-muted-foreground">
+                      <TableCell className="py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
                         {line.product ? (
                           <span className="relative inline-flex min-w-7 items-center justify-center">
-                            <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1 group-hover/row:invisible", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
+                            <span
+                              className={cn(
+                                "inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1",
+                                !viewOnly && "group-hover/row:invisible",
+                                index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]",
+                              )}
+                            >
                               {index + 1}
                             </span>
-                            <button
-                              type="button"
-                              className="absolute inset-0 hidden items-center justify-center rounded-sm bg-red-100 text-red-600 hover:bg-red-200 group-hover/row:flex"
-                              onClick={() => deleteLine(index)}
-                              title="Delete line (F8)"
-                            >✕</button>
+                            {!viewOnly ? (
+                              <button
+                                type="button"
+                                className="absolute inset-0 hidden items-center justify-center rounded-sm bg-red-100 text-red-600 hover:bg-red-200 group-hover/row:flex"
+                                tabIndex={-1}
+                                onClick={() => deleteLine(index)}
+                                title="Delete line (F8)"
+                              >
+                                ✕
+                              </button>
+                            ) : null}
                           </span>
                         ) : (
                           <span className={cn("inline-flex min-w-7 items-center justify-center rounded-sm px-1.5 py-1", index === activeRow ? "bg-[#2f5d50] text-white" : "bg-[#eef1ea]")}>
@@ -1980,36 +2346,38 @@ export function PurchaseEntryWorkspace({
                       </TableCell>
                       <TableCell className="py-1.5 overflow-hidden">
                         <Button
-                          ref={(node) => {
-                            setLineRef(line.id, "product")(node);
-                            if (index === activeRow) {
-                              productCellRef.current = node;
-                            }
-                          }}
+                          id={`line-${index}-product`}
+                          name={`line-${index}-product`}
+                          aria-label="Product"
+                          ref={setLineRef(line.id, "product")}
                           type="button"
                           variant="ghost"
+                          tabIndex={viewOnly ? -1 : 0}
                           className={cn(
-                            "h-9 w-full justify-start rounded-none px-0 text-left text-sm font-semibold shadow-none",
-                            index === activeRow && activeField === "product" ? "bg-[#2f5d50] px-2 text-white hover:bg-[#2f5d50]" : ""
+                            "h-7 w-full justify-start rounded-none border-0 bg-transparent px-2 text-left text-[10px] font-semibold text-[#111714] shadow-none",
+                            viewOnly && "pointer-events-none cursor-default opacity-100",
+                            index === activeRow && activeField === "product" ? "bg-[#2f5d50] text-white hover:bg-[#2f5d50]" : "",
                           )}
-                          onClick={() => {
+                          onFocus={() => {
+                            if (viewOnly) return;
                             setActiveRow(index);
                             setActiveField("product");
                             openProductSelector(index);
                           }}
                           onKeyDown={(e) => {
+                            if (viewOnly) return;
                             handleLineFieldKeyDown(e, index, "product");
                           }}
                         >
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none disabled:opacity-20", index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "quantity1" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "mrp" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[90px] py-1.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[80px] py-1.5">
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} readOnly={viewOnly && !!line.product?.unit_3rd_name} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} readOnly={viewOnly && !!line.product?.unit_2nd_name} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[55px] py-0.5">
                         <Button
                           id={`line-${index}-rateUnitLevel`}
                           name={`line-${index}-rateUnitLevel`}
@@ -2017,17 +2385,28 @@ export function PurchaseEntryWorkspace({
                           ref={setLineRef(line.id, "rateUnitLevel")}
                           type="button"
                           variant="ghost"
-                          className={cn("h-9 w-full justify-center rounded-none border-0 bg-transparent px-2 text-center text-sm font-semibold shadow-none", index === activeRow && activeField === "rateUnitLevel" ? "bg-[#2f5d50] text-white hover:bg-[#2f5d50]" : "")}
+                          tabIndex={viewOnly ? -1 : 0}
+                          className={cn(
+                            "h-7 w-full justify-center rounded-none border-0 bg-transparent px-2 text-center text-[10px] font-semibold text-[#111714] shadow-none",
+                            viewOnly && "pointer-events-none cursor-default opacity-100",
+                            index === activeRow && activeField === "rateUnitLevel" ? "bg-[#2f5d50] text-white hover:bg-[#2f5d50]" : "",
+                          )}
                           onFocus={() => { setActiveRow(index); setActiveField("rateUnitLevel"); }}
-                          onClick={() => setRateUnitPicker({ rowIndex: index, optionIndex: Math.max(0, line.rateUnitLevel - 1) })}
-                          onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateUnitLevel")}
+                          onClick={() => {
+                            if (viewOnly) return;
+                            setRateUnitPicker({ rowIndex: index, optionIndex: Math.max(0, line.rateUnitLevel - 1) });
+                          }}
+                          onKeyDown={(e) => {
+                            if (viewOnly) return;
+                            handleLineFieldKeyDown(e, index, "rateUnitLevel");
+                          }}
                         >
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[70px] py-1.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountPercent" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[85px] py-1.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-9 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-base font-semibold shadow-none", index === activeRow && activeField === "discountLumpsum" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[110px] py-1.5">
+                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[90px] py-0.5">
                         <Input
                           id={`line-${index}-taxable`}
                           name={`line-${index}-taxable`}
@@ -2042,12 +2421,12 @@ export function PurchaseEntryWorkspace({
                           }}
                           onKeyDown={(e) => handleLineFieldKeyDown(e, index, "taxable")}
                           className={cn(
-                            "h-9 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-base font-semibold shadow-none",
+                            "h-7 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-[10px] font-semibold shadow-none",
                             index === activeRow && activeField === "taxable" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
                           )}
                         />
                       </TableCell>
-                      <TableCell className="w-[110px] py-1.5">
+                      <TableCell className="w-[90px] py-0.5">
                         <Input
                           id={`line-${index}-lineAmount`}
                           name={`line-${index}-lineAmount`}
@@ -2062,7 +2441,7 @@ export function PurchaseEntryWorkspace({
                           }}
                           onKeyDown={(e) => handleLineFieldKeyDown(e, index, "lineAmount")}
                           className={cn(
-                            "h-9 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-base font-semibold shadow-none",
+                            "h-7 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-[10px] font-semibold shadow-none",
                             index === activeRow && activeField === "lineAmount" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
                           )}
                         />
@@ -2073,27 +2452,117 @@ export function PurchaseEntryWorkspace({
               </Table>
             </div>
 
-              <div className="bg-[#fbfcf7] p-3 text-sm">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
+              <div className="grid gap-px border-t bg-border md:grid-cols-[1fr_1fr]">
+              <div className="bg-[#fbfcf7] p-3 text-[10px]">
+                <div className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
                 {activeLine?.product ? (
+                  (() => {
+                    const convLines = productUnitConversionLines(activeLine.product);
+                    return (
                   <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-                    <div className="text-base font-semibold md:col-span-2">{activeLine.product.name}</div>
-                    <div className="text-sm text-[#5b655f] md:col-span-2">{activeLine.product.brand || "-"}</div>
+                    <div className="text-[10px] font-semibold md:col-span-2">{activeLine.product.name}</div>
+                    <div className="text-[10px] text-[#5b655f] md:col-span-2">{activeLine.product.brand || "-"}</div>
                     <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
                     <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
                     <div className="md:col-span-2">COST: <span className="font-semibold">{Number(activeLine.product.cost_price).toFixed(2)}</span></div>
+                    {convLines.length ? (
+                      <div className="md:col-span-2 mt-1 space-y-0.5 border-t border-[#dde6dc] pt-1.5">
+                        <div className="text-[9px] font-semibold uppercase tracking-[0.2em] text-[#6a746e]">Unit conversion</div>
+                        {convLines.map((line, idx) => (
+                          <div key={`${line}-${idx}`} className="text-[10px] text-[#3d4a42]">
+                            {line}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
+                    );
+                  })()
                 ) : (
                   <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
                 )}
               </div>
+              <div className="bg-[#fbfcf7] p-3 text-[10px]">
+                <div className="grid grid-cols-2 gap-y-2">
+                  <div>VALUE OF GOODS</div><div className="text-right font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
+                  <div>DISCOUNT</div><div className="text-right font-semibold">{totals.discount.toFixed(2)}</div>
+                  <div>GST</div><div className="text-right font-semibold">{totals.gst.toFixed(2)}</div>
+                  <div className="self-center">FREIGHT</div>
+                  <div>
+                    <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
+                    <Input
+                      id="freightAmount"
+                      name="freightAmount"
+                      ref={freightRef}
+                      className={cn(
+                        "h-7 rounded-none border-x-0 border-t-0 bg-transparent text-right font-semibold text-[#111714] shadow-none",
+                        viewReadOnlyLineInput,
+                      )}
+                      value={freightAmount}
+                      readOnly={viewOnly}
+                      onChange={(e) => setFreightAmount(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          focusFooterField("save");
+                        } else if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          focusFooterField("save");
+                        } else if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
+                          if (lastFilledRow >= 0) {
+                            focusLineField(lastFilledRow, "product");
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                  <div>ROUND OFF</div><div className="text-right font-semibold">{totals.roundOff.toFixed(2)}</div>
+                  <div className="pt-2 text-[10px] font-semibold">FINAL BILL</div><div className="pt-2 text-right text-[10px] font-bold">{totals.finalAmount.toFixed(2)}</div>
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <Button
+                    ref={saveButtonRef}
+                    className="rounded-sm"
+                    onClick={() => void saveEntry()}
+                    disabled={saving || !canWritePurchase || viewOnly}
+                    onKeyDown={(e) => {
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        focusFooterField("freight");
+                      }
+                    }}
+                  >
+                    {saving ? "Saving..." : `Save ${mode === "challan" ? "Challan" : "Bill"}`}
+                  </Button>
+                  <Button variant="outline" onClick={() => void showLedger()} disabled={!vendorSummary}>
+                    Ledger
+                  </Button>
+                  {activeLine?.product ? (
+                    <Button
+                      variant="outline"
+                      tabIndex={viewOnly ? -1 : 0}
+                      className={cn(viewOnly && "pointer-events-none cursor-default opacity-100")}
+                      onClick={() => {
+                        if (viewOnly) return;
+                        void openProductEdit(activeLine.product!);
+                      }}
+                    >
+                      Edit Product
+                    </Button>
+                  ) : null}
+                  {onClose && <Button variant="secondary" onClick={requestClose}>Back</Button>}
+                </div>
+              </div>
+            </div>
 
             {activeLine?.product && (
               <div className="border-t bg-[#fbfcf7] p-3">
-                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.24em] text-[#6a746e]">Recent Interaction History</div>
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.24em] text-[#6a746e]">Recent Interaction History</div>
                 {activeLine.product.recent_bills.length ? (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
+                    <table className="w-full text-left text-[10px]">
                       <thead>
                         <tr className="border-b border-[#dde6dc] text-[10px] uppercase tracking-wider text-muted-foreground">
                           <th className="pb-2 font-medium">Date</th>
@@ -2123,69 +2592,10 @@ export function PurchaseEntryWorkspace({
                     </table>
                   </div>
                 ) : (
-                  <div className="py-4 text-center text-sm text-muted-foreground">No recent interactions found for this product.</div>
+                  <div className="py-4 text-center text-[10px] text-muted-foreground">No recent interactions found for this product.</div>
                 )}
               </div>
             )}
-
-            <div className="grid gap-px border-t bg-border md:grid-cols-[1.3fr_1fr]">
-              <div className="bg-transparent md:col-span-1"></div>
-              <div className="bg-[#fbfcf7] p-3 text-sm">
-                <div className="grid grid-cols-2 gap-y-2">
-                  <div>VALUE OF GOODS</div><div className="text-right font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
-                  <div>DISCOUNT</div><div className="text-right font-semibold">{totals.discount.toFixed(2)}</div>
-                  <div>GST</div><div className="text-right font-semibold">{totals.gst.toFixed(2)}</div>
-                  <div className="self-center">FREIGHT</div>
-                  <div>
-                    <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
-                    <Input
-                      id="freightAmount"
-                      name="freightAmount"
-                      ref={freightRef}
-                      className="h-9 rounded-none border-x-0 border-t-0 bg-transparent text-right font-semibold shadow-none"
-                      value={freightAmount}
-                      onChange={(e) => setFreightAmount(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          focusFooterField("save");
-                        } else if (e.key === "ArrowDown") {
-                          e.preventDefault();
-                          focusFooterField("save");
-                        } else if (e.key === "ArrowUp") {
-                          e.preventDefault();
-                          const lastFilledRow = lines.findLastIndex((line) => line.product !== null);
-                          if (lastFilledRow >= 0) {
-                            focusLineField(lastFilledRow, "product");
-                          }
-                        }
-                      }}
-                    />
-                  </div>
-                  <div>ROUND OFF</div><div className="text-right font-semibold">{totals.roundOff.toFixed(2)}</div>
-                  <div className="pt-2 text-base font-semibold">FINAL BILL</div><div className="pt-2 text-right text-2xl font-bold">{totals.finalAmount.toFixed(2)}</div>
-                </div>
-                <div className="mt-4 flex gap-2">
-                  <Button
-                    ref={saveButtonRef}
-                    className="rounded-sm"
-                    onClick={() => void saveEntry()}
-                    disabled={saving || !canWritePurchase}
-                    onKeyDown={(e) => {
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        focusFooterField("freight");
-                      }
-                    }}
-                  >
-                    {saving ? "Saving..." : `Save ${mode === "challan" ? "Challan" : "Bill"}`}
-                  </Button>
-                  <Button variant="outline" onClick={() => void showLedger()} disabled={!vendorSummary}>Ledger</Button>
-                  {activeLine?.product ? <Button variant="outline" onClick={() => void openProductEdit(activeLine.product!)}>Edit Product</Button> : null}
-                  {onClose && <Button variant="secondary" onClick={onClose}>Back</Button>}
-                </div>
-              </div>
-            </div>
           </div>
 
           <div className="grid gap-px bg-border">
@@ -2235,7 +2645,12 @@ export function PurchaseEntryWorkspace({
                     <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">All Open Challans</div>
                     <div className="space-y-3">
                       {generalOpenChallans.length ? generalOpenChallans.map((challan) => (
-                        <div key={challan.challan_id} className="space-y-1 rounded border bg-[#fdfef9] p-2 text-xs shadow-sm">
+                        <button
+                          key={challan.challan_id}
+                          type="button"
+                          className="w-full cursor-pointer space-y-1 rounded border bg-[#fdfef9] p-2 text-xs shadow-sm hover:bg-[#eef1ea] transition-colors"
+                          onClick={() => void loadChallanToBill(challan.challan_id)}
+                        >
                           <div className="flex justify-between font-semibold">
                             <span className="text-[#2f5d50]">{challan.vendor_name}</span>
                             <span>{challan.reference_no}</span>
@@ -2244,7 +2659,7 @@ export function PurchaseEntryWorkspace({
                              <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
                              <span>{challan.item_count} items</span>
                           </div>
-                        </div>
+                        </button>
                       )) : <div className="text-xs text-muted-foreground">No open challans available.</div>}
                     </div>
                   </div>
@@ -2281,7 +2696,7 @@ export function PurchaseEntryWorkspace({
                 onClick={() => {
                   setPaymentMode(option);
                   setPaymentModeOpen(false);
-                  setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+                  setTimeout(() => billNumberRef.current?.focus(), 0);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
@@ -2294,7 +2709,7 @@ export function PurchaseEntryWorkspace({
                     e.preventDefault();
                     setPaymentMode(PAYMENT_MODE_OPTIONS[paymentModeIndex]);
                     setPaymentModeOpen(false);
-                    setTimeout(() => warehouseButtonRef.current?.focus(), 0);
+                    setTimeout(() => billNumberRef.current?.focus(), 0);
                   }
                 }}
                 autoFocus={index === paymentModeIndex}
@@ -2368,7 +2783,15 @@ export function PurchaseEntryWorkspace({
                 onClick={() => {
                   setWarehouseId(warehouse.id);
                   setWarehousePickerOpen(false);
-                  setTimeout(() => productCellRef.current?.focus(), 0);
+                  setTimeout(() => {
+                    const firstLine = lines[0];
+                    if (firstLine) {
+                      const productRef = lineRefs.current[`${firstLine.id}:product`];
+                      if (productRef) {
+                        productRef.focus();
+                      }
+                    }
+                  }, 0);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
@@ -2381,7 +2804,15 @@ export function PurchaseEntryWorkspace({
                     e.preventDefault();
                     setWarehouseId(warehouses[warehouseIndex].id);
                     setWarehousePickerOpen(false);
-                    setTimeout(() => productCellRef.current?.focus(), 0);
+                    setTimeout(() => {
+                      const firstLine = lines[0];
+                      if (firstLine) {
+                        const productRef = lineRefs.current[`${firstLine.id}:product`];
+                        if (productRef) {
+                          productRef.focus();
+                        }
+                      }
+                    }, 0);
                   }
                 }}
                 autoFocus={warehouseIndex === index}

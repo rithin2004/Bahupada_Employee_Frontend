@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     gzip_enabled: bool = True
     gzip_minimum_size_bytes: int = 1024
+    # Comma-separated list. Use "*" to allow common localhost dev origins (see main._cors_allow_origins).
     cors_allow_origins: str = "*"
 
     pagination_default_page_size: int = 50

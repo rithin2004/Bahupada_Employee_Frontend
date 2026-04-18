@@ -671,9 +671,25 @@ class PurchaseChallanItem(Base):
     batch_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    quantity_1st: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    quantity_2nd: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    quantity_3rd: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    unit_1st_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("units.id"), nullable=True)
+    unit_2nd_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("units.id"), nullable=True)
+    unit_3rd_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("units.id"), nullable=True)
+    base_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    damaged_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
-    gst_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
-    discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    rate_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    rate_unit_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    discount_lumpsum: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    line_subtotal: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    line_discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    line_taxable_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    line_tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    line_total_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
 
 
 class PurchaseBill(Base, TimestampMixin):
@@ -1228,7 +1244,9 @@ class Scheme(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scheme_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    customer_category_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customer_categories.id"), nullable=False)
+    # Legacy column from 002_hardening_schema; kept in sync with reward_type (DISCOUNT / FREE_ITEM).
+    scheme_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    customer_category_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("customer_categories.id"), nullable=True)
     condition_basis: Mapped[str] = mapped_column(String(20), nullable=False)
     threshold_value: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     threshold_unit: Mapped[str] = mapped_column(String(10), nullable=False)

@@ -2,15 +2,23 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, delete, distinct, or_, select
+from sqlalchemy import and_, case, delete, distinct, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.auth import require_permission
 from app.db.session import get_db
-from app.models.entities import CustomerCategory, Product, Scheme, SchemeProduct
+from app.models.entities import CustomerCategory, Product, ProductBrand, Scheme, SchemeProduct
 from app.schemas.schemes import SchemeCreate, SchemeOut, SchemeProductOption, SchemeScopeMeta, SchemeUpdate
 
 router = APIRouter()
+
+
+def _scheme_type_from_reward(reward_type: str) -> str:
+    if reward_type == "DISCOUNT":
+        return "DISCOUNT"
+    if reward_type == "FREE_ITEM":
+        return "FREE_ITEM"
+    return "DISCOUNT"
 
 
 async def _require_active_customer_category(db: AsyncSession, category_id: uuid.UUID) -> CustomerCategory:
@@ -27,10 +35,25 @@ async def _require_active_product(db: AsyncSession, product_id: uuid.UUID, *, fi
     return product
 
 
+async def _effective_brand_name_for_product(db: AsyncSession, product: Product) -> str | None:
+    """Resolve display brand: denormalized string, else name from product_brands."""
+    if (product.brand or "").strip():
+        return product.brand.strip()
+    if product.brand_id:
+        name = await db.scalar(select(ProductBrand.name).where(ProductBrand.id == product.brand_id))
+        return (name or "").strip() or None
+    return None
+
+
+def _product_matches_brand(brand: str):
+    """Match either denormalized Product.brand or FK-linked ProductBrand.name (common when only brand_id is set)."""
+    return or_(Product.brand == brand, ProductBrand.name == brand)
+
+
 def _product_scope_stmt(*, brand: str | None = None, category: str | None = None, sub_category: str | None = None):
     stmt = select(Product).where(Product.is_active.is_(True))
     if brand:
-        stmt = stmt.where(Product.brand == brand)
+        stmt = stmt.outerjoin(ProductBrand, Product.brand_id == ProductBrand.id).where(_product_matches_brand(brand))
     if category:
         stmt = stmt.where(Product.category == category)
     if sub_category:
@@ -39,11 +62,13 @@ def _product_scope_stmt(*, brand: str | None = None, category: str | None = None
 
 
 async def _serialize_scheme(db: AsyncSession, scheme: Scheme) -> dict[str, object]:
-    await _require_active_customer_category(db, scheme.customer_category_id)
-
-    category_name = (
-        await db.execute(select(CustomerCategory.name).where(CustomerCategory.id == scheme.customer_category_id))
-    ).scalar_one()
+    if scheme.customer_category_id is not None:
+        await _require_active_customer_category(db, scheme.customer_category_id)
+        category_name = (
+            await db.execute(select(CustomerCategory.name).where(CustomerCategory.id == scheme.customer_category_id))
+        ).scalar_one()
+    else:
+        category_name = "All categories"
 
     product_name: str | None = None
     if scheme.product_id:
@@ -116,7 +141,8 @@ async def list_schemes(
 
 @router.post("", response_model=SchemeOut, dependencies=[Depends(require_permission("schemes", "create"))])
 async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db)):
-    await _require_active_customer_category(db, payload.customer_category_id)
+    if payload.customer_category_id is not None:
+        await _require_active_customer_category(db, payload.customer_category_id)
 
     scoped_product: Product | None = None
     if payload.product_id:
@@ -125,8 +151,10 @@ async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db
         await _require_active_product(db, payload.reward_product_id, field_name="reward_product_id")
 
     if scoped_product:
-        if payload.brand and scoped_product.brand != payload.brand:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected product does not match the chosen brand")
+        if payload.brand:
+            eff_brand = await _effective_brand_name_for_product(db, scoped_product)
+            if eff_brand != payload.brand:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected product does not match the chosen brand")
         if payload.category and scoped_product.category != payload.category:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -138,7 +166,9 @@ async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db
                 detail="Selected product does not match the chosen sub-category",
             )
 
-    scheme = Scheme(**payload.model_dump())
+    data = payload.model_dump()
+    data["scheme_type"] = _scheme_type_from_reward(payload.reward_type)
+    scheme = Scheme(**data)
     db.add(scheme)
     await db.commit()
     await db.refresh(scheme)
@@ -152,6 +182,8 @@ async def update_scheme(scheme_id: uuid.UUID, payload: SchemeUpdate, db: AsyncSe
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheme not found")
 
     data = payload.model_dump(exclude_unset=True)
+    if "reward_type" in data:
+        data["scheme_type"] = _scheme_type_from_reward(data["reward_type"])
     if "customer_category_id" in data and data["customer_category_id"] is not None:
         await _require_active_customer_category(db, data["customer_category_id"])
     if "product_id" in data and data["product_id"] is not None:
@@ -199,11 +231,20 @@ async def list_active_schemes(on_date: date | None = None, db: AsyncSession = De
 
 @router.get("/meta/scope", response_model=SchemeScopeMeta, dependencies=[Depends(require_permission("schemes", "read"))])
 async def get_scheme_scope_meta(db: AsyncSession = Depends(get_db)):
+    effective_brand = case(
+        (and_(Product.brand.isnot(None), Product.brand != ""), Product.brand),
+        else_=ProductBrand.name,
+    )
     brand_rows = (
         await db.execute(
-            select(distinct(Product.brand))
-            .where(and_(Product.is_active.is_(True), Product.brand.is_not(None), Product.brand != ""))
-            .order_by(Product.brand.asc())
+            select(distinct(effective_brand))
+            .select_from(Product)
+            .outerjoin(ProductBrand, Product.brand_id == ProductBrand.id)
+            .where(
+                Product.is_active.is_(True),
+                effective_brand.isnot(None),
+                effective_brand != "",
+            )
         )
     ).scalars().all()
     category_rows = (
@@ -220,8 +261,9 @@ async def get_scheme_scope_meta(db: AsyncSession = Depends(get_db)):
             .order_by(Product.sub_category.asc())
         )
     ).scalars().all()
+    brand_list = sorted({str(b) for b in brand_rows if b})
     return {
-        "brands": [str(item) for item in brand_rows],
+        "brands": brand_list,
         "categories": [str(item) for item in category_rows],
         "sub_categories": [str(item) for item in sub_category_rows],
     }
@@ -232,10 +274,12 @@ async def list_categories_for_brand(brand: str, db: AsyncSession = Depends(get_d
     rows = (
         await db.execute(
             select(distinct(Product.category))
+            .select_from(Product)
+            .outerjoin(ProductBrand, Product.brand_id == ProductBrand.id)
             .where(
                 and_(
                     Product.is_active.is_(True),
-                    Product.brand == brand,
+                    _product_matches_brand(brand),
                     Product.category.is_not(None),
                     Product.category != "",
                 )
@@ -255,10 +299,12 @@ async def list_sub_categories_for_scope(
     rows = (
         await db.execute(
             select(distinct(Product.sub_category))
+            .select_from(Product)
+            .outerjoin(ProductBrand, Product.brand_id == ProductBrand.id)
             .where(
                 and_(
                     Product.is_active.is_(True),
-                    Product.brand == brand,
+                    _product_matches_brand(brand),
                     Product.category == category,
                     Product.sub_category.is_not(None),
                     Product.sub_category != "",
@@ -294,6 +340,45 @@ async def list_products_for_scheme_scope(
         }
         for row in rows
     ]
+
+
+@router.get("/meta/reward-products", dependencies=[Depends(require_permission("schemes", "read"))])
+async def list_reward_products_for_scheme(
+    q: str | None = Query(None),
+    brand: str | None = Query(None, description="When set, only products for this brand (matches denormalized brand or product_brands.name)."),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """Active products for free-item reward picker (schemes permission; does not require products.read)."""
+    stmt = select(Product).where(Product.is_active.is_(True))
+    if brand and brand.strip():
+        stmt = stmt.outerjoin(ProductBrand, Product.brand_id == ProductBrand.id).where(_product_matches_brand(brand.strip()))
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Product.sku.ilike(term),
+                Product.name.ilike(term),
+                Product.display_name.ilike(term),
+                Product.brand.ilike(term),
+            )
+        )
+    stmt = stmt.order_by(Product.name.asc()).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "sku": row.sku,
+                "name": row.name,
+                "display_name": row.display_name,
+                "brand": row.brand,
+                "category": row.category,
+                "sub_category": row.sub_category,
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.get("/{scheme_id}", response_model=SchemeOut, dependencies=[Depends(require_permission("schemes", "read"))])

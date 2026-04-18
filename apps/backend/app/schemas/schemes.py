@@ -7,7 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class SchemeCreate(BaseModel):
     scheme_name: str = Field(min_length=1, max_length=200)
-    customer_category_id: uuid.UUID
+    # When omitted, scheme applies to all customer categories.
+    customer_category_id: uuid.UUID | None = None
     condition_basis: str = Field(pattern="^(VALUE|WEIGHT|QUANTITY)$")
     threshold_value: Decimal = Field(gt=0)
     threshold_unit: str = Field(pattern="^(INR|GM|KG|PIECE)$")
@@ -99,7 +100,7 @@ class SchemeOut(BaseModel):
 
     id: uuid.UUID
     scheme_name: str
-    customer_category_id: uuid.UUID
+    customer_category_id: uuid.UUID | None
     customer_category_name: str
     condition_basis: str
     threshold_value: Decimal

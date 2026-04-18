@@ -1,9 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
+import {
+  asArray,
+  asObject,
+  deleteBackend,
+  fetchBackend,
+  fetchBackendFresh,
+  fetchPortalMe,
+  patchBackend,
+  postBackend,
+} from "@/lib/backend-api";
 import { usePersistedUiState } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -112,7 +121,7 @@ function mapCategory(row: Record<string, unknown>): CustomerCategory {
 
 function mapProduct(row: Record<string, unknown>): ProductOption {
   return {
-    id: String(row.id ?? ""),
+    id: String(row.id ?? row.product_id ?? ""),
     sku: String(row.sku ?? ""),
     name: String(row.name ?? ""),
     display_name: String(row.display_name ?? row.name ?? ""),
@@ -127,7 +136,7 @@ function mapScheme(row: Record<string, unknown>): SchemeRow {
     id: String(row.id ?? ""),
     scheme_name: String(row.scheme_name ?? ""),
     customer_category_id: String(row.customer_category_id ?? ""),
-    customer_category_name: String(row.customer_category_name ?? "-"),
+    customer_category_name: String(row.customer_category_name ?? (row.customer_category_id ? "-" : "All categories")),
     condition_basis: (String(row.condition_basis ?? "VALUE") as ConditionBasis) || "VALUE",
     threshold_value: String(row.threshold_value ?? "0"),
     threshold_unit: (String(row.threshold_unit ?? "INR") as ThresholdUnit) || "INR",
@@ -172,7 +181,9 @@ function formatReward(row: SchemeRow) {
 }
 
 function buildApplicabilityLabel(form: typeof EMPTY_FORM, categories: CustomerCategory[]) {
-  const categoryName = categories.find((item) => item.id === form.customer_category_id)?.name || "selected customers";
+  const categoryName = form.customer_category_id
+    ? categories.find((item) => item.id === form.customer_category_id)?.name || "selected customers"
+    : "all customer categories";
   const scope = form.product_id
     ? "selected product"
     : form.sub_category
@@ -192,7 +203,7 @@ function buildApplicabilityLabel(form: typeof EMPTY_FORM, categories: CustomerCa
 function toFormFromRow(row: SchemeRow) {
   return {
     scheme_name: row.scheme_name,
-    customer_category_id: row.customer_category_id,
+    customer_category_id: row.customer_category_id || "",
     condition_basis: row.condition_basis,
     threshold_value: row.threshold_value,
     threshold_unit: row.threshold_unit,
@@ -245,6 +256,9 @@ export function SchemesAdminEditor() {
   const [newCategoryType, setNewCategoryType] = useState<CustomerType>("B2B");
   const [newCategoryPriceClass, setNewCategoryPriceClass] = useState<"A" | "B" | "C">("A");
 
+  /** Prevents stale list responses (slow GET finishing after a newer load) from clearing the table. */
+  const schemesLoadSeqRef = useRef(0);
+
   const thresholdUnitOptions = useMemo(() => {
     if (form.condition_basis === "VALUE") {
       return ["INR"] as ThresholdUnit[];
@@ -273,6 +287,7 @@ export function SchemesAdminEditor() {
       setRows([]);
       return;
     }
+    const seq = ++schemesLoadSeqRef.current;
     setLoading(true);
     setFeedback("");
     try {
@@ -285,16 +300,24 @@ export function SchemesAdminEditor() {
       }
       const path = params.size ? `/schemes?${params.toString()}` : "/schemes";
       const data = asArray(await fetchBackend(path));
+      if (seq !== schemesLoadSeqRef.current) {
+        return;
+      }
       setRows(data.map((row) => mapScheme(asObject(row))));
     } catch (error) {
+      if (seq !== schemesLoadSeqRef.current) {
+        return;
+      }
       setRows([]);
       const message = `Load failed: ${error instanceof Error ? error.message : "Unknown error"}`;
       setFeedback(message);
       toast.error(message);
     } finally {
-      setLoading(false);
+      if (seq === schemesLoadSeqRef.current) {
+        setLoading(false);
+      }
     }
-  }, [appliedSearch, statusFilter]);
+  }, [appliedSearch, statusFilter, canReadSchemes]);
 
   async function loadCategories() {
     if (!canReadSchemes) {
@@ -308,33 +331,56 @@ export function SchemesAdminEditor() {
     }
   }
 
-  async function loadScopeMeta() {
+  /** Same source as Add Product: active rows from `product_brands` master (not inferred only from existing products). */
+  async function loadBrandOptions() {
     if (!canReadSchemes) {
       return;
     }
+    const sortedUnique = (names: string[]) =>
+      [...new Set(names.map((n) => n.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+    let list: string[] = [];
     try {
-      const res = asObject(await fetchBackend("/schemes/meta/scope"));
-      setBrands(asArray(res.brands).map((item) => String(item)));
+      const res = asObject(await fetchBackendFresh("/masters/product-brands?page=1&page_size=1000"));
+      list = sortedUnique(
+        asArray(res.items).map((item) => String(asObject(item).name ?? ""))
+      );
     } catch {
-      setBrands([]);
+      /* e.g. no products.read — fall back below */
     }
+
+    if (list.length === 0) {
+      try {
+        const res = asObject(await fetchBackend("/schemes/meta/scope"));
+        list = sortedUnique(asArray(res.brands).map((item) => String(item)));
+      } catch (error) {
+        setBrands([]);
+        toast.error(error instanceof Error ? error.message : "Failed to load brands for scheme scope");
+        return;
+      }
+    }
+
+    setBrands(list);
   }
 
-  async function loadRewardProducts(searchText: string) {
+  async function loadRewardProducts(searchText: string, scopeBrand: string) {
     if (!canReadSchemes) {
       return;
     }
     try {
       const params = new URLSearchParams();
       params.set("limit", "50");
-      params.set("include_total", "false");
-      if (searchText.trim()) {
-        params.set("search", searchText.trim());
+      if (scopeBrand.trim()) {
+        params.set("brand", scopeBrand.trim());
       }
-      const res = asObject(await fetchBackend(`/masters/products?${params.toString()}`));
+      if (searchText.trim()) {
+        params.set("q", searchText.trim());
+      }
+      const res = asObject(await fetchBackend(`/schemes/meta/reward-products?${params.toString()}`));
       setRewardProductOptions(asArray(res.items).map((row) => mapProduct(asObject(row))));
-    } catch {
+    } catch (error) {
       setRewardProductOptions([]);
+      toast.error(error instanceof Error ? error.message : "Failed to load products for free item");
     }
   }
 
@@ -370,7 +416,7 @@ export function SchemesAdminEditor() {
       setLoading(false);
       return;
     }
-    void Promise.all([loadSchemes(), loadCategories(), loadScopeMeta()]);
+    void Promise.all([loadSchemes(), loadCategories(), loadBrandOptions()]);
   }, [permissionsLoaded, canReadSchemes, loadSchemes]);
 
   useEffect(() => {
@@ -445,11 +491,14 @@ export function SchemesAdminEditor() {
   }, [form.brand, form.category, form.sub_category]);
 
   useEffect(() => {
+    if (!createOpen || !canReadSchemes || form.reward_type !== "FREE_ITEM") {
+      return;
+    }
     const handle = window.setTimeout(() => {
-      void loadRewardProducts(rewardProductSearch);
+      void loadRewardProducts(rewardProductSearch, form.brand);
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [rewardProductSearch]);
+  }, [rewardProductSearch, createOpen, canReadSchemes, form.reward_type, form.brand]);
 
   async function createInlineCategory() {
     if (!canWriteSchemes) {
@@ -493,10 +542,6 @@ export function SchemesAdminEditor() {
       toast.error("Scheme name is required.");
       return;
     }
-    if (!form.customer_category_id) {
-      toast.error("Customer category is required.");
-      return;
-    }
     if (!form.threshold_value || Number(form.threshold_value) <= 0) {
       toast.error("Enter a valid threshold value.");
       return;
@@ -515,7 +560,7 @@ export function SchemesAdminEditor() {
     try {
       const payload = {
         scheme_name: form.scheme_name.trim(),
-        customer_category_id: form.customer_category_id,
+        customer_category_id: form.customer_category_id || null,
         condition_basis: form.condition_basis,
         threshold_value: Number(form.threshold_value),
         threshold_unit: form.threshold_unit,
@@ -650,14 +695,14 @@ export function SchemesAdminEditor() {
 
                 <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                   <div className="space-y-2">
-                    <Label htmlFor="scheme-category">Customer Category *</Label>
+                    <Label htmlFor="scheme-category">Customer Category</Label>
                     <select
                       id="scheme-category"
                       value={form.customer_category_id}
                       onChange={(e) => setForm((prev) => ({ ...prev, customer_category_id: e.target.value }))}
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     >
-                      <option value="">{categories.length ? "Select customer category" : "No customer categories available"}</option>
+                      <option value="">All customer categories</option>
                       {categories.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.name} ({item.customer_type} / {item.price_class})

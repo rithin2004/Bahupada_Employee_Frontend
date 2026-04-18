@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
 from jose import JWTError, jwt
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -140,22 +140,27 @@ async def _load_linked_entities(db: AsyncSession, user: User) -> tuple[Employee 
     return employee, role, customer
 
 
+def _identifier_match_clause(normalized: str):
+    """Match login identifier to username, phone, or email (emails compared case-insensitively)."""
+    parts = [User.username == normalized, User.phone == normalized]
+    if "@" in normalized:
+        parts.append(func.lower(User.email) == normalized.lower())
+    else:
+        parts.append(User.email == normalized)
+    return or_(*parts)
+
+
 async def _find_user(db: AsyncSession, identifier: str, portal: str | None) -> User | None:
     normalized = identifier.strip()
+    match = _identifier_match_clause(normalized)
     if portal is None:
-        stmt = select(User).where(or_(User.username == normalized, User.email == normalized, User.phone == normalized))
+        stmt = select(User).where(match)
         return (await db.execute(stmt.limit(1))).scalar_one_or_none()
     if portal == "CUSTOMER":
-        stmt = select(User).where(
-            User.account_type == AccountType.CUSTOMER,
-            or_(User.username == normalized, User.email == normalized, User.phone == normalized),
-        )
+        stmt = select(User).where(User.account_type == AccountType.CUSTOMER, match)
         return (await db.execute(stmt.limit(1))).scalar_one_or_none()
 
-    stmt = select(User).where(
-        User.account_type != AccountType.CUSTOMER,
-        or_(User.username == normalized, User.email == normalized, User.phone == normalized),
-    )
+    stmt = select(User).where(User.account_type != AccountType.CUSTOMER, match)
     return (await db.execute(stmt.limit(1))).scalar_one_or_none()
 
 

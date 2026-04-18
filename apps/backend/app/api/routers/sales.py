@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
 
@@ -39,6 +39,7 @@ from app.models.entities import (
     Pricing,
     HSNMaster,
     InventoryBatch,
+    StockMovement,
     Unit,
 )
 from app.schemas.sales import (
@@ -67,7 +68,12 @@ from app.schemas.finance import PartyLedgerStatementResponse
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
 from app.services.finance import get_party_ledger_statement, post_customer_sales_invoice_receivable, post_party_ledger_entry
 from app.services.pricing import resolve_price_for_customer
-from app.services.schemes import apply_schemes_to_sales_order, build_sales_order_preview
+from app.services.schemes import (
+    apply_schemes_to_sales_order,
+    build_sales_order_preview,
+    serialize_scheme_for_sales_popup,
+    split_schemes_for_product_line,
+)
 from app.services.stock import (
     consume_reserved_stock_for_final_invoice,
     consume_reserved_stock_for_final_invoice_quantities,
@@ -169,7 +175,7 @@ async def _build_sales_product_summary(db: AsyncSession, product: Product) -> Sa
         hsn_code=hsn.hsn_code if hsn else None,
         tax_percent=Decimal(product.tax_percent or 0),
         mrp=Decimal(pricing.mrp if pricing else 0),
-        selling_price=Decimal(pricing.selling_price if pricing else 0),
+        selling_price=Decimal(pricing.a_class_price if pricing else 0),
         unit_1st_name=await _unit_name(db, product.primary_unit_id),
         unit_2nd_name=await _unit_name(db, product.secondary_unit_id),
         unit_3rd_name=await _unit_name(db, product.third_unit_id),
@@ -262,6 +268,34 @@ async def get_sales_entry_customer_ledger(
     except ValueError as exc:
         code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
+@router.get(
+    "/sales-entry/schemes/available",
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def sales_entry_schemes_available(
+    product_id: uuid.UUID = Query(...),
+    customer_id: uuid.UUID = Query(...),
+    as_of_date: date | None = Query(None, description="Bill / order date; defaults to today"),
+    db: AsyncSession = Depends(get_db),
+    auth: AuthUserInfo = Depends(require_any_portal),
+):
+    """Schemes active for the customer on the given date: those whose product scope matches the line, vs all other active schemes."""
+    if auth.portal == "CUSTOMER" and auth.customer_id != str(customer_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Customer access denied")
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    product = await db.get(Product, product_id)
+    if product is None or not product.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    target = as_of_date or date.today()
+    matching, other = await split_schemes_for_product_line(db, customer=customer, product=product, as_of_date=target)
+    return {
+        "for_product": [await serialize_scheme_for_sales_popup(db, s) for s in matching],
+        "other_active": [await serialize_scheme_for_sales_popup(db, s) for s in other],
+    }
 
 
 @router.post("/sales-orders/preview", response_model=SalesOrderPreviewResponse, dependencies=[Depends(require_permission("sales", "read"))])

@@ -298,6 +298,7 @@ async def _build_product_summary(db: AsyncSession, product: Product, vendor_id: 
     hsn = await db.get(HSNMaster, product.hsn_id) if product.hsn_id else None
     category = await db.get(ProductCategory, product.category_id) if product.category_id else None
     sub_category = await db.get(ProductSubCategory, product.sub_category_id) if product.sub_category_id else None
+    brand = await db.get(ProductBrand, product.brand_id) if product.brand_id else None
     stock_total = (
         await db.execute(
             select(func.coalesce(func.sum(InventoryBatch.available_quantity), Decimal("0"))).where(InventoryBatch.product_id == product.id)
@@ -337,7 +338,7 @@ async def _build_product_summary(db: AsyncSession, product: Product, vendor_id: 
         product_id=product.id,
         sku=product.sku,
         name=product.name,
-        brand=product.brand,
+        brand=brand.name if brand else product.brand,
         description=product.description,
         hsn_code=hsn.hsn_code if hsn else None,
         tax_percent=Decimal(product.tax_percent or 0),
@@ -841,6 +842,25 @@ async def create_purchase_challan(
                 batch_number=batch_no,
                 expiry_date=item.expiry_date,
                 quantity=item.quantity,
+                quantity_1st=item.quantity_1st,
+                quantity_2nd=item.quantity_2nd,
+                quantity_3rd=item.quantity_3rd,
+                unit_1st_id=item.unit_1st_id,
+                unit_2nd_id=item.unit_2nd_id,
+                unit_3rd_id=item.unit_3rd_id,
+                base_quantity=item.base_quantity,
+                damaged_quantity=item.damaged_quantity,
+                unit_price=item.unit_price,
+                purchase_price=item.purchase_price,
+                rate_value=item.rate_value,
+                rate_unit_level=item.rate_unit_level,
+                discount_percent=item.discount_percent,
+                discount_lumpsum=item.discount_lumpsum,
+                line_subtotal=item.line_subtotal,
+                line_discount_amount=item.line_discount_amount,
+                line_taxable_amount=item.line_taxable_amount,
+                line_tax_amount=item.line_tax_amount,
+                line_total_amount=item.line_total_amount,
             )
         )
         batch_res = await db.execute(
@@ -970,15 +990,41 @@ async def get_purchase_challan(purchase_challan_id: uuid.UUID, db: AsyncSession 
                 "batch_no": item.batch_number,
                 "expiry_date": str(item.expiry_date) if item.expiry_date else "",
                 "quantity": str(item.quantity or 0),
+                "quantity_1st": str(item.quantity_1st or 0) if item.quantity_1st is not None else None,
+                "quantity_2nd": str(item.quantity_2nd or 0) if item.quantity_2nd is not None else None,
+                "quantity_3rd": str(item.quantity_3rd or 0) if item.quantity_3rd is not None else None,
+                "unit_1st_id": str(item.unit_1st_id) if item.unit_1st_id else None,
+                "unit_2nd_id": str(item.unit_2nd_id) if item.unit_2nd_id else None,
+                "unit_3rd_id": str(item.unit_3rd_id) if item.unit_3rd_id else None,
+                "base_quantity": str(item.base_quantity or 0) if item.base_quantity is not None else None,
+                "damaged_quantity": str(item.damaged_quantity or 0),
+                "unit_price": str(item.unit_price or 0),
+                "purchase_price": str(item.purchase_price or 0) if item.purchase_price is not None else None,
+                "rate_value": str(item.rate_value or 0) if item.rate_value is not None else None,
+                "rate_unit_level": item.rate_unit_level,
+                "discount_percent": str(item.discount_percent or 0) if item.discount_percent is not None else None,
+                "discount_lumpsum": str(item.discount_lumpsum or 0) if item.discount_lumpsum is not None else None,
+                "line_subtotal": str(item.line_subtotal or 0) if item.line_subtotal is not None else None,
+                "line_discount_amount": str(item.line_discount_amount or 0) if item.line_discount_amount is not None else None,
+                "line_taxable_amount": str(item.line_taxable_amount or 0) if item.line_taxable_amount is not None else None,
+                "line_tax_amount": str(item.line_tax_amount or 0) if item.line_tax_amount is not None else None,
+                "line_total_amount": str(item.line_total_amount or 0) if item.line_total_amount is not None else None,
             }
         )
 
+    # PurchaseChallan has no received_date / payment_mode / freight_amount / notes columns
+    # (those exist on purchase_bills). Expose defaults so the purchase entry UI can load challans.
     return {
         "id": str(challan.id),
         "reference_no": challan.reference_no,
         "vendor_id": str(challan.vendor_id),
         "warehouse_id": str(challan.warehouse_id),
         "rack_id": str(challan.rack_id) if challan.rack_id else None,
+        "challan_date": str(challan.challan_date) if challan.challan_date else None,
+        "received_date": str(challan.challan_date) if challan.challan_date else None,
+        "payment_mode": "CREDIT",
+        "freight_amount": "0",
+        "notes": None,
         "items": item_rows,
     }
 
@@ -1014,6 +1060,25 @@ async def update_purchase_challan(
                     batch_number=batch_no,
                     expiry_date=item.expiry_date,
                     quantity=item.quantity,
+                    quantity_1st=item.quantity_1st,
+                    quantity_2nd=item.quantity_2nd,
+                    quantity_3rd=item.quantity_3rd,
+                    unit_1st_id=item.unit_1st_id,
+                    unit_2nd_id=item.unit_2nd_id,
+                    unit_3rd_id=item.unit_3rd_id,
+                    base_quantity=item.base_quantity,
+                    damaged_quantity=item.damaged_quantity,
+                    unit_price=item.unit_price,
+                    purchase_price=item.purchase_price,
+                    rate_value=item.rate_value,
+                    rate_unit_level=item.rate_unit_level,
+                    discount_percent=item.discount_percent,
+                    discount_lumpsum=item.discount_lumpsum,
+                    line_subtotal=item.line_subtotal,
+                    line_discount_amount=item.line_discount_amount,
+                    line_taxable_amount=item.line_taxable_amount,
+                    line_tax_amount=item.line_tax_amount,
+                    line_total_amount=item.line_total_amount,
                 )
             )
             batch_res = await db.execute(

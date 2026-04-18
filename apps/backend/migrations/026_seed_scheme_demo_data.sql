@@ -494,6 +494,7 @@ BEGIN
         INSERT INTO schemes (
             id,
             scheme_name,
+            scheme_type,
             customer_category_id,
             condition_basis,
             threshold_value,
@@ -516,6 +517,7 @@ BEGIN
         VALUES (
             gen_random_uuid(),
             'Demo Honey 10 Percent Off',
+            'DISCOUNT',
             v_customer_category,
             'VALUE',
             300,
@@ -546,6 +548,7 @@ BEGIN
         INSERT INTO schemes (
             id,
             scheme_name,
+            scheme_type,
             customer_category_id,
             condition_basis,
             threshold_value,
@@ -568,6 +571,7 @@ BEGIN
         VALUES (
             gen_random_uuid(),
             'Demo Honey Free Sample',
+            'FREE_ITEM',
             v_customer_category,
             'QUANTITY',
             3,

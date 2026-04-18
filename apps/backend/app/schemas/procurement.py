@@ -8,6 +8,25 @@ from pydantic import BaseModel, model_validator
 class PurchaseChallanItemIn(BaseModel):
     product_id: uuid.UUID
     quantity: Decimal
+    quantity_1st: Decimal | None = None
+    quantity_2nd: Decimal | None = None
+    quantity_3rd: Decimal | None = None
+    unit_1st_id: uuid.UUID | None = None
+    unit_2nd_id: uuid.UUID | None = None
+    unit_3rd_id: uuid.UUID | None = None
+    base_quantity: Decimal | None = None
+    damaged_quantity: Decimal = Decimal("0")
+    unit_price: Decimal | None = None
+    purchase_price: Decimal | None = None
+    rate_value: Decimal | None = None
+    rate_unit_level: int | None = None
+    discount_percent: Decimal | None = None
+    discount_lumpsum: Decimal | None = None
+    line_subtotal: Decimal | None = None
+    line_discount_amount: Decimal | None = None
+    line_taxable_amount: Decimal | None = None
+    line_tax_amount: Decimal | None = None
+    line_total_amount: Decimal | None = None
     expiry_date: date | None = None
 
 

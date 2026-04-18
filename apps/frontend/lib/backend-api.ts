@@ -15,6 +15,21 @@ const PORTAL_ME_TTL_MS = 1000 * 60 * 5;
 let refreshInFlight: Promise<string> | null = null;
 let meInFlight: Promise<Record<string, unknown>> | null = null;
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
+/** Bumped on cache invalidation so in-flight GETs do not upsert stale payloads after mutations. */
+let apiCacheGeneration = 0;
+
+function applyCacheInvalidation(prefixes: string[]) {
+  if (!prefixes.length) {
+    return;
+  }
+  apiCacheGeneration++;
+  for (const key of [...inFlightGetRequests.keys()]) {
+    if (prefixes.some((p) => key.startsWith(p))) {
+      inFlightGetRequests.delete(key);
+    }
+  }
+  store.dispatch(invalidateByPrefixes(prefixes));
+}
 
 type PortalSession = {
   portal: string;
@@ -82,6 +97,7 @@ async function requestBackend(path: string, init?: RequestInit) {
   }
 
   const execute = async () => {
+    const fetchStartGen = apiCacheGeneration;
     const response = await fetchWithPortalAuth(normalizedPath, init);
     const networkDoneAt = nowMs();
     logApiLatency(method, normalizedPath, networkDoneAt - start, "network", response.status);
@@ -107,9 +123,11 @@ async function requestBackend(path: string, init?: RequestInit) {
     logApiPhase(method, normalizedPath, "request-total", parseDoneAt - start, response.status);
 
     if (isBrowser && method === "GET") {
-      store.dispatch(upsertEntry({ key: cacheKey, data: payload }));
+      if (fetchStartGen === apiCacheGeneration) {
+        store.dispatch(upsertEntry({ key: cacheKey, data: payload }));
+      }
     } else if (isBrowser) {
-      store.dispatch(invalidateByPrefixes(resolveInvalidationPrefixes(normalizedPath)));
+      applyCacheInvalidation(resolveInvalidationPrefixes(normalizedPath));
     }
 
     return payload;
@@ -434,8 +452,7 @@ async function fetchBackend(path: string) {
 async function fetchBackendFresh(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   if (typeof window !== "undefined") {
-    store.dispatch(invalidateByPrefixes([normalizedPath]));
-    inFlightGetRequests.delete(normalizedPath);
+    applyCacheInvalidation([normalizedPath]);
   }
   return requestBackend(normalizedPath, { method: "GET" });
 }
@@ -472,7 +489,7 @@ async function postBackendForm(path: string, body: FormData) {
 
   const payload = await response.json();
   if (typeof window !== "undefined") {
-    store.dispatch(invalidateByPrefixes(resolveInvalidationPrefixes(normalizedPath)));
+    applyCacheInvalidation(resolveInvalidationPrefixes(normalizedPath));
   }
   return payload;
 }
