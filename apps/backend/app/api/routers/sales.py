@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -292,9 +293,16 @@ async def sales_entry_schemes_available(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
     target = as_of_date or date.today()
     matching, other = await split_schemes_for_product_line(db, customer=customer, product=product, as_of_date=target)
+    # Serialize in parallel — sequential await per scheme was N round-trips and felt slow in the UI.
+    for_product = (
+        await asyncio.gather(*[serialize_scheme_for_sales_popup(db, s) for s in matching]) if matching else []
+    )
+    other_active = (
+        await asyncio.gather(*[serialize_scheme_for_sales_popup(db, s) for s in other]) if other else []
+    )
     return {
-        "for_product": [await serialize_scheme_for_sales_popup(db, s) for s in matching],
-        "other_active": [await serialize_scheme_for_sales_popup(db, s) for s in other],
+        "for_product": list(for_product),
+        "other_active": list(other_active),
     }
 
 

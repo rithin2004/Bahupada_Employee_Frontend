@@ -10,6 +10,7 @@ def _cors_allow_origins() -> list[str]:
     """
     Browsers reject Access-Control-Allow-Origin: * together with credentials.
     When CORS_ALLOW_ORIGINS is '*', expand to common local dev origins so cookies / auth headers work.
+    In production, set CORS_ALLOW_ORIGINS to a comma-separated list (e.g. https://employee.example.com).
     """
     raw = settings.cors_allow_origins.strip()
     if raw == "*":

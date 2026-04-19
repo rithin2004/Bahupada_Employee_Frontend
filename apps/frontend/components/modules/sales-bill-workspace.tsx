@@ -262,6 +262,33 @@ function formatDisplayDate(iso: string) {
   return y && m && d ? `${d}-${m}-${y}` : iso;
 }
 
+function SchemesPopoverSkeleton() {
+  const bar = (className: string) => <div className={cn("animate-pulse rounded bg-[#dde6dc]", className)} />;
+  const card = (key: string) => (
+    <div key={key} className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-2">
+      {bar("h-3 w-[72%]")}
+      {bar("h-2.5 w-[48%]")}
+      {bar("h-2 w-full")}
+      {bar("mt-1 h-7 w-full rounded-md")}
+    </div>
+  );
+  return (
+    <div className="grid gap-0 md:grid-cols-2">
+      <div className="border-r border-border p-3">
+        {bar("mb-2 h-3 w-36")}
+        <div className="space-y-2">
+          {card("a")}
+          {card("b")}
+        </div>
+      </div>
+      <div className="p-3">
+        {bar("mb-2 h-3 w-32")}
+        <div className="space-y-2">{card("c")}</div>
+      </div>
+    </div>
+  );
+}
+
 function parseDateInput(input: string): string | null {
   const trimmed = input.replace(/[^0-9]/g, "");
   if (trimmed.length !== 8) {
@@ -522,6 +549,140 @@ function lineUnitPrice(line: LineDraft) {
   return rate;
 }
 
+/** Mirrors backend scheme scope for sales lines (product summary has limited master fields). */
+function productMatchesSchemeScope(product: ProductSummary, scheme: SalesEntrySchemeOption): boolean {
+  if (scheme.product_id && String(scheme.product_id) !== String(product.product_id)) {
+    return false;
+  }
+  if (scheme.brand && (product.brand || "").trim() !== scheme.brand.trim()) {
+    return false;
+  }
+  if ((scheme.category || scheme.sub_category) && !scheme.product_id) {
+    return false;
+  }
+  return true;
+}
+
+function computeLineSchemeMetric(line: LineDraft, scheme: SalesEntrySchemeOption): number {
+  if (!line.product || line.schemePreviewFree) return 0;
+  if (!productMatchesSchemeScope(line.product, scheme)) return 0;
+  const basis = (scheme.condition_basis || "QTY").toUpperCase();
+  const baseQty = lineBaseQuantity(line);
+  if (basis === "VALUE") {
+    return baseQty * lineUnitPrice(line);
+  }
+  if (basis === "WEIGHT") {
+    const w = asDecimal(line.product.weight_in_grams || "0");
+    const grams = baseQty * w;
+    if ((scheme.threshold_unit || "").toUpperCase() === "KG") {
+      return grams / 1000;
+    }
+    return grams;
+  }
+  return baseQty;
+}
+
+function computeBillSchemeMetric(lines: LineDraft[], scheme: SalesEntrySchemeOption): number {
+  return lines.reduce((sum, line) => sum + computeLineSchemeMetric(line, scheme), 0);
+}
+
+/**
+ * If the bill is below the scheme threshold, return a quantity patch for the target row so the
+ * line alone can satisfy the shortfall (same idea as server apply_schemes_to_sales_order gating).
+ */
+function buildSchemeThresholdQtyPatch(
+  lines: LineDraft[],
+  scheme: SalesEntrySchemeOption,
+  targetRowIndex: number,
+): { ok: true; patch: Partial<LineDraft> } | { ok: false } {
+  const threshold = asDecimal(scheme.threshold_value);
+  if (threshold <= 0) {
+    return { ok: true, patch: {} };
+  }
+
+  const target = lines[targetRowIndex];
+  if (!target?.product) {
+    toast.error("Select a product on this line before applying the scheme.");
+    return { ok: false };
+  }
+  if (!productMatchesSchemeScope(target.product, scheme)) {
+    toast.error("This product is not in scope for the selected scheme.");
+    return { ok: false };
+  }
+
+  const totalMetric = computeBillSchemeMetric(lines, scheme);
+  if (totalMetric + 1e-6 >= threshold) {
+    return { ok: true, patch: {} };
+  }
+
+  const targetContrib = computeLineSchemeMetric(target, scheme);
+  const otherMetric = totalMetric - targetContrib;
+  const needFromTarget = threshold - otherMetric;
+
+  const basis = (scheme.condition_basis || "QTY").toUpperCase();
+  const curBase = lineBaseQuantity(target);
+  const unitPrice = lineUnitPrice(target);
+
+  let newBase = curBase;
+
+  if (basis === "VALUE") {
+    if (unitPrice <= 0) {
+      toast.error("Set a selling rate on the line before applying this value-based scheme.");
+      return { ok: false };
+    }
+    newBase = Math.max(curBase, Math.ceil(needFromTarget / unitPrice - 1e-9));
+  } else if (basis === "WEIGHT") {
+    const w = asDecimal(target.product.weight_in_grams || "0");
+    if (w <= 0) {
+      toast.error("Product weight is required for this weight-based scheme.");
+      return { ok: false };
+    }
+    const isKg = (scheme.threshold_unit || "").toUpperCase() === "KG";
+    const needGrams = isKg ? needFromTarget * 1000 : needFromTarget;
+    newBase = Math.max(curBase, Math.ceil(needGrams / w - 1e-9));
+  } else {
+    newBase = Math.max(curBase, Math.ceil(needFromTarget - 1e-9));
+  }
+
+  if (newBase <= curBase) {
+    return { ok: true, patch: {} };
+  }
+
+  const q1 = asDecimal(target.quantity1);
+  const q2 = asDecimal(target.quantity2);
+  const q3 = asDecimal(target.quantity3);
+  const add = newBase - curBase;
+  const nextQ1 = q1 + add;
+  if (q2 !== 0 || q3 !== 0) {
+    toast.info(
+      `Adjusted base quantity on ${target.product.unit_1st_name || "1st unit"} to meet threshold. Verify 2nd/3rd units if needed.`,
+    );
+  }
+  return { ok: true, patch: { quantity1: String(nextQ1) } };
+}
+
+function applyQuantityPatchToLineDraft(line: LineDraft, patch: Partial<LineDraft>): LineDraft {
+  let next = { ...line, ...patch };
+  if (next.product) {
+    const baseQty = lineBaseQuantity(next);
+    const subtotal = baseQty * lineUnitPrice(next);
+    if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
+      const pct = asDecimal(patch.discountPercent);
+      next.discountLumpsum = subtotal > 0 ? (subtotal * (pct / 100)).toFixed(2) : "0.00";
+    } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
+      const amt = asDecimal(patch.discountLumpsum);
+      next.discountPercent = subtotal > 0 ? ((amt / subtotal) * 100).toFixed(2) : "0.00";
+    } else if (
+      ("quantity1" in patch || "quantity2" in patch || "quantity3" in patch || "rateValue" in patch || "rateUnitLevel" in patch) &&
+      subtotal > 0
+    ) {
+      const pct = asDecimal(next.discountPercent);
+      next.discountLumpsum = (subtotal * (pct / 100)).toFixed(2);
+    }
+  }
+  return { ...next, amount: computeLineAmount(next).toFixed(2) };
+}
+
 function computeLineAmount(line: LineDraft) {
   if (!line.product) return 0;
   const baseQty = lineBaseQuantity(line);
@@ -683,6 +844,8 @@ export function SalesBillWorkspace({
   const [schemeForProduct, setSchemeForProduct] = useState<SalesEntrySchemeOption[]>([]);
   const [schemeOtherActive, setSchemeOtherActive] = useState<SalesEntrySchemeOption[]>([]);
   const [schemePopoverLoading, setSchemePopoverLoading] = useState(false);
+  /** Bumps on each schemes fetch so stale responses do not overwrite state or clear loading early. */
+  const schemeLoadGenRef = useRef(0);
   const [rateUnitPicker, setRateUnitPicker] = useState<{ rowIndex: number; optionIndex: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
@@ -1237,7 +1400,7 @@ export function SalesBillWorkspace({
     setTaxType(((customer.sales_type || deriveTaxType(warehouseState, customer.state)) as "LOCAL" | "CENTRAL") || "CENTRAL");
     setCustomerSearchOpen(false);
     setCustomerSearch("");
-    setTimeout(() => billNumberRef.current?.focus(), 0);
+    setTimeout(() => paymentModeRef.current?.focus(), 0);
   }, [warehouseState]);
 
   const updateLine = useCallback((index: number, patch: Partial<LineDraft>) => {
@@ -1488,6 +1651,7 @@ export function SalesBillWorkspace({
       if (!line?.product || !customerSummary || line.schemePreviewFree) {
         return;
       }
+      const loadId = ++schemeLoadGenRef.current;
       setSchemePopoverLoading(true);
       try {
         const params = new URLSearchParams({
@@ -1496,14 +1660,18 @@ export function SalesBillWorkspace({
           as_of_date: billDate,
         });
         const res = asObject(await fetchBackend(`/sales/sales-entry/schemes/available?${params.toString()}`));
+        if (loadId !== schemeLoadGenRef.current) return;
         setSchemeForProduct(asArray(res.for_product).map((item) => mapSalesSchemeOption(asObject(item))));
         setSchemeOtherActive(asArray(res.other_active).map((item) => mapSalesSchemeOption(asObject(item))));
       } catch {
+        if (loadId !== schemeLoadGenRef.current) return;
         toast.error("Could not load schemes");
         setSchemeForProduct([]);
         setSchemeOtherActive([]);
       } finally {
-        setSchemePopoverLoading(false);
+        if (loadId === schemeLoadGenRef.current) {
+          setSchemePopoverLoading(false);
+        }
       }
     },
     [customerSummary, billDate],
@@ -1524,9 +1692,19 @@ export function SalesBillWorkspace({
 
   const applySchemeToLine = useCallback(
     async (scheme: SalesEntrySchemeOption, targetRowIndex: number) => {
+      const thresholdResult = buildSchemeThresholdQtyPatch(linesRef.current, scheme, targetRowIndex);
+      if (!thresholdResult.ok) {
+        return;
+      }
+      const qtyPatch = thresholdResult.patch;
+
       if (scheme.reward_type === "DISCOUNT" && scheme.reward_discount_percent) {
-        updateLine(targetRowIndex, { discountPercent: scheme.reward_discount_percent });
-        toast.success(`Applied “${scheme.scheme_name}”: ${scheme.reward_discount_percent}% discount (confirm at save).`);
+        updateLine(targetRowIndex, { ...qtyPatch, discountPercent: scheme.reward_discount_percent });
+        const extra =
+          Object.keys(qtyPatch).length > 0
+            ? ` Quantity updated to meet threshold (${scheme.condition_basis} ≥ ${scheme.threshold_value}${scheme.threshold_unit ? ` ${scheme.threshold_unit}` : ""}).`
+            : "";
+        toast.success(`Applied “${scheme.scheme_name}”: ${scheme.reward_discount_percent}% discount.${extra}`);
         setSchemePopoverOpen(false);
         return;
       }
@@ -1552,12 +1730,22 @@ export function SalesBillWorkspace({
           };
           freeLine.amount = computeLineAmount(freeLine).toFixed(2);
           setLines((prev) => {
-            const core = prev.filter((l) => !l.schemePreviewFree);
+            const withQty = prev.map((line, idx) => {
+              if (idx !== targetRowIndex) return line;
+              if (Object.keys(qtyPatch).length === 0) return line;
+              return applyQuantityPatchToLineDraft(line, qtyPatch);
+            });
+            const core = withQty.filter((l) => !l.schemePreviewFree);
             const lastEmpty = core.length > 0 && core[core.length - 1].product === null;
             const withoutTrailing = lastEmpty ? core.slice(0, -1) : core;
             return [...withoutTrailing, freeLine, makeLine()];
           });
-          toast.success(`Added preview row for free item from “${scheme.scheme_name}”. Saved as 0 value; stock applies on save.`);
+          toast.success(
+            `Added preview row for free item from “${scheme.scheme_name}”.` +
+              (Object.keys(qtyPatch).length > 0
+                ? ` Main line quantity set to meet threshold (${scheme.condition_basis} ≥ ${scheme.threshold_value}).`
+                : ""),
+          );
           setSchemePopoverOpen(false);
         } catch (e) {
           toast.error(e instanceof Error ? e.message : "Could not load free product");
@@ -2329,8 +2517,8 @@ export function SalesBillWorkspace({
                           )}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} readOnly={viewOnly && !!line.product?.unit_3rd_name} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); onQuantityCellFocus(index); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-7 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput, index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} readOnly={viewOnly && !!line.product?.unit_2nd_name} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); onQuantityCellFocus(index); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-7 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput, index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} readOnly={viewOnly && !!line.product?.unit_3rd_name} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-7 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput, index === activeRow && activeField === "quantity3" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} readOnly={viewOnly && !!line.product?.unit_2nd_name} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-7 w-full rounded-none border-x-0 border-y-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput, index === activeRow && activeField === "quantity2" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
                       <TableCell className="w-[75px] py-0.5">
                         <Popover
                           open={schemePopoverOpen && schemePopoverRow === index}
@@ -2374,78 +2562,76 @@ export function SalesBillWorkspace({
                             <div className="border-b bg-[#eef1ea] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[#5b655f]">
                               Schemes (bill date {formatDisplayDate(billDate)})
                             </div>
-                            <div className="grid gap-0 md:grid-cols-2">
-                              <div className="border-r border-border p-3">
-                                <div className="mb-2 text-[11px] font-semibold text-[#2f5d50]">Matching this product</div>
-                                {schemePopoverLoading ? (
-                                  <p className="text-sm text-muted-foreground">Loading…</p>
-                                ) : schemeForProduct.length === 0 ? (
-                                  <p className="text-sm text-muted-foreground">No schemes scoped to this product.</p>
-                                ) : (
-                                  <ul className="space-y-2">
-                                    {schemeForProduct.map((s) => (
-                                      <li key={s.id} className="rounded-md border bg-card p-2 text-xs">
-                                        <div className="font-semibold leading-tight">{s.scheme_name}</div>
-                                        <div className="mt-0.5 text-[10px] text-muted-foreground">{s.customer_category_name}</div>
-                                        <div className="mt-1 text-[10px] text-[#5b655f]">
-                                          Threshold: {s.condition_basis} {s.threshold_value} {s.threshold_unit}
-                                        </div>
-                                        <div className="mt-1 font-medium">
-                                          {s.reward_type === "DISCOUNT"
-                                            ? `${s.reward_discount_percent ?? "0"}% discount`
-                                            : `Free: ${s.reward_product_name ?? "item"} × ${s.reward_product_quantity ?? ""}`}
-                                        </div>
-                                        <Button
-                                          type="button"
-                                          variant="secondary"
-                                          size="sm"
-                                          className="mt-2 h-7 w-full text-xs"
-                                          disabled={!canWriteSales}
-                                          onClick={() => void applySchemeToLine(s, index)}
-                                        >
-                                          Apply
-                                        </Button>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                )}
+                            {schemePopoverLoading ? (
+                              <SchemesPopoverSkeleton />
+                            ) : (
+                              <div className="grid gap-0 md:grid-cols-2">
+                                <div className="border-r border-border p-3">
+                                  <div className="mb-2 text-[11px] font-semibold text-[#2f5d50]">Matching this product</div>
+                                  {schemeForProduct.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground">No schemes scoped to this product.</p>
+                                  ) : (
+                                    <ul className="space-y-2">
+                                      {schemeForProduct.map((s) => (
+                                        <li key={s.id} className="rounded-md border bg-card p-2 text-xs">
+                                          <div className="font-semibold leading-tight">{s.scheme_name}</div>
+                                          <div className="mt-0.5 text-[10px] text-muted-foreground">{s.customer_category_name}</div>
+                                          <div className="mt-1 text-[10px] text-[#5b655f]">
+                                            Threshold: {s.condition_basis} {s.threshold_value} {s.threshold_unit}
+                                          </div>
+                                          <div className="mt-1 font-medium">
+                                            {s.reward_type === "DISCOUNT"
+                                              ? `${s.reward_discount_percent ?? "0"}% discount`
+                                              : `Free: ${s.reward_product_name ?? "item"} × ${s.reward_product_quantity ?? ""}`}
+                                          </div>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            className="mt-2 h-7 w-full border-0 bg-[#111714] text-xs font-semibold text-white hover:bg-[#111714]/90"
+                                            disabled={!canWriteSales}
+                                            onClick={() => void applySchemeToLine(s, index)}
+                                          >
+                                            Apply
+                                          </Button>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                                <div className="p-3">
+                                  <div className="mb-2 text-[11px] font-semibold text-[#5b655f]">Other active schemes</div>
+                                  {schemeOtherActive.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground">None</p>
+                                  ) : (
+                                    <ul className="space-y-2">
+                                      {schemeOtherActive.map((s) => (
+                                        <li key={s.id} className="rounded-md border bg-card p-2 text-xs">
+                                          <div className="font-semibold leading-tight">{s.scheme_name}</div>
+                                          <div className="mt-0.5 text-[10px] text-muted-foreground">{s.customer_category_name}</div>
+                                          <div className="mt-1 text-[10px] text-[#5b655f]">
+                                            Threshold: {s.condition_basis} {s.threshold_value} {s.threshold_unit}
+                                          </div>
+                                          <div className="mt-1 font-medium">
+                                            {s.reward_type === "DISCOUNT"
+                                              ? `${s.reward_discount_percent ?? "0"}% discount`
+                                              : `Free: ${s.reward_product_name ?? "item"} × ${s.reward_product_quantity ?? ""}`}
+                                          </div>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            className="mt-2 h-7 w-full border-0 bg-[#111714] text-xs font-semibold text-white hover:bg-[#111714]/90"
+                                            disabled={!canWriteSales}
+                                            onClick={() => void applySchemeToLine(s, index)}
+                                          >
+                                            Apply
+                                          </Button>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
                               </div>
-                              <div className="p-3">
-                                <div className="mb-2 text-[11px] font-semibold text-[#5b655f]">Other active schemes</div>
-                                {schemePopoverLoading ? (
-                                  <p className="text-sm text-muted-foreground">Loading…</p>
-                                ) : schemeOtherActive.length === 0 ? (
-                                  <p className="text-sm text-muted-foreground">None</p>
-                                ) : (
-                                  <ul className="space-y-2">
-                                    {schemeOtherActive.map((s) => (
-                                      <li key={s.id} className="rounded-md border bg-card p-2 text-xs">
-                                        <div className="font-semibold leading-tight">{s.scheme_name}</div>
-                                        <div className="mt-0.5 text-[10px] text-muted-foreground">{s.customer_category_name}</div>
-                                        <div className="mt-1 text-[10px] text-[#5b655f]">
-                                          Threshold: {s.condition_basis} {s.threshold_value} {s.threshold_unit}
-                                        </div>
-                                        <div className="mt-1 font-medium">
-                                          {s.reward_type === "DISCOUNT"
-                                            ? `${s.reward_discount_percent ?? "0"}% discount`
-                                            : `Free: ${s.reward_product_name ?? "item"} × ${s.reward_product_quantity ?? ""}`}
-                                        </div>
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          size="sm"
-                                          className="mt-2 h-7 w-full text-xs"
-                                          disabled={!canWriteSales}
-                                          onClick={() => void applySchemeToLine(s, index)}
-                                        >
-                                          Apply
-                                        </Button>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                )}
-                              </div>
-                            </div>
+                            )}
                             <p className="border-t px-3 py-2 text-[10px] text-muted-foreground">
                               Final discount and free lines are enforced on save from scheme rules. Universal schemes apply to all customer categories.
                             </p>
@@ -2745,15 +2931,6 @@ export function SalesBillWorkspace({
                   </div>
                 </div>
               )}
-            </div>
-            <div className="bg-[#fbfcf7] p-4 text-sm">
-              <div className="space-y-2 text-xs text-muted-foreground">
-                <div><span className="font-semibold text-foreground">Enter</span> move next</div>
-                <div><span className="font-semibold text-foreground">Arrow keys</span> navigate grid</div>
-                <div><span className="font-semibold text-foreground">Esc</span> close selector</div>
-                <div><span className="font-semibold text-foreground">F4</span> edit product</div>
-                <div><span className="font-semibold text-foreground">Ctrl+S</span> save</div>
-              </div>
             </div>
           </div>
         </div>
@@ -3316,7 +3493,7 @@ export function SalesBillWorkspace({
                 setCustomerSummary(createdSummary);
                 setCustomerSearchOpen(false);
                 toast.success("Customer created");
-                setTimeout(() => billNumberRef.current?.focus(), 0);
+                setTimeout(() => paymentModeRef.current?.focus(), 0);
               } catch (error) {
                 toast.error(error instanceof Error ? error.message : "Failed to create customer");
               } finally {

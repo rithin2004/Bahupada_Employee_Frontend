@@ -2665,16 +2665,6 @@ export function PurchaseEntryWorkspace({
                   </div>
                 </div>
               )}
-              <div className="border-t pt-3 mt-3">
-                <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Shortcuts</div>
-                <div className="space-y-2 text-xs text-muted-foreground">
-                  <div><span className="font-semibold text-foreground">Enter</span> move next</div>
-                  <div><span className="font-semibold text-foreground">Arrow Up/Down</span> selector navigation</div>
-                  <div><span className="font-semibold text-foreground">Esc</span> close current selector</div>
-                  <div><span className="font-semibold text-foreground">F4</span> edit active product</div>
-                  <div><span className="font-semibold text-foreground">Ctrl+S</span> save bill</div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
