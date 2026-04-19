@@ -238,14 +238,14 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
 
       <div className="mx-auto flex min-h-screen max-w-[1680px]">
         <div
-          className="relative hidden lg:block lg:w-[60px] lg:shrink-0"
+          className="relative hidden lg:block lg:w-[88px] lg:shrink-0"
           onMouseEnter={() => setDesktopSidebarExpanded(true)}
           onMouseLeave={() => setDesktopSidebarExpanded(false)}
         >
           <aside
             className={cn(
               "fixed inset-y-0 left-0 z-30 hidden border-r bg-card/98 shadow-sm backdrop-blur transition-[width] duration-200 ease-out lg:block",
-              desktopSidebarExpanded ? "w-[248px]" : "w-[60px]"
+              desktopSidebarExpanded ? "w-[248px]" : "w-[88px]"
             )}
           >
             <div className="flex h-full min-h-0 flex-col p-2.5">
@@ -265,7 +265,7 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
               </div>
               <Separator className="mb-2 shrink-0" />
 
-              <nav className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+              <nav className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]">
                 {modules.map((module) => {
                   const isActive = activeKey === module.key;
                   return (
@@ -275,7 +275,7 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
                       variant={isActive ? "secondary" : "ghost"}
                       className={cn(
                         "h-10 overflow-hidden px-0",
-                        desktopSidebarExpanded ? "w-full justify-start gap-3 px-3" : "w-10 justify-center"
+                        desktopSidebarExpanded ? "w-full justify-start gap-3 px-3" : "mx-auto w-10 justify-center"
                       )}
                       title={module.label}
                     >
@@ -347,7 +347,7 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
           </div>
           <Separator className="mb-4 shrink-0" />
 
-          <nav className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+          <nav className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable] pr-0.5">
             {modules.map((module) => {
               const isActive = activeKey === module.key;
               return (

@@ -313,7 +313,7 @@ export default function CustomerDashboardPage() {
     try {
       let probeCursor: string | null = currentCursor;
       let probeNext: string | null = nextCursor;
-      let probeHasMore = hasMore;
+      let probeHasMore: boolean = hasMore;
       let probeHistory = [...cursorHistory];
       let safety = 0;
 
