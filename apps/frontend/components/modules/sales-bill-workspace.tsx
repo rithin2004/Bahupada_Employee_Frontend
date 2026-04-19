@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { toast } from "sonner";
 
 import { EntryDraftLeaveDialog, EntryDraftResumeDialog } from "@/components/modules/entry-draft-dialogs";
+import { useOptionalEntryNavigationGuard } from "@/components/modules/entry-navigation-guard";
 import { asArray, asObject, deleteBackend, fetchBackend, fetchBackendFresh, patchBackend, postBackend, putBackend } from "@/lib/backend-api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -1326,6 +1327,7 @@ export function SalesBillWorkspace({
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [savingLeaveDraft, setSavingLeaveDraft] = useState(false);
+  const leaveNavPromiseRef = useRef<((allow: boolean) => void) | null>(null);
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
   const [resumeDraftUpdatedAt, setResumeDraftUpdatedAt] = useState<string | null>(null);
   const [resumeDraftPayload, setResumeDraftPayload] = useState<Record<string, unknown> | null>(null);
@@ -1472,11 +1474,38 @@ export function SalesBillWorkspace({
     onClose();
   }, [isDraftDirty, onClose]);
 
+  const promptLeave = useCallback((): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (!isDraftDirty) {
+        resolve(true);
+        return;
+      }
+      leaveNavPromiseRef.current = resolve;
+      setLeaveDialogOpen(true);
+    });
+  }, [isDraftDirty]);
+
+  const entryNav = useOptionalEntryNavigationGuard();
+  useEffect(() => {
+    if (!onClose || !entryNav) {
+      return;
+    }
+    entryNav.register({
+      isDraftDirty: () => isDraftDirty,
+      promptLeave,
+    });
+    return () => entryNav.register(null);
+  }, [entryNav, onClose, isDraftDirty, promptLeave]);
+
   const handleLeaveStay = useCallback(() => {
+    leaveNavPromiseRef.current?.(false);
+    leaveNavPromiseRef.current = null;
     setLeaveDialogOpen(false);
   }, []);
 
   const handleLeaveDiscard = useCallback(() => {
+    leaveNavPromiseRef.current?.(true);
+    leaveNavPromiseRef.current = null;
     setLeaveDialogOpen(false);
     void deleteBackend(`/entry-drafts/${entryDraftKind}`).catch(() => {});
     onClose?.();
@@ -1491,14 +1520,20 @@ export function SalesBillWorkspace({
         parsed = JSON.parse(currentDraftSnapshot) as Record<string, unknown>;
       } catch {
         toast.error("Could not serialize draft");
+        leaveNavPromiseRef.current?.(false);
+        leaveNavPromiseRef.current = null;
         return;
       }
       await putBackend(`/entry-drafts/${entryDraftKind}`, { payload: parsed });
       toast.success("Draft saved");
+      leaveNavPromiseRef.current?.(true);
+      leaveNavPromiseRef.current = null;
       setLeaveDialogOpen(false);
       onClose();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to save draft");
+      leaveNavPromiseRef.current?.(false);
+      leaveNavPromiseRef.current = null;
     } finally {
       setSavingLeaveDraft(false);
     }

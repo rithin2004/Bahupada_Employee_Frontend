@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import type { MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Bell, LogOut, Menu, Search, X } from "lucide-react";
 
+import { EntryNavigationGuardProvider, useEntryNavigationGuard } from "@/components/modules/entry-navigation-guard";
 import { asArray, asObject, clearPortalSession, fetchBackend, fetchPortalMe, fetchWithPortalAuth, postBackend } from "@/lib/backend-api";
 import type { AppRole, EmployeeRole } from "@/lib/navigation";
 import { defaultRouteForAdmin, defaultRouteForEmployee, modulesForRole } from "@/lib/navigation";
@@ -24,8 +26,37 @@ type AppShellProps = {
   children: React.ReactNode;
 };
 
-export function AppShell({ role, activeKey, userName, children }: AppShellProps) {
+export function AppShell(props: AppShellProps) {
+  return (
+    <EntryNavigationGuardProvider>
+      <AppShellInner {...props} />
+    </EntryNavigationGuardProvider>
+  );
+}
+
+function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
   const router = useRouter();
+  const { peekDraftDirty, tryNavigateAway } = useEntryNavigationGuard();
+
+  const onGuardedNavClick = useCallback(
+    (e: MouseEvent<HTMLAnchorElement>, href: string, afterNavigate?: () => void) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+        return;
+      }
+      if (!peekDraftDirty()) {
+        return;
+      }
+      e.preventDefault();
+      void tryNavigateAway().then((ok) => {
+        if (ok) {
+          router.push(href);
+          afterNavigate?.();
+        }
+      });
+    },
+    [peekDraftDirty, tryNavigateAway, router],
+  );
+
   const [authResolved, setAuthResolved] = useState(false);
   const [employeeRole, setEmployeeRole] = useState<EmployeeRole | null>(null);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
@@ -135,6 +166,10 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
   }, [notificationsOpen]);
 
   async function handleLogout() {
+    const ok = await tryNavigateAway();
+    if (!ok) {
+      return;
+    }
     try {
       await fetchWithPortalAuth("/auth/logout", { method: "POST" });
     } catch {
@@ -170,6 +205,10 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
   }
 
   async function handleNotificationClick(item: { id: string; entity_type: string | null }) {
+    const ok = await tryNavigateAway();
+    if (!ok) {
+      return;
+    }
     await markNotificationRead(item.id);
     setNotificationsOpen(false);
     router.push(notificationTarget(item.entity_type));
@@ -240,7 +279,7 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                       )}
                       title={module.label}
                     >
-                      <Link href={module.href}>
+                      <Link href={module.href} onClick={(e) => onGuardedNavClick(e, module.href)}>
                         <module.icon className="size-4 shrink-0" />
                         <span className={cn("truncate transition-opacity duration-150", desktopSidebarExpanded ? "opacity-100" : "hidden opacity-0")}>
                           {module.label}
@@ -262,10 +301,14 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                       <p className="font-medium">Portal Separation</p>
                       <div className="flex flex-col gap-2">
                         <Button asChild variant="outline" size="sm" className="w-full justify-start">
-                          <Link href="/auth/admin-login">Admin Login</Link>
+                          <Link href="/auth/admin-login" onClick={(e) => onGuardedNavClick(e, "/auth/admin-login")}>
+                            Admin Login
+                          </Link>
                         </Button>
                         <Button asChild variant="outline" size="sm" className="w-full justify-start">
-                          <Link href="/auth/employee-login">Employee Login</Link>
+                          <Link href="/auth/employee-login" onClick={(e) => onGuardedNavClick(e, "/auth/employee-login")}>
+                            Employee Login
+                          </Link>
                         </Button>
                       </div>
                     </div>
@@ -314,7 +357,10 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                   variant={isActive ? "secondary" : "ghost"}
                   className="w-full justify-start"
                 >
-                  <Link href={module.href} onClick={() => setMobileSidebarOpen(false)}>
+                  <Link
+                    href={module.href}
+                    onClick={(e) => onGuardedNavClick(e, module.href, () => setMobileSidebarOpen(false))}
+                  >
                     <module.icon className="size-4" />
                     {module.label}
                   </Link>

@@ -1,9 +1,11 @@
 "use client";
 
+import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useState } from "react";
 
 import { PortalAuthGate } from "@/components/auth/portal-auth-gate";
 import { AppShell } from "@/components/layout/app-shell";
+import { useOptionalEntryNavigationGuard } from "@/components/modules/entry-navigation-guard";
 import { PurchaseBillRefWizard } from "@/components/modules/purchase-bill-ref-wizard";
 import { ProcurementCreateFlow } from "@/components/modules/procurement-create-flow";
 import { PurchaseEntryWorkspace } from "@/components/modules/purchase-entry-workspace";
@@ -62,66 +64,19 @@ export default function AdminPurchasePage() {
   return (
     <PortalAuthGate portal="ADMIN">
       <AppShell role="admin" activeKey="purchase" userName="Admin User">
-        <div className="space-y-4">
-          {permissionsLoaded && canReadPurchase && !canWritePurchase ? (
-            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-              Read-only access. Create and update actions are limited.
-            </p>
-          ) : null}
-
-          <Tabs
-            value={activeTab}
-            onValueChange={(value) => {
-              const nextTab = value === "bill" ? "bill" : "challan";
-              setActiveTab(nextTab);
-              if (nextTab !== "bill") {
-                setShowPurchaseEntry(false);
-              }
-            }}
-            className="w-full"
-          >
-            <TabsList>
-              <TabsTrigger value="challan">Purchase Challan</TabsTrigger>
-              <TabsTrigger value="bill">Purchase Bill</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="challan" className="mt-4">
-              <ProcurementCreateFlow initialTab="challan" hideTabs />
-            </TabsContent>
-
-            <TabsContent value="bill" className="mt-4">
-              <div className="space-y-4">
-                {showPurchaseEntry ? (
-                  <PurchaseEntryWorkspace
-                    canWritePurchase={canWritePurchase}
-                    onSaved={(detail) => {
-                      setShowPurchaseEntry(false);
-                      setActiveTab("bill");
-                      setBillListRefreshKey((prev) => prev + 1);
-                      if (detail) {
-                        setBillRefWizardCtx({ vendorId: detail.vendorId, purchaseBillId: detail.purchaseBillId });
-                        setBillRefWizardOpen(true);
-                      }
-                    }}
-                    onClose={() => setShowPurchaseEntry(false)}
-                  />
-                ) : (
-                  <>
-                    <div className="flex items-center justify-end">
-                      <Button
-                        onClick={() => setShowPurchaseEntry(true)}
-                        disabled={!permissionsLoaded || !canWritePurchase}
-                      >
-                        Create Purchase Bill
-                      </Button>
-                    </div>
-                    <ProcurementCreateFlow key={`bill-list-${billListRefreshKey}`} initialTab="bill" hideTabs hideBillCreateButton />
-                  </>
-                )}
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
+        <PurchaseModuleTabs
+          permissionsLoaded={permissionsLoaded}
+          canReadPurchase={canReadPurchase}
+          canWritePurchase={canWritePurchase}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          showPurchaseEntry={showPurchaseEntry}
+          setShowPurchaseEntry={setShowPurchaseEntry}
+          billListRefreshKey={billListRefreshKey}
+          setBillListRefreshKey={setBillListRefreshKey}
+          setBillRefWizardCtx={setBillRefWizardCtx}
+          setBillRefWizardOpen={setBillRefWizardOpen}
+        />
 
         {billRefWizardCtx ? (
           <PurchaseBillRefWizard
@@ -138,5 +93,107 @@ export default function AdminPurchasePage() {
         ) : null}
       </AppShell>
     </PortalAuthGate>
+  );
+}
+
+type PurchaseModuleTabsProps = {
+  permissionsLoaded: boolean;
+  canReadPurchase: boolean;
+  canWritePurchase: boolean;
+  activeTab: "challan" | "bill";
+  setActiveTab: (v: "challan" | "bill") => void;
+  showPurchaseEntry: boolean;
+  setShowPurchaseEntry: (v: boolean) => void;
+  billListRefreshKey: number;
+  setBillListRefreshKey: Dispatch<SetStateAction<number>>;
+  setBillRefWizardCtx: Dispatch<SetStateAction<{ vendorId: string; purchaseBillId?: string } | null>>;
+  setBillRefWizardOpen: Dispatch<SetStateAction<boolean>>;
+};
+
+/** Renders inside AppShell so `useOptionalEntryNavigationGuard` sees the same provider as entry workspaces. */
+function PurchaseModuleTabs({
+  permissionsLoaded,
+  canReadPurchase,
+  canWritePurchase,
+  activeTab,
+  setActiveTab,
+  showPurchaseEntry,
+  setShowPurchaseEntry,
+  billListRefreshKey,
+  setBillListRefreshKey,
+  setBillRefWizardCtx,
+  setBillRefWizardOpen,
+}: PurchaseModuleTabsProps) {
+  const entryNav = useOptionalEntryNavigationGuard();
+
+  return (
+    <div className="space-y-4">
+      {permissionsLoaded && canReadPurchase && !canWritePurchase ? (
+        <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          Read-only access. Create and update actions are limited.
+        </p>
+      ) : null}
+
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          void (async () => {
+            const nextTab = value === "bill" ? "bill" : "challan";
+            if (entryNav) {
+              const ok = await entryNav.tryNavigateAway();
+              if (!ok) {
+                return;
+              }
+            }
+            setActiveTab(nextTab);
+            if (nextTab !== "bill") {
+              setShowPurchaseEntry(false);
+            }
+          })();
+        }}
+        className="w-full"
+      >
+        <TabsList>
+          <TabsTrigger value="challan">Purchase Challan</TabsTrigger>
+          <TabsTrigger value="bill">Purchase Bill</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="challan" className="mt-4">
+          <ProcurementCreateFlow initialTab="challan" hideTabs />
+        </TabsContent>
+
+        <TabsContent value="bill" className="mt-4">
+          <div className="space-y-4">
+            {showPurchaseEntry ? (
+              <PurchaseEntryWorkspace
+                canWritePurchase={canWritePurchase}
+                onSaved={(detail) => {
+                  setShowPurchaseEntry(false);
+                  setActiveTab("bill");
+                  setBillListRefreshKey((prev) => prev + 1);
+                  if (detail) {
+                    setBillRefWizardCtx({ vendorId: detail.vendorId, purchaseBillId: detail.purchaseBillId });
+                    setBillRefWizardOpen(true);
+                  }
+                }}
+                onClose={() => setShowPurchaseEntry(false)}
+              />
+            ) : (
+              <>
+                <div className="flex items-center justify-end">
+                  <Button
+                    onClick={() => setShowPurchaseEntry(true)}
+                    disabled={!permissionsLoaded || !canWritePurchase}
+                  >
+                    Create Purchase Bill
+                  </Button>
+                </div>
+                <ProcurementCreateFlow key={`bill-list-${billListRefreshKey}`} initialTab="bill" hideTabs hideBillCreateButton />
+              </>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }
