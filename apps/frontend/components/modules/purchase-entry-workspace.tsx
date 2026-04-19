@@ -1856,17 +1856,16 @@ export function PurchaseEntryWorkspace({
       return;
     }
     if (field === "lineAmount") {
-      const isLastFilledRow = rowIndex === lines.findLastIndex((line) => line.product !== null);
-      if (isLastFilledRow) {
-        focusFooterField("freight");
-        return;
-      }
       const nextRow = rowIndex + 1;
+      if (nextRow >= lines.length) {
+        setLines((prev) => (nextRow >= prev.length ? [...prev, makeLine()] : prev));
+      }
       setActiveRow(nextRow);
       setActiveField("product");
       setTimeout(() => focusLineField(nextRow, "product"), 0);
+      return;
     }
-  }, [focusFooterField, focusLineField, lines, moveGridFocus, openProductSelector]);
+  }, [focusLineField, lines, moveGridFocus, openProductSelector]);
 
   const applyBillDateFromPicker = useCallback((iso: string) => {
     if (!iso) return;

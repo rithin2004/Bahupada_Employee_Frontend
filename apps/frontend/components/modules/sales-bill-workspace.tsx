@@ -846,6 +846,8 @@ export function SalesBillWorkspace({
   const [schemePopoverLoading, setSchemePopoverLoading] = useState(false);
   /** Bumps on each schemes fetch so stale responses do not overwrite state or clear loading early. */
   const schemeLoadGenRef = useRef(0);
+  /** Latest schemes popover opener — used from focusLineField (defined earlier than onQuantityCellFocus). */
+  const openSchemesPopoverForRowRef = useRef<(rowIndex: number) => void>(() => {});
   const [rateUnitPicker, setRateUnitPicker] = useState<{ rowIndex: number; optionIndex: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
@@ -959,10 +961,11 @@ export function SalesBillWorkspace({
   }, [focusProductCreateField]);
 
   const focusLineField = useCallback((rowIndex: number, field: LineField) => {
-    const row = lines[rowIndex];
+    const row = linesRef.current[rowIndex];
     if (!row) {
       return;
     }
+    setActiveRow(rowIndex);
     setActiveField(field);
     const key = `${row.id}:${field}`;
     const node = lineRefs.current[key];
@@ -972,7 +975,14 @@ export function SalesBillWorkspace({
         node.select();
       }
     }
-  }, [lines]);
+    // Programmatic .focus() does not always run the input onFocus path the same way as a click;
+    // still open schemes when the grid lands on PCS via keyboard or after product pick.
+    if (field === "quantity1") {
+      queueMicrotask(() => {
+        openSchemesPopoverForRowRef.current(rowIndex);
+      });
+    }
+  }, []);
 
   const totals = useMemo(() => {
     const valueOfGoods = lines.reduce((sum, line) => {
@@ -1689,6 +1699,14 @@ export function SalesBillWorkspace({
     },
     [customerSummary, loadSchemesForRow],
   );
+  openSchemesPopoverForRowRef.current = onQuantityCellFocus;
+
+  useEffect(() => {
+    if (activeField !== "quantity1") {
+      setSchemePopoverOpen(false);
+      setSchemePopoverRow(null);
+    }
+  }, [activeField]);
 
   const applySchemeToLine = useCallback(
     async (scheme: SalesEntrySchemeOption, targetRowIndex: number) => {
@@ -1967,18 +1985,16 @@ export function SalesBillWorkspace({
       return;
     }
     if (field === "lineAmount") {
-      const isLastFilledRow = rowIndex === lines.findLastIndex((line) => line.product !== null);
-      if (isLastFilledRow) {
-        focusFooterField("freight");
-        return;
-      }
       const nextRow = rowIndex + 1;
+      if (nextRow >= lines.length) {
+        setLines((prev) => (nextRow >= prev.length ? [...prev, makeLine()] : prev));
+      }
       setActiveRow(nextRow);
       setActiveField("product");
       setTimeout(() => focusLineField(nextRow, "product"), 0);
+      return;
     }
   }, [
-    focusFooterField,
     focusLineField,
     lines,
     moveGridFocus,
