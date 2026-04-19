@@ -53,7 +53,7 @@ const adminModules: NavModule[] = [
   { key: "vehicles", label: "Vehicles Module", href: "/vehicles", icon: Truck, permissionKey: "vehicles" },
   { key: "schemes", label: "Schemes Module", href: "/schemes", icon: BadgePercent, permissionKey: "schemes" },
   { key: "price", label: "Price Module", href: "/price", icon: BadgePercent, permissionKey: "price" },
-  { key: "credit-debit-notes", label: "Credit Debit Notes", href: "/credit-debit-notes", icon: ReceiptText, permissionKey: "credit-debit-notes" },
+  { key: "credit-debit-notes", label: "Accounting Module", href: "/credit-debit-notes", icon: ReceiptText, permissionKey: "credit-debit-notes" },
   { key: "customers", label: "Customers Module", href: "/customers", icon: CircleUserRound, permissionKey: "customers" },
   { key: "employees", label: "Employees Module", href: "/employees", icon: Users2, permissionKey: "employees" },
   { key: "vendors", label: "Vendor Module", href: "/vendors", icon: ContactRound, permissionKey: "vendors" },

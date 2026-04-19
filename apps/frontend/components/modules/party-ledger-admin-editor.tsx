@@ -20,6 +20,8 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PurchaseBillRefWizard } from "@/components/modules/purchase-bill-ref-wizard";
+import { SalesInvoiceRefWizard } from "@/components/modules/sales-invoice-ref-wizard";
 
 type LedgerTab = "VENDOR" | "CUSTOMER" | "SELF";
 
@@ -130,6 +132,8 @@ export function PartyLedgerAdminEditor() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryDescription, setNewCategoryDescription] = useState("");
   const [openSelfAccountDialog, setOpenSelfAccountDialog] = useState(false);
+  const [vendorPaymentWizardOpen, setVendorPaymentWizardOpen] = useState(false);
+  const [customerReceiptWizardOpen, setCustomerReceiptWizardOpen] = useState(false);
   const [creatingSelfAccount, setCreatingSelfAccount] = useState(false);
   const [selfAccountName, setSelfAccountName] = useState("");
   const [selfAccountType, setSelfAccountType] = useState("");
@@ -366,6 +370,15 @@ export function PartyLedgerAdminEditor() {
     setBillAllocations({});
   }, [selectedAccount?.party_id, tab, loadVendorBills]);
 
+  useEffect(() => {
+    if (tab !== "VENDOR") {
+      setVendorPaymentWizardOpen(false);
+    }
+    if (tab !== "CUSTOMER") {
+      setCustomerReceiptWizardOpen(false);
+    }
+  }, [tab]);
+
   const directionLabel = useMemo(
     () => (tab === "VENDOR" ? "Paid Amount" : "Received Amount"),
     [tab]
@@ -408,6 +421,7 @@ export function PartyLedgerAdminEditor() {
                 }))
                 .filter((row) => row.allocated_amount > 0)
             : [],
+        sales_invoice_allocations: [],
       });
       toast.success("Ledger payment entry added.");
       setPaymentAmount("");
@@ -507,7 +521,7 @@ export function PartyLedgerAdminEditor() {
       <TabsContent value={tab} className="space-y-4">
         {permissionsLoaded && !canReadLedger ? (
           <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            You have no credit/debit notes module access.
+            You have no Accounting module access.
           </p>
         ) : null}
         {permissionsLoaded && canReadLedger && !canWriteLedger ? (
@@ -800,8 +814,34 @@ export function PartyLedgerAdminEditor() {
               <Card>
                 <CardHeader>
                   <CardTitle>{tab === "VENDOR" ? "Record Vendor Payment" : "Record Customer Receipt"}</CardTitle>
+                  {tab === "VENDOR" && selectedAccount ? (
+                    <p className="text-sm font-normal text-muted-foreground">
+                      If you skipped payment from Purchase, open the payment wizard for new payment, on-account, or link an existing
+                      payment to bills—the same options as after saving a bill.
+                    </p>
+                  ) : null}
+                  {tab === "CUSTOMER" && selectedAccount ? (
+                    <p className="text-sm font-normal text-muted-foreground">
+                      If you skipped receipt from Sales, open the receipt wizard to allocate to invoices (due dates shown), link an
+                      existing incoming payment, or post on-account.
+                    </p>
+                  ) : null}
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {tab === "VENDOR" && selectedAccount && canWriteLedger ? (
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="secondary" onClick={() => setVendorPaymentWizardOpen(true)}>
+                        Payment wizard (new / link to bills)
+                      </Button>
+                    </div>
+                  ) : null}
+                  {tab === "CUSTOMER" && selectedAccount && canWriteLedger ? (
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="secondary" onClick={() => setCustomerReceiptWizardOpen(true)}>
+                        Receipt wizard (new / link to invoices)
+                      </Button>
+                    </div>
+                  ) : null}
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-1">
                       <Label>{directionLabel}</Label>
@@ -867,7 +907,7 @@ export function PartyLedgerAdminEditor() {
                     </div>
                   ) : null}
                   <Button onClick={() => void submitPayment()} disabled={!canWriteLedger || postingPayment || !selectedAccount}>
-                    {postingPayment ? "Posting..." : tab === "VENDOR" ? "Record Payment" : "Record Receipt"}
+                    {postingPayment ? "Posting..." : tab === "VENDOR" ? "Quick post" : tab === "CUSTOMER" ? "Quick post" : "Record Receipt"}
                   </Button>
                 </CardContent>
               </Card>
@@ -885,6 +925,35 @@ export function PartyLedgerAdminEditor() {
             )}
           </div>
         </div>
+        {selectedAccount && tab === "VENDOR" ? (
+          <PurchaseBillRefWizard
+            open={vendorPaymentWizardOpen}
+            onOpenChange={setVendorPaymentWizardOpen}
+            vendorId={selectedAccount.party_id}
+            apiBase="accounting"
+            onRecorded={async () => {
+              await loadAccounts("VENDOR", search);
+              if (selectedAccount) {
+                await loadStatement(selectedAccount);
+                await loadVendorBills(selectedAccount.party_id);
+              }
+            }}
+          />
+        ) : null}
+        {selectedAccount && tab === "CUSTOMER" ? (
+          <SalesInvoiceRefWizard
+            open={customerReceiptWizardOpen}
+            onOpenChange={setCustomerReceiptWizardOpen}
+            customerId={selectedAccount.party_id}
+            apiBase="accounting"
+            onRecorded={async () => {
+              await loadAccounts("CUSTOMER", search);
+              if (selectedAccount) {
+                await loadStatement(selectedAccount);
+              }
+            }}
+          />
+        ) : null}
       </TabsContent>
     </Tabs>
   );

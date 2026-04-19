@@ -6,9 +6,10 @@ export default function AdminCreditDebitNotesPage() {
     <AppShell role="admin" activeKey="credit-debit-notes" userName="Admin User">
       <div className="space-y-6">
         <div className="space-y-2">
-          <h2 className="text-2xl font-semibold tracking-tight">Credit Debit Notes</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">Accounting Module</h2>
           <p className="text-sm text-muted-foreground">
-            Vendor payables and customer receivables are tracked as chronological ledger accounts from the admin point of view.
+            Vendor payables, customer receivables, and self accounts: ledger statements and payments (including purchase bill links)
+            from one place.
           </p>
         </div>
         <PartyLedgerAdminEditor />

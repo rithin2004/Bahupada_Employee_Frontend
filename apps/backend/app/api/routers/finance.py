@@ -7,8 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.auth import require_permission
 from app.db.session import get_db
+from sqlalchemy import select
+
 from app.schemas.finance import (
     CustomerAgingResponse,
+    CustomerIncomingPaymentForAllocation,
     CustomerOutstandingResponse,
     CustomerStatementResponse,
     JournalEntryCreate,
@@ -22,12 +25,18 @@ from app.schemas.finance import (
     PaymentAllocationOut,
     PaymentCreate,
     PaymentOut,
+    PurchaseBillAllocationsAppend,
     PurchaseBillPaymentAllocationOut,
+    SalesInvoiceAllocationsAppend,
+    SalesInvoiceForReceiptAllocation,
     SelfAccountCreate,
     SelfAccountOut,
     TrialBalanceResponse,
+    VendorOutgoingPaymentForAllocation,
 )
 from app.services.finance import (
+    add_purchase_bill_allocations_to_existing_payment,
+    add_sales_invoice_allocations_to_existing_party_payment,
     allocate_payment_to_invoice,
     create_journal_entry,
     create_self_account,
@@ -39,12 +48,15 @@ from app.services.finance import (
     ledger_summary,
     list_self_accounts,
     list_party_ledger_accounts,
+    list_customer_incoming_party_payments_for_invoice_allocation,
+    list_customer_sales_invoices_for_receipt_allocation,
+    list_vendor_outgoing_payments_for_bill_allocation,
     record_party_payment,
     record_payment,
     trial_balance,
 )
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
-from app.models.entities import PartyType, PaymentFlowDirection, PurchaseBillPaymentAllocation
+from app.models.entities import Customer, PartyType, PaymentFlowDirection, PurchaseBill, PurchaseBillPaymentAllocation, Vendor
 
 router = APIRouter()
 
@@ -276,6 +288,10 @@ async def create_party_ledger_payment(
                 {"purchase_bill_id": row.purchase_bill_id, "allocated_amount": row.allocated_amount}
                 for row in payload.purchase_bill_allocations
             ],
+            sales_invoice_allocations=[
+                {"sales_final_invoice_id": row.sales_final_invoice_id, "allocated_amount": row.allocated_amount}
+                for row in payload.sales_invoice_allocations
+            ],
         )
         return jsonable_encoder(payment)
     except ValueError as exc:
@@ -283,10 +299,133 @@ async def create_party_ledger_payment(
         raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
+@router.get(
+    "/party-ledger/vendors/{vendor_id}/purchase-bills-for-payment",
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
+async def list_vendor_purchase_bills_for_payment(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Minimal bill list for payment allocation (Accounting module users may not have purchase module read)."""
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    bills = (
+        await db.execute(
+            select(PurchaseBill)
+            .where(PurchaseBill.vendor_id == vendor_id, PurchaseBill.deleted_at.is_(None))
+            .order_by(PurchaseBill.bill_date.desc(), PurchaseBill.created_at.desc())
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "bill_date": str(bill.bill_date),
+            "vendor_id": str(bill.vendor_id) if bill.vendor_id else None,
+            "total_amount": str(bill.total_amount or "0"),
+        }
+        for bill in bills
+    ]
+
+
+@router.get(
+    "/party-ledger/vendors/{vendor_id}/payments-for-allocation",
+    response_model=list[VendorOutgoingPaymentForAllocation],
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
+async def list_vendor_payments_for_bill_allocation_finance(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    rows = await list_vendor_outgoing_payments_for_bill_allocation(db, vendor_id=vendor_id)
+    return [VendorOutgoingPaymentForAllocation(**r) for r in rows]
+
+
+@router.post(
+    "/party-ledger/vendors/{vendor_id}/payments/{payment_id}/purchase-bill-allocations",
+    dependencies=[Depends(require_permission("credit-debit-notes", "create"))],
+)
+async def append_vendor_payment_purchase_bill_allocations_finance(
+    vendor_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    payload: PurchaseBillAllocationsAppend,
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    try:
+        await add_purchase_bill_allocations_to_existing_payment(
+            db,
+            payment_id=payment_id,
+            vendor_id=vendor_id,
+            purchase_bill_allocations=[
+                {"purchase_bill_id": row.purchase_bill_id, "allocated_amount": row.allocated_amount}
+                for row in payload.allocations
+            ],
+        )
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.get(
+    "/party-ledger/customers/{customer_id}/sales-invoices-for-receipt",
+    response_model=list[SalesInvoiceForReceiptAllocation],
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
+async def list_customer_sales_invoices_for_receipt_finance(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    rows = await list_customer_sales_invoices_for_receipt_allocation(db, customer_id=customer_id)
+    return [SalesInvoiceForReceiptAllocation(**r) for r in rows]
+
+
+@router.get(
+    "/party-ledger/customers/{customer_id}/payments-for-invoice-allocation",
+    response_model=list[CustomerIncomingPaymentForAllocation],
+    dependencies=[Depends(require_permission("credit-debit-notes", "read"))],
+)
+async def list_customer_payments_for_invoice_allocation_finance(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    rows = await list_customer_incoming_party_payments_for_invoice_allocation(db, customer_id=customer_id)
+    return [CustomerIncomingPaymentForAllocation(**r) for r in rows]
+
+
+@router.post(
+    "/party-ledger/customers/{customer_id}/payments/{payment_id}/sales-invoice-allocations",
+    dependencies=[Depends(require_permission("credit-debit-notes", "create"))],
+)
+async def append_customer_payment_sales_invoice_allocations_finance(
+    customer_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    payload: SalesInvoiceAllocationsAppend,
+    db: AsyncSession = Depends(get_db),
+):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    try:
+        await add_sales_invoice_allocations_to_existing_party_payment(
+            db,
+            payment_id=payment_id,
+            customer_id=customer_id,
+            sales_invoice_allocations=[
+                {"sales_final_invoice_id": row.sales_final_invoice_id, "allocated_amount": row.allocated_amount}
+                for row in payload.allocations
+            ],
+        )
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    return {"ok": True}
+
+
 @router.get("/party-ledger/payments/{payment_id}/purchase-bill-allocations", response_model=list[PurchaseBillPaymentAllocationOut], dependencies=[Depends(require_permission("credit-debit-notes", "read"))])
 async def list_purchase_bill_payment_allocations(payment_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import select
-
     return (
         await db.execute(
             select(PurchaseBillPaymentAllocation).where(PurchaseBillPaymentAllocation.party_ledger_payment_id == payment_id)

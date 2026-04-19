@@ -54,6 +54,7 @@ class SalesFinalInvoiceCreate(BaseModel):
     sales_order_id: uuid.UUID
     invoice_number: str
     invoice_date: date
+    due_date: date | None = None
     subtotal: Decimal
     gst_amount: Decimal
     total_amount: Decimal
@@ -69,6 +70,7 @@ class SalesFinalInvoiceFromOrderCreate(BaseModel):
     sales_order_id: uuid.UUID
     invoice_number: str | None = None
     invoice_date: date
+    due_date: date | None = None
     status: str | None = None
     items: list[SalesFinalInvoiceItemIn]
 
@@ -77,6 +79,7 @@ class SalesFinalInvoiceEditRequest(BaseModel):
     subtotal: Decimal | None = None
     gst_amount: Decimal | None = None
     total_amount: Decimal | None = None
+    due_date: date | None = None
     status: str | None = None
     delivery_status: str | None = None
     reason: str | None = None
@@ -93,6 +96,7 @@ class SalesDirectBillCreate(BaseModel):
     warehouse_id: uuid.UUID
     invoice_number: str | None = None
     invoice_date: date
+    due_date: date | None = None
     items: list[SalesDirectBillItemIn]
 
 
@@ -173,6 +177,9 @@ class SalesEntryProductSummary(BaseModel):
     sku: str
     name: str
     brand: str | None = None
+    """Denormalized names; must align with scheme scope checks in services/schemes.py."""
+    category: str | None = None
+    sub_category: str | None = None
     description: str | None = None
     hsn_code: str | None = None
     tax_percent: Decimal

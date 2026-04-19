@@ -209,8 +209,13 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
               desktopSidebarExpanded ? "w-[248px]" : "w-[60px]"
             )}
           >
-            <div className="flex h-full flex-col p-2.5">
-              <div className={cn("mb-2 flex items-center", desktopSidebarExpanded ? "justify-between gap-2" : "justify-center")}>
+            <div className="flex h-full min-h-0 flex-col p-2.5">
+              <div
+                className={cn(
+                  "mb-2 flex shrink-0 items-center",
+                  desktopSidebarExpanded ? "justify-between gap-2" : "justify-center",
+                )}
+              >
                 <div className={cn("min-w-0", desktopSidebarExpanded ? "opacity-100" : "w-0 overflow-hidden opacity-0")}>
                   <p className="truncate text-[11px] uppercase tracking-[0.28em] text-muted-foreground">Bahupada ERP</p>
                   <h2 className="mt-1 truncate text-base font-semibold">Control Panel</h2>
@@ -219,9 +224,9 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                   {role === "admin" ? "A" : "E"}
                 </div>
               </div>
-              <Separator className="mb-2" />
+              <Separator className="mb-2 shrink-0" />
 
-              <nav className="flex-1 space-y-1">
+              <nav className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
                 {modules.map((module) => {
                   const isActive = activeKey === module.key;
                   return (
@@ -246,8 +251,8 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
                 })}
               </nav>
 
-              <Separator className="my-2" />
-              <div className={cn("space-y-2", desktopSidebarExpanded ? "opacity-100" : "opacity-0")}>
+              <Separator className="my-2 shrink-0" />
+              <div className={cn("shrink-0 space-y-2", desktopSidebarExpanded ? "opacity-100" : "opacity-0")}>
                 {desktopSidebarExpanded ? (
                   <>
                     <Badge variant="outline" className="capitalize">
@@ -273,11 +278,11 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
 
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[285px] max-w-[86vw] border-r bg-card p-4 shadow-xl transition-transform duration-300 ease-out lg:hidden",
-            mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
+            "fixed inset-y-0 left-0 z-50 flex w-[285px] max-w-[86vw] flex-col overflow-hidden border-r bg-card p-4 shadow-xl transition-transform duration-300 ease-out lg:hidden",
+            mobileSidebarOpen ? "translate-x-0" : "-translate-x-full",
           )}
         >
-          <div className="mb-4 space-y-2">
+          <div className="mb-4 shrink-0 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Bahupada ERP</p>
               <Button
@@ -297,9 +302,9 @@ export function AppShell({ role, activeKey, userName, children }: AppShellProps)
               </Badge>
             </div>
           </div>
-          <Separator className="mb-4" />
+          <Separator className="mb-4 shrink-0" />
 
-          <nav className="space-y-1">
+          <nav className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
             {modules.map((module) => {
               const isActive = activeKey === module.key;
               return (

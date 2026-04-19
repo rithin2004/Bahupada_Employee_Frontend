@@ -44,7 +44,7 @@ const ADMIN_MODULES: ModuleOption[] = [
   { module_name: "vehicles", label: "Vehicles Module" },
   { module_name: "schemes", label: "Schemes Module" },
   { module_name: "price", label: "Price Module" },
-  { module_name: "credit-debit-notes", label: "Credit Debit Notes" },
+  { module_name: "credit-debit-notes", label: "Accounting Module" },
   { module_name: "customers", label: "Customers Module" },
   { module_name: "employees", label: "Employees Module" },
   { module_name: "vendors", label: "Vendor Module" },

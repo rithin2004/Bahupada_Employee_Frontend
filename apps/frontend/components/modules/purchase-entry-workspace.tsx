@@ -2,9 +2,20 @@
 
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 
-import { asArray, asObject, fetchBackend, fetchBackendFresh, patchBackend, postBackend } from "@/lib/backend-api";
+import { EntryDraftLeaveDialog, EntryDraftResumeDialog } from "@/components/modules/entry-draft-dialogs";
+import {
+  asArray,
+  asObject,
+  deleteBackend,
+  fetchBackend,
+  fetchBackendFresh,
+  patchBackend,
+  postBackend,
+  putBackend,
+} from "@/lib/backend-api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -305,6 +316,48 @@ function toNullableNumber(value: string) {
 function sanitizeDigits(value: string) {
   return value.replace(/\D/g, "");
 }
+
+/** Whole-number display for quantity cells (avoids 5.0; normalizes API decimals). */
+function displayWholeQty(stateValue: string): string {
+  const s = (stateValue ?? "").trim();
+  if (!s) return "";
+  const n = Number(s);
+  if (!Number.isFinite(n)) return sanitizeDigits(s);
+  return String(Math.round(n));
+}
+
+/** Money / % fields: at most 2 decimal places (rounded). */
+function roundMoney2(raw: string | number | null | undefined): string {
+  if (raw === null || raw === undefined) return "";
+  const s = String(raw).trim().replace(/,/g, "");
+  if (!s) return "";
+  const n = Number(s);
+  if (!Number.isFinite(n)) return String(raw).trim();
+  return n.toFixed(2);
+}
+
+/** DISC % / DISC AMT typing: max 2 fractional digits; rounds if user pastes extra precision; keeps trailing "." while editing. */
+function sanitizeMoneyInput2dp(raw: string): string {
+  const s = String(raw ?? "").trim().replace(/,/g, "").replace(/[^0-9.]/g, "");
+  if (!s) return "";
+  const firstDot = s.indexOf(".");
+  if (firstDot === -1) return s;
+  const intPart = s.slice(0, firstDot).replace(/\./g, "");
+  const fracRaw = s.slice(firstDot + 1).replace(/\./g, "");
+  if (fracRaw.length === 0 && s.endsWith(".")) {
+    return (intPart || "0") + ".";
+  }
+  if (fracRaw.length <= 2) {
+    return (intPart || "0") + "." + fracRaw;
+  }
+  const n = Number((intPart || "0") + "." + fracRaw);
+  if (!Number.isFinite(n)) return s;
+  return roundMoney2(n);
+}
+
+/** Beats Input defaults (text-base / md:text-sm, h-9, px-3) so grid numbers fit h-7 without clipping. */
+const COMPACT_GRID_INPUT_BASE =
+  "h-7 min-h-0 px-1.5 py-0 text-[10px] md:text-[10px] leading-tight font-semibold tabular-nums rounded-none border-0 bg-transparent text-[#111714] shadow-none";
 
 function makeLine(): LineDraft {
   return {
@@ -991,19 +1044,18 @@ export function PurchaseEntryWorkspace({
             );
             // For challan mode, API returns 'quantity' field, not quantity_1st/2nd/3rd
             // Map it to primary quantity field (quantity1)
-            const itemQuantity = String(item.quantity || item.quantity_1st || "");
             const line: LineDraft = {
               id: crypto.randomUUID(),
               product: p,
-              quantity1: itemQuantity,
-              quantity2: String(item.quantity_2nd || ""),
-              quantity3: String(item.quantity_3rd || ""),
-              mrp: String(item.mrp || "0"),
-              rateValue: String(item.rate_value || "0"),
+              quantity1: displayWholeQty(String(item.quantity ?? item.quantity_1st ?? "")),
+              quantity2: displayWholeQty(String(item.quantity_2nd ?? "")),
+              quantity3: displayWholeQty(String(item.quantity_3rd ?? "")),
+              mrp: roundMoney2(String(item.mrp ?? "0")),
+              rateValue: roundMoney2(String(item.rate_value ?? "0")),
               rateUnitLevel: (Number(item.rate_unit_level) || 1) as 1 | 2 | 3,
-              discountPercent: String(item.discount_percent || "0"),
-              discountLumpsum: String(item.discount_lumpsum || "0"),
-              amount: String(item.line_total_amount || "0"),
+              discountPercent: roundMoney2(String(item.discount_percent ?? "0")),
+              discountLumpsum: roundMoney2(String(item.discount_lumpsum ?? "0")),
+              amount: roundMoney2(String(item.line_total_amount ?? "0")),
             };
             return line;
           }));
@@ -1037,6 +1089,7 @@ export function PurchaseEntryWorkspace({
     () => `${initialId ?? ""}|${sourceChallanId ?? ""}|${mode}`,
     [initialId, sourceChallanId, mode],
   );
+  const entryDraftKind = useMemo(() => (mode === "challan" ? "purchase_challan" : "purchase_bill"), [mode]);
   const [baselineSnapshot, setBaselineSnapshot] = useState<string | null>(null);
   const prevViewOnlyRef = useRef(viewOnly);
 
@@ -1107,18 +1160,202 @@ export function PurchaseEntryWorkspace({
     }
   }, [viewOnly, loading, initialDocLoading, challanLoading, currentDraftSnapshot]);
 
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [savingLeaveDraft, setSavingLeaveDraft] = useState(false);
+  const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
+  const [resumeDraftUpdatedAt, setResumeDraftUpdatedAt] = useState<string | null>(null);
+  const [resumeDraftPayload, setResumeDraftPayload] = useState<Record<string, unknown> | null>(null);
+  const draftSessionKeyRef = useRef(draftSessionKey);
+  const resumePromptDoneRef = useRef(false);
+
+  useEffect(() => {
+    if (draftSessionKeyRef.current !== draftSessionKey) {
+      draftSessionKeyRef.current = draftSessionKey;
+      resumePromptDoneRef.current = false;
+      setResumeDraftPayload(null);
+      setResumeDraftUpdatedAt(null);
+      setResumeDialogOpen(false);
+    }
+  }, [draftSessionKey]);
+
+  const hydratePurchaseDraft = useCallback(
+    async (payload: Record<string, unknown>) => {
+      const bd = String(payload.billDate ?? todayIso());
+      const bdi = String(payload.billDateInput ?? "");
+      const bn = String(payload.billNumber ?? "");
+      const rd = String(payload.receivedDate ?? todayIso());
+      const rdi = String(payload.receivedDateInput ?? "");
+      const pm = payload.paymentMode === "CASH" ? "CASH" : "CREDIT";
+      const wid = String(payload.warehouseId ?? "");
+      const fa = String(payload.freightAmount ?? "0");
+      const nt = String(payload.notes ?? "");
+      const tt = payload.taxType === "LOCAL" ? "LOCAL" : "CENTRAL";
+      const en = String(payload.entryNumber ?? "");
+      const vid = String(payload.vendorId ?? "").trim();
+
+      const rawLines = asArray(payload.lines as unknown);
+      const nextLines: LineDraft[] = [];
+      for (const row of rawLines) {
+        const o = asObject(row);
+        const pid = String(o.pid ?? "").trim();
+        if (!pid) {
+          nextLines.push(makeLine());
+          continue;
+        }
+        const p = mapProductSummary(
+          asObject(await fetchBackend(purchaseProductSummaryUrl(pid, vid || null))),
+        );
+        nextLines.push({
+          id: crypto.randomUUID(),
+          product: p,
+          quantity1: displayWholeQty(String(o.q1 ?? "")),
+          quantity2: displayWholeQty(String(o.q2 ?? "")),
+          quantity3: displayWholeQty(String(o.q3 ?? "")),
+          mrp: roundMoney2(String(o.mrp ?? "0")),
+          rateValue: roundMoney2(String(o.rv ?? "0")),
+          rateUnitLevel: (Number(o.rul) || 1) as 1 | 2 | 3,
+          discountPercent: roundMoney2(String(o.dp ?? "0")),
+          discountLumpsum: roundMoney2(String(o.dl ?? "0")),
+          amount: roundMoney2(String(o.amt ?? "0")),
+        });
+      }
+      if (!nextLines.some((l) => l.product === null)) {
+        nextLines.push(makeLine());
+      }
+
+      let vendor: VendorSummary | null = null;
+      if (vid) {
+        vendor = mapVendorSummary(asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${vid}/summary`)));
+      }
+
+      flushSync(() => {
+        setBillDate(bd);
+        setBillDateInput(bdi || formatDisplayDate(bd));
+        setBillNumber(bn);
+        setReceivedDate(rd);
+        setReceivedDateInput(rdi || formatDisplayDate(rd));
+        setPaymentMode(pm);
+        setWarehouseId(wid);
+        setFreightAmount(fa);
+        setNotes(nt);
+        setEntryNumber(en);
+        setVendorSummary(vendor);
+        setTaxType(vendor ? resolvePurchaseTaxType(companyGstin, vendor.gstin, vendor.purchase_type) : tt);
+        setLines(nextLines);
+      });
+
+      const snap = serializePurchaseEntryDraft({
+        billDate: bd,
+        billDateInput: bdi || formatDisplayDate(bd),
+        billNumber: bn,
+        receivedDate: rd,
+        receivedDateInput: rdi || formatDisplayDate(rd),
+        paymentMode: pm,
+        warehouseId: wid,
+        freightAmount: fa,
+        notes: nt,
+        taxType: vendor ? resolvePurchaseTaxType(companyGstin, vendor.gstin, vendor.purchase_type) : tt,
+        entryNumber: en,
+        vendorId: vid || null,
+        lines: nextLines,
+      });
+      setBaselineSnapshot(snap);
+    },
+    [companyGstin],
+  );
+
+  useEffect(() => {
+    if (initialId || sourceChallanId || viewOnly || !canWritePurchase || loading || initialDocLoading || challanLoading) {
+      return;
+    }
+    if (resumePromptDoneRef.current) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = asObject(await fetchBackendFresh(`/entry-drafts/${entryDraftKind}`));
+        if (cancelled) return;
+        const p = raw.payload;
+        if (p && typeof p === "object" && !Array.isArray(p)) {
+          setResumeDraftPayload(p as Record<string, unknown>);
+          setResumeDraftUpdatedAt(typeof raw.updated_at === "string" ? raw.updated_at : null);
+          setResumeDialogOpen(true);
+        }
+      } catch {
+        /* no draft */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialId, sourceChallanId, viewOnly, canWritePurchase, loading, initialDocLoading, challanLoading, entryDraftKind]);
+
   const requestClose = useCallback(() => {
     if (!onClose) {
       return;
     }
     if (isDraftDirty) {
-      const ok = window.confirm("You have unsaved changes. Leave and discard them?");
-      if (!ok) {
-        return;
-      }
+      setLeaveDialogOpen(true);
+      return;
     }
     onClose();
   }, [isDraftDirty, onClose]);
+
+  const handleLeaveStay = useCallback(() => {
+    setLeaveDialogOpen(false);
+  }, []);
+
+  const handleLeaveDiscard = useCallback(() => {
+    setLeaveDialogOpen(false);
+    void deleteBackend(`/entry-drafts/${entryDraftKind}`).catch(() => {});
+    onClose?.();
+  }, [entryDraftKind, onClose]);
+
+  const handleLeaveSaveDraft = useCallback(async () => {
+    if (!onClose) return;
+    setSavingLeaveDraft(true);
+    try {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(currentDraftSnapshot) as Record<string, unknown>;
+      } catch {
+        toast.error("Could not serialize draft");
+        return;
+      }
+      await putBackend(`/entry-drafts/${entryDraftKind}`, { payload: parsed });
+      toast.success("Draft saved");
+      setLeaveDialogOpen(false);
+      onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save draft");
+    } finally {
+      setSavingLeaveDraft(false);
+    }
+  }, [currentDraftSnapshot, entryDraftKind, onClose]);
+
+  const handleResumeStartFresh = useCallback(() => {
+    resumePromptDoneRef.current = true;
+    setResumeDialogOpen(false);
+    setResumeDraftPayload(null);
+    setResumeDraftUpdatedAt(null);
+    void deleteBackend(`/entry-drafts/${entryDraftKind}`).catch(() => {});
+  }, [entryDraftKind]);
+
+  const handleResumeContinue = useCallback(async () => {
+    if (!resumeDraftPayload) return;
+    resumePromptDoneRef.current = true;
+    const payload = resumeDraftPayload;
+    setResumeDialogOpen(false);
+    setResumeDraftPayload(null);
+    setResumeDraftUpdatedAt(null);
+    try {
+      await hydratePurchaseDraft(payload);
+      toast.success("Draft loaded");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load draft");
+    }
+  }, [hydratePurchaseDraft, resumeDraftPayload]);
 
   useEffect(() => {
     if (!isDraftDirty) {
@@ -1205,19 +1442,18 @@ export function PurchaseEntryWorkspace({
             return null;
           }
           
-          const itemQuantity = String(item.quantity || item.quantity_1st || item.quantity1 || "");
           const line: LineDraft = {
             id: crypto.randomUUID(),
             product: p,
-            quantity1: itemQuantity,
-            quantity2: String(item.quantity_2nd || item.quantity2 || ""),
-            quantity3: String(item.quantity_3rd || item.quantity3 || ""),
-            mrp: String(item.mrp || "0"),
-            rateValue: String(item.rate_value || item.rateValue || "0"),
+            quantity1: displayWholeQty(String(item.quantity ?? item.quantity_1st ?? item.quantity1 ?? "")),
+            quantity2: displayWholeQty(String(item.quantity_2nd ?? item.quantity2 ?? "")),
+            quantity3: displayWholeQty(String(item.quantity_3rd ?? item.quantity3 ?? "")),
+            mrp: roundMoney2(String(item.mrp ?? "0")),
+            rateValue: roundMoney2(String(item.rate_value ?? item.rateValue ?? "0")),
             rateUnitLevel: (item.rate_unit_level === 1 || item.rate_unit_level === 2 || item.rate_unit_level === 3) ? item.rate_unit_level : 1,
-            discountPercent: String(item.discount_percent || item.discountPercent || "0"),
-            discountLumpsum: String(item.discount_lumpsum || item.discountLumpsum || "0"),
-            amount: String(item.line_total_amount || item.amount || "0"),
+            discountPercent: roundMoney2(String(item.discount_percent ?? item.discountPercent ?? "0")),
+            discountLumpsum: roundMoney2(String(item.discount_lumpsum ?? item.discountLumpsum ?? "0")),
+            amount: roundMoney2(String(item.line_total_amount ?? item.amount ?? "0")),
           };
           console.log("Mapped line:", line);
           return line;
@@ -1293,7 +1529,7 @@ export function PurchaseEntryWorkspace({
         if (productSearchOpen) {
           event.preventDefault();
           setProductSearchOpen(false);
-          setTimeout(() => focusLineField(activeRow, "product"), 0);
+          setTimeout(() => focusLineField(productTargetRow, "product"), 0);
           return;
         }
         if (rateUnitPicker) {
@@ -1338,7 +1574,7 @@ export function PurchaseEntryWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeRow, focusLineField, onClose, paymentModeOpen, productSearchOpen, rateUnitPicker, requestClose, vendorSearchOpen, warehousePickerOpen, lineHistory, viewOnly]);
+  }, [focusLineField, lineHistory, onClose, paymentModeOpen, productSearchOpen, productTargetRow, rateUnitPicker, requestClose, vendorSearchOpen, viewOnly, warehousePickerOpen]);
 
   async function confirmDate(input: string, setValue: (iso: string) => void, setDisplay: (display: string) => void, next: () => void) {
     const parsed = parseDateInput(input);
@@ -1445,12 +1681,30 @@ export function PurchaseEntryWorkspace({
   }, [focusLineField]);
 
   const selectProduct = useCallback((product: ProductSummary, targetRow = productTargetRow) => {
+    const docLabel = mode === "challan" ? "challan" : "bill";
+    const existingIdx = linesRef.current.findIndex((line) => line.product?.product_id === product.product_id);
+    if (existingIdx !== -1) {
+      const line = linesRef.current[existingIdx];
+      const q = Math.max(0, Math.round(Number(line.quantity1 || "0") || 0));
+      updateLine(existingIdx, { quantity1: String(q + 1) });
+      toast.info(`This product is already on this ${docLabel}. Quantity increased.`);
+      setProductSearchOpen(false);
+      setProductSearch("");
+      ensureTrailingEmptyLine();
+      setActiveRow(existingIdx);
+      const firstField = getLineQuantityFields(line)[0] ?? "quantity1";
+      setActiveField(firstField);
+      setTimeout(() => focusLineField(existingIdx, firstField), 80);
+      return;
+    }
+
+    const rv = product.latest_rate_value || product.cost_price || "0";
     updateLine(targetRow, {
       product,
-      mrp: product.mrp ? Number(product.mrp).toFixed(2) : "0.00",
-      rateValue: product.latest_rate_value || product.cost_price || "0",
+      mrp: product.mrp ? roundMoney2(product.mrp) : "0.00",
+      rateValue: roundMoney2(rv),
       rateUnitLevel: (product.latest_rate_unit_level as 1 | 2 | 3 | null) ?? 1,
-      discountPercent: product.latest_discount_percent || "0",
+      discountPercent: product.latest_discount_percent ? roundMoney2(product.latest_discount_percent) : "0.00",
     });
     setProductSearchOpen(false);
     setProductSearch("");
@@ -1461,7 +1715,7 @@ export function PurchaseEntryWorkspace({
     setTimeout(() => {
       focusLineField(targetRow, firstField);
     }, 80);
-  }, [ensureTrailingEmptyLine, focusLineField, productTargetRow, updateLine]);
+  }, [ensureTrailingEmptyLine, focusLineField, mode, productTargetRow, updateLine]);
 
   const openProductSelector = useCallback((rowIndex = activeRow) => {
     if (!vendorSummary?.vendor_id) {
@@ -1645,6 +1899,7 @@ export function PurchaseEntryWorkspace({
           warehouse_id: warehouseId,
           rack_id: null as string | null,
           reference_no: refNo,
+          entry_number: entryNumber.trim() || undefined,
           items: validLines.map((line) => ({
             product_id: line.product?.product_id,
             quantity: lineBaseQuantity(line),
@@ -1677,6 +1932,7 @@ export function PurchaseEntryWorkspace({
           await postBackend("/procurement/purchase-challans", challanPayload);
           toast.success("Purchase challan saved");
         }
+        void deleteBackend(`/entry-drafts/${entryDraftKind}`).catch(() => {});
       } else {
         const payload = {
           vendor_id: vendorSummary.vendor_id,
@@ -1723,6 +1979,7 @@ export function PurchaseEntryWorkspace({
           };
           toast.success("Purchase bill saved");
         }
+        void deleteBackend(`/entry-drafts/${entryDraftKind}`).catch(() => {});
       }
 
       if (onSaved) {
@@ -1757,6 +2014,7 @@ export function PurchaseEntryWorkspace({
     entryNumber,
     notes,
     initialId,
+    entryDraftKind,
     onSaved,
     showLedger,
   ]);
@@ -2019,8 +2277,30 @@ export function PurchaseEntryWorkspace({
     }
   };
 
+  const purchaseDocLabel = mode === "challan" ? "purchase challan" : "purchase bill";
+  const resumeUpdatedLabel =
+    resumeDraftUpdatedAt && !Number.isNaN(Date.parse(resumeDraftUpdatedAt))
+      ? new Date(resumeDraftUpdatedAt).toLocaleString()
+      : "";
+
   return (
     <div className="bg-[#eef3ec] font-mono text-[#111714]">
+      <EntryDraftLeaveDialog
+        open={leaveDialogOpen}
+        title="Leave this entry?"
+        description={`You have unsaved changes on this ${purchaseDocLabel}. Save a draft to continue later, discard your edits, or stay.`}
+        saving={savingLeaveDraft}
+        onStay={handleLeaveStay}
+        onDiscard={handleLeaveDiscard}
+        onSaveDraft={() => void handleLeaveSaveDraft()}
+      />
+      <EntryDraftResumeDialog
+        open={resumeDialogOpen}
+        documentLabel={purchaseDocLabel}
+        updatedAtLabel={resumeUpdatedLabel}
+        onResume={() => void handleResumeContinue()}
+        onStartFresh={handleResumeStartFresh}
+      />
       <div className="relative overflow-hidden border border-[#59786f] bg-[#fbfcf7] shadow-[0_0_0_1px_rgba(89,120,111,0.24)]">
         <div className="flex items-center justify-between border-b border-[#59786f] bg-[#6f9186] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.32em] text-white">
           <span className="flex items-center gap-2">
@@ -2040,31 +2320,42 @@ export function PurchaseEntryWorkspace({
             ) : null}
           </div>
         </div>
-        <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="border-r border-[#cad5cb]">
+        <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_minmax(380px,26vw)]">
+          <div className="min-w-0 border-r border-[#cad5cb]">
             {vendorSummary ? (
-              <div className="border-b bg-[#fbfcf7] px-3 py-2">
-                <div className="grid gap-1 text-[10px]">
-                  <div className="flex flex-wrap gap-x-6 gap-y-1">
-                    <span className="font-semibold">Firm Name:</span>
-                    <span className="text-[#5b655f]">{vendorSummary.vendor_name}</span>
-                    <span className="font-semibold">Owner Name:</span>
-                    <span className="text-[#5b655f]">{vendorSummary.owner_name || "-"}</span>
-                    <span className="font-semibold">Phone:</span>
-                    <span className="text-[#5b655f]">{vendorSummary.phone || "-"}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-x-6 gap-y-1">
-                    <span className="font-semibold">Address:</span>
-                    <span className="text-[#5b655f]">{vendorSummary.address_lines.join(", ")}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-x-6 gap-y-1">
-                    <span className="font-semibold">GSTIN:</span>
-                    <span className="text-[#5b655f]">{vendorSummary.gstin || "-"}</span>
-                    <span className="font-semibold">Type:</span>
-                    <span className="text-[#5b655f]">{taxType} (auto from GSTIN)</span>
-                    <span className="font-semibold">Mode:</span>
-                    <span className="text-[#5b655f]">{paymentMode}</span>
-                  </div>
+              <div className="border-b border-[#cad5cb] bg-gradient-to-br from-[#e8f4ef] via-[#fbfcf7] to-[#f4f9f1] px-4 py-4">
+                <h2 className="text-[1.5rem] font-bold leading-snug tracking-tight text-[#1a3329] md:text-[1.75rem]">
+                  {vendorSummary.vendor_name}
+                </h2>
+                <div className="mt-3 flex flex-wrap items-baseline gap-x-6 gap-y-2 border-t border-[#c5d9cc]/80 pt-3 text-sm text-[#111714]">
+                  <span className="inline-flex min-w-0 shrink-0 items-baseline">
+                    <span className="mr-1.5 text-[11px] font-normal uppercase tracking-[0.16em] text-[#5b7368]">Owner</span>
+                    <span className="font-semibold">{vendorSummary.owner_name?.trim() || "—"}</span>
+                  </span>
+                  <span className="inline-flex min-w-0 shrink-0 items-baseline">
+                    <span className="mr-1.5 text-[11px] font-normal uppercase tracking-[0.16em] text-[#5b7368]">Phone</span>
+                    <span className="font-semibold">{vendorSummary.phone?.trim() || "—"}</span>
+                  </span>
+                  <span className="inline-flex min-w-0 flex-1 basis-0 items-baseline">
+                    <span className="mr-1.5 shrink-0 text-[11px] font-normal uppercase tracking-[0.16em] text-[#5b7368]">Address</span>
+                    <span className="min-w-0 font-semibold leading-snug">
+                      {vendorSummary.address_lines.filter(Boolean).join(", ") || "—"}
+                    </span>
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap items-baseline gap-x-8 gap-y-2 border-t border-[#c5d9cc]/80 pt-3 text-sm">
+                  <span>
+                    <span className="mr-1.5 text-[11px] font-normal uppercase tracking-[0.16em] text-[#5b7368]">GSTIN</span>
+                    <span className="font-semibold text-[#111714]">{vendorSummary.gstin || "—"}</span>
+                  </span>
+                  <span>
+                    <span className="mr-1.5 text-[11px] font-normal uppercase tracking-[0.16em] text-[#5b7368]">Type</span>
+                    <span className="font-semibold text-[#111714]">{taxType}</span>
+                  </span>
+                  <span>
+                    <span className="mr-1.5 text-[11px] font-normal uppercase tracking-[0.16em] text-[#5b7368]">Mode</span>
+                    <span className="font-semibold text-[#111714]">{paymentMode}</span>
+                  </span>
                 </div>
               </div>
             ) : null}
@@ -2257,8 +2548,15 @@ export function PurchaseEntryWorkspace({
                 </div>
               </div>
               <div className="bg-[#fbfcf7] p-1 md:col-span-4">
-                <div className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Entry No</div>
-                <div className="mt-1 h-8 rounded-sm bg-[#eef1ea] px-2 py-1.5 text-xs font-semibold">{entryNumber}</div>
+                <Label htmlFor="entryNumberDisplay" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">
+                  Entry No
+                </Label>
+                <div
+                  id="entryNumberDisplay"
+                  className="mt-1 flex h-8 items-center rounded-sm bg-[#eef1ea] px-2 text-xs font-semibold text-[#111714]"
+                >
+                  {entryNumber || "—"}
+                </div>
               </div>
               <div className="bg-[#fbfcf7] p-1 md:col-span-4">
                 <Label htmlFor="warehouseSelect" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</Label>
@@ -2353,11 +2651,16 @@ export function PurchaseEntryWorkspace({
                           variant="ghost"
                           tabIndex={viewOnly ? -1 : 0}
                           className={cn(
-                            "h-7 w-full justify-start rounded-none border-0 bg-transparent px-2 text-left text-[10px] font-semibold text-[#111714] shadow-none",
+                            "h-7 w-full justify-start rounded-none border-0 bg-transparent px-2 text-left text-xs font-semibold text-[#111714] shadow-none",
                             viewOnly && "pointer-events-none cursor-default opacity-100",
                             index === activeRow && activeField === "product" ? "bg-[#2f5d50] text-white hover:bg-[#2f5d50]" : "",
                           )}
                           onFocus={() => {
+                            if (viewOnly) return;
+                            setActiveRow(index);
+                            setActiveField("product");
+                          }}
+                          onClick={() => {
                             if (viewOnly) return;
                             setActiveRow(index);
                             setActiveField("product");
@@ -2371,11 +2674,11 @@ export function PurchaseEntryWorkspace({
                           {line.product ? `${line.product.name}${line.product.brand ? ` • ${line.product.brand}` : ""}` : "Search product"}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={line.quantity3} readOnly={viewOnly && !!line.product?.unit_3rd_name} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={line.quantity2} readOnly={viewOnly && !!line.product?.unit_2nd_name} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={line.quantity1} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={displayWholeQty(line.quantity3)} readOnly={viewOnly && !!line.product?.unit_3rd_name} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={displayWholeQty(line.quantity2)} readOnly={viewOnly && !!line.product?.unit_2nd_name} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={displayWholeQty(line.quantity1)} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.mrp) updateLine(index, { mrp: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.rateValue) updateLine(index, { rateValue: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[55px] py-0.5">
                         <Button
                           id={`line-${index}-rateUnitLevel`}
@@ -2403,8 +2706,8 @@ export function PurchaseEntryWorkspace({
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: e.target.value })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn("h-7 w-full rounded-none border-0 bg-transparent text-center text-[10px] font-semibold text-[#111714] shadow-none", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: sanitizeMoneyInput2dp(e.target.value) })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.discountPercent) updateLine(index, { discountPercent: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: sanitizeMoneyInput2dp(e.target.value) })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.discountLumpsum) updateLine(index, { discountLumpsum: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[90px] py-0.5">
                         <Input
                           id={`line-${index}-taxable`}
@@ -2420,7 +2723,8 @@ export function PurchaseEntryWorkspace({
                           }}
                           onKeyDown={(e) => handleLineFieldKeyDown(e, index, "taxable")}
                           className={cn(
-                            "h-7 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-[10px] font-semibold shadow-none",
+                            COMPACT_GRID_INPUT_BASE,
+                            "cursor-default text-right",
                             index === activeRow && activeField === "taxable" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
                           )}
                         />
@@ -2440,7 +2744,8 @@ export function PurchaseEntryWorkspace({
                           }}
                           onKeyDown={(e) => handleLineFieldKeyDown(e, index, "lineAmount")}
                           className={cn(
-                            "h-7 w-full cursor-default rounded-none border-x-0 border-y-0 bg-transparent text-right text-[10px] font-semibold shadow-none",
+                            COMPACT_GRID_INPUT_BASE,
+                            "cursor-default text-right",
                             index === activeRow && activeField === "lineAmount" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : ""
                           )}
                         />
@@ -2452,23 +2757,23 @@ export function PurchaseEntryWorkspace({
             </div>
 
               <div className="grid gap-px border-t bg-border md:grid-cols-[1fr_1fr]">
-              <div className="bg-[#fbfcf7] p-3 text-[10px]">
-                <div className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Selected Item</div>
+              <div className="bg-[#fbfcf7] p-3 text-sm">
+                <div className="text-xs font-bold uppercase tracking-[0.22em] text-[#6a746e]">Selected item</div>
                 {activeLine?.product ? (
                   (() => {
                     const convLines = productUnitConversionLines(activeLine.product);
                     return (
-                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-                    <div className="text-[10px] font-semibold md:col-span-2">{activeLine.product.name}</div>
-                    <div className="text-[10px] text-[#5b655f] md:col-span-2">{activeLine.product.brand || "-"}</div>
-                    <div>Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
-                    <div>MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
-                    <div className="md:col-span-2">COST: <span className="font-semibold">{Number(activeLine.product.cost_price).toFixed(2)}</span></div>
+                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
+                    <div className="text-sm font-semibold leading-snug md:col-span-2">{activeLine.product.name}</div>
+                    <div className="text-xs text-[#5b655f] md:col-span-2">{activeLine.product.brand || "—"}</div>
+                    <div className="text-sm">Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
+                    <div className="text-sm">MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
+                    <div className="text-sm md:col-span-2">COST: <span className="font-semibold">{Number(activeLine.product.cost_price).toFixed(2)}</span></div>
                     {convLines.length ? (
-                      <div className="md:col-span-2 mt-1 space-y-0.5 border-t border-[#dde6dc] pt-1.5">
-                        <div className="text-[9px] font-semibold uppercase tracking-[0.2em] text-[#6a746e]">Unit conversion</div>
+                      <div className="md:col-span-2 mt-1 space-y-1 border-t border-[#dde6dc] pt-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#6a746e]">Unit conversion</div>
                         {convLines.map((line, idx) => (
-                          <div key={`${line}-${idx}`} className="text-[10px] text-[#3d4a42]">
+                          <div key={`${line}-${idx}`} className="text-xs text-[#3d4a42]">
                             {line}
                           </div>
                         ))}
@@ -2478,15 +2783,15 @@ export function PurchaseEntryWorkspace({
                     );
                   })()
                 ) : (
-                  <div className="mt-2 text-muted-foreground">Select product to view detail.</div>
+                  <div className="mt-2 text-sm text-muted-foreground">Select product to view detail.</div>
                 )}
               </div>
-              <div className="bg-[#fbfcf7] p-3 text-[10px]">
-                <div className="grid grid-cols-2 gap-y-2">
-                  <div>VALUE OF GOODS</div><div className="text-right font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
-                  <div>DISCOUNT</div><div className="text-right font-semibold">{totals.discount.toFixed(2)}</div>
-                  <div>GST</div><div className="text-right font-semibold">{totals.gst.toFixed(2)}</div>
-                  <div className="self-center">FREIGHT</div>
+              <div className="bg-[#fbfcf7] p-3 text-sm">
+                <div className="grid grid-cols-2 gap-y-2.5">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Value of goods</div><div className="text-right text-sm font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Discount</div><div className="text-right text-sm font-semibold">{totals.discount.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">GST</div><div className="text-right text-sm font-semibold">{totals.gst.toFixed(2)}</div>
+                  <div className="self-center text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Freight</div>
                   <div>
                     <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
                     <Input
@@ -2494,7 +2799,7 @@ export function PurchaseEntryWorkspace({
                       name="freightAmount"
                       ref={freightRef}
                       className={cn(
-                        "h-7 rounded-none border-x-0 border-t-0 bg-transparent text-right font-semibold text-[#111714] shadow-none",
+                        "h-8 rounded-none border-x-0 border-t-0 bg-transparent text-right text-sm font-semibold text-[#111714] shadow-none",
                         viewReadOnlyLineInput,
                       )}
                       value={freightAmount}
@@ -2517,8 +2822,8 @@ export function PurchaseEntryWorkspace({
                       }}
                     />
                   </div>
-                  <div>ROUND OFF</div><div className="text-right font-semibold">{totals.roundOff.toFixed(2)}</div>
-                  <div className="pt-2 text-[10px] font-semibold">FINAL BILL</div><div className="pt-2 text-right text-[10px] font-bold">{totals.finalAmount.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Round off</div><div className="text-right text-sm font-semibold">{totals.roundOff.toFixed(2)}</div>
+                  <div className="pt-1 text-xs font-bold uppercase tracking-wide text-[#2f5d50]">Final bill</div><div className="pt-1 text-right text-base font-bold">{totals.finalAmount.toFixed(2)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
                   <Button
@@ -2557,97 +2862,115 @@ export function PurchaseEntryWorkspace({
             </div>
 
             {activeLine?.product && (
-              <div className="border-t bg-[#fbfcf7] p-3">
-                <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.24em] text-[#6a746e]">Recent Interaction History</div>
+              <div className="border-t bg-[#fbfcf7] p-4">
+                <div className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-[#6a746e]">Recent interaction history</div>
                 {activeLine.product.recent_bills.length ? (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left text-[10px]">
+                    <table className="w-full text-left text-xs">
                       <thead>
-                        <tr className="border-b border-[#dde6dc] text-[10px] uppercase tracking-wider text-muted-foreground">
-                          <th className="pb-2 font-medium">Date</th>
-                          <th className="pb-2 font-medium">Bill No</th>
-                          <th className="pb-2 font-medium text-right">Qty</th>
-                          <th className="pb-2 font-medium">Unit</th>
-                          <th className="pb-2 font-medium text-right">MRP</th>
-                          <th className="pb-2 font-medium text-right">Price</th>
-                          <th className="pb-2 font-medium text-right">Disc %</th>
-                          <th className="pb-2 font-medium text-right">Total</th>
+                        <tr className="border-b border-[#dde6dc] text-[11px] uppercase tracking-wider text-muted-foreground">
+                          <th className="pb-2.5 font-semibold">Date</th>
+                          <th className="pb-2.5 font-semibold">Bill No</th>
+                          <th className="pb-2.5 text-right font-semibold">Qty</th>
+                          <th className="pb-2.5 font-semibold">Unit</th>
+                          <th className="pb-2.5 text-right font-semibold">MRP</th>
+                          <th className="pb-2.5 text-right font-semibold">Price</th>
+                          <th className="pb-2.5 text-right font-semibold">Disc %</th>
+                          <th className="pb-2.5 text-right font-semibold">Total</th>
                         </tr>
                       </thead>
                       <tbody>
                         {activeLine.product.recent_bills.map((bill) => (
                           <tr key={`${bill.bill_number}-${bill.bill_date}`} className="border-b border-[#f0f4f0] last:border-0">
-                            <td className="py-2">{formatDisplayDate(bill.bill_date)}</td>
-                            <td className="py-2 font-medium">{bill.bill_number}</td>
-                            <td className="py-2 text-right">{Number(bill.quantity).toFixed(2)}</td>
-                            <td className="py-2">{bill.unit_name}</td>
-                            <td className="py-2 text-right">{Number(bill.mrp).toFixed(2)}</td>
-                            <td className="py-2 text-right">{Number(bill.rate_value).toFixed(2)}</td>
-                            <td className="py-2 text-right">{Number(bill.discount_percent).toFixed(2)}%</td>
-                            <td className="py-2 text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</td>
+                            <td className="py-2.5">{formatDisplayDate(bill.bill_date)}</td>
+                            <td className="py-2.5 font-medium">{bill.bill_number}</td>
+                            <td className="py-2.5 text-right">{Number(bill.quantity).toFixed(2)}</td>
+                            <td className="py-2.5">{bill.unit_name}</td>
+                            <td className="py-2.5 text-right">{Number(bill.mrp).toFixed(2)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.rate_value).toFixed(2)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.discount_percent).toFixed(2)}%</td>
+                            <td className="py-2.5 text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
                 ) : (
-                  <div className="py-4 text-center text-[10px] text-muted-foreground">No recent interactions found for this product.</div>
+                  <div className="py-8 text-center text-sm text-muted-foreground">No recent interactions found for this product.</div>
                 )}
               </div>
             )}
           </div>
 
-          <div className="grid gap-px bg-border">
-            <div className="bg-[#fbfcf7] p-4 text-sm">
-              <div className="mb-3 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Party History</div>
+          <div className="grid min-h-full gap-px self-stretch bg-border shadow-[inset_1px_0_0_0_rgba(89,120,111,0.12)]">
+            <div className="flex min-h-full min-w-0 flex-col bg-[#fbfcf7] text-sm">
+              <div className="border-b border-[#59786f]/25 bg-[#6f9186] px-4 py-3 text-[11px] font-bold uppercase tracking-[0.28em] text-white shadow-sm">
+                Party history
+              </div>
+              <div className="flex flex-1 flex-col gap-0 p-0">
               {vendorSummary ? (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>Annual</div><div className="text-right font-semibold">{Number(vendorSummary.annual_purchase_amount).toFixed(2)}</div>
-                    <div>Month</div><div className="text-right font-semibold">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
-                    <div>Balance</div><div className="text-right font-semibold">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
-                    <div>Last Purc</div><div className="text-right font-semibold">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "-"}</div>
-                    <div>Last Pay</div><div className="text-right font-semibold">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "-"}</div>
-                    <div>GSTIN</div><div className="text-right font-semibold">{vendorSummary.gstin || "-"}</div>
-                    <div>Type</div><div className="text-right font-semibold">{vendorSummary.purchase_type || "-"}</div>
-                    <div>Area / Route</div><div className="text-right font-semibold">{vendorSummary.area || "-"} / {vendorSummary.route || "-"}</div>
+                <div className="flex flex-1 flex-col">
+                  <div className="border-b border-[#dde8e0] bg-[#f0f7f2] px-4 py-3">
+                    <div className="mb-2 rounded-md bg-[#2f5d50] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-white shadow-sm">
+                      Vendor snapshot
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                      <div className="text-[#5b655f]">Annual purchase</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.annual_purchase_amount).toFixed(2)}</div>
+                      <div className="text-[#5b655f]">Month purchase</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
+                      <div className="text-[#5b655f]">Balance</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
+                      <div className="text-[#5b655f]">Last purchase</div><div className="text-right font-semibold text-[#111714]">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "—"}</div>
+                      <div className="text-[#5b655f]">Last payment</div><div className="text-right font-semibold text-[#111714]">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "—"}</div>
+                      <div className="text-[#5b655f]">GSTIN</div><div className="text-right font-mono text-[11px] font-semibold text-[#111714]">{vendorSummary.gstin || "—"}</div>
+                      <div className="text-[#5b655f]">Type</div><div className="text-right font-semibold text-[#111714]">{taxType}</div>
+                      <div className="text-[#5b655f]">Area / route</div><div className="text-right font-semibold text-[#111714]">{vendorSummary.area || "—"} / {vendorSummary.route || "—"}</div>
+                    </div>
                   </div>
-                  <div className="border-t pt-3">
-                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Last 3 Bills</div>
+                  <div className="border-b border-[#dde8e0] px-4 py-3">
+                    <div className="mb-2 rounded-md bg-[#c8e087] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[#1e3318] shadow-sm">
+                      Last 3 bills
+                    </div>
                     <div className="space-y-2">
                       {vendorSummary.last_bills.map((bill) => (
-                        <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
-                          <span>{bill.bill_number}</span>
-                          <span>{formatDisplayDate(bill.bill_date)}</span>
+                        <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-md border border-[#dde8e0] bg-white px-2 py-1.5 text-xs shadow-sm">
+                          <span className="truncate font-medium">{bill.bill_number}</span>
+                          <span className="text-[#5b655f]">{formatDisplayDate(bill.bill_date)}</span>
                           <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(2)}</span>
                         </div>
                       ))}
                     </div>
                   </div>
-                  <div className="border-t pt-3">
-                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">Available Challans</div>
+                  <div className="flex flex-1 flex-col px-4 py-3">
+                    <div className="mb-2 rounded-md bg-[#8eb8ad] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-white shadow-sm">
+                      Available challans
+                    </div>
                     <div className="space-y-2">
                       {vendorSummary.open_challans.length ? vendorSummary.open_challans.map((challan) => (
-                        <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
-                          <span className="truncate">{challan.reference_no}</span>
-                          <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                        <div key={challan.challan_id} className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-md border border-[#dde8e0] bg-white px-2 py-1.5 text-xs shadow-sm">
+                          <span className="truncate font-medium">{challan.reference_no}</span>
+                          <span className="text-[#5b655f]">{challan.challan_date ? formatDisplayDate(challan.challan_date) : "—"}</span>
                           <span className="text-right font-semibold">{challan.item_count} items</span>
                         </div>
-                      )) : <div className="text-xs text-muted-foreground">No specific challans for this vendor.</div>}
+                      )) : <div className="rounded-md border border-dashed border-[#b8c9bf] bg-[#f7faf8] px-3 py-4 text-center text-xs text-muted-foreground">No challans linked to this vendor.</div>}
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  <div className="text-xs text-muted-foreground italic">Select vendor to view specific history.</div>
-                  <div className="border-t pt-3">
-                    <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[#6a746e]">All Open Challans</div>
+                <div className="flex flex-1 flex-col gap-0">
+                  <div className="border-b border-[#dde8e0] px-4 py-4">
+                    <div className="rounded-md border border-dashed border-[#b8c9bf] bg-[#f7faf8] px-3 py-4 text-center text-xs text-muted-foreground">
+                      Select a party to load purchase history and balances.
+                    </div>
+                  </div>
+                  <div className="flex flex-1 flex-col px-4 py-3">
+                    <div className="mb-2 rounded-md bg-[#c8e087] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[#1e3318] shadow-sm">
+                      All open challans
+                    </div>
                     <div className="space-y-3">
                       {generalOpenChallans.length ? generalOpenChallans.map((challan) => (
                         <button
                           key={challan.challan_id}
                           type="button"
-                          className="w-full cursor-pointer space-y-1 rounded border bg-[#fdfef9] p-2 text-xs shadow-sm hover:bg-[#eef1ea] transition-colors"
+                          className="w-full cursor-pointer space-y-1 rounded-md border border-[#dde8e0] bg-white p-2 text-left text-xs shadow-sm transition-colors hover:border-[#2f5d50]/40 hover:bg-[#f4faf6]"
                           onClick={() => void loadChallanToBill(challan.challan_id)}
                         >
                           <div className="flex justify-between font-semibold">
@@ -2655,15 +2978,16 @@ export function PurchaseEntryWorkspace({
                             <span>{challan.reference_no}</span>
                           </div>
                           <div className="flex justify-between text-[10px] text-muted-foreground">
-                             <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "-"}</span>
+                             <span>{challan.challan_date ? formatDisplayDate(challan.challan_date) : "—"}</span>
                              <span>{challan.item_count} items</span>
                           </div>
                         </button>
-                      )) : <div className="text-xs text-muted-foreground">No open challans available.</div>}
+                      )) : <div className="rounded-md border border-dashed border-[#b8c9bf] bg-[#f7faf8] px-3 py-4 text-center text-xs text-muted-foreground">No open challans.</div>}
                     </div>
                   </div>
                 </div>
               )}
+              </div>
             </div>
           </div>
         </div>

@@ -35,6 +35,7 @@ class PurchaseChallanCreate(BaseModel):
     vendor_id: uuid.UUID
     rack_id: uuid.UUID | None = None
     reference_no: str
+    entry_number: str | None = None
     items: list[PurchaseChallanItemIn]
 
 

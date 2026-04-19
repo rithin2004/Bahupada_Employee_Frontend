@@ -504,6 +504,16 @@ async function patchBackend(path: string, body: Record<string, unknown>) {
   });
 }
 
+async function putBackend(path: string, body: Record<string, unknown>) {
+  return requestBackend(path, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 async function deleteBackend(path: string) {
   return requestBackend(path, {
     method: "DELETE",
@@ -525,6 +535,7 @@ export {
   patchBackend,
   postBackend,
   postBackendForm,
+  putBackend,
   readPortalSession,
   refreshPortalSession,
   logFrontendViewLatency,

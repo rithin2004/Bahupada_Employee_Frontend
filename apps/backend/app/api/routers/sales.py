@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.auth import require_any_portal, require_employee_or_admin_portal, require_permission
 from app.db.session import get_db
+from app.utils.line_items import raise_if_duplicate_line_products
 from app.models.entities import (
     AuditLog,
     CreditNote,
@@ -36,6 +37,7 @@ from app.models.entities import (
     Payment,
     VoucherStatus,
     PartyLedgerEntryKind,
+    PaymentFlowDirection,
     PartyType,
     Pricing,
     HSNMaster,
@@ -65,9 +67,23 @@ from app.schemas.sales import (
     SalesReturnCreate,
 )
 from app.schemas.auth import AuthUserInfo
-from app.schemas.finance import PartyLedgerStatementResponse
+from app.schemas.finance import (
+    CustomerIncomingPaymentForAllocation,
+    PartyLedgerPaymentCreate,
+    PartyLedgerStatementResponse,
+    SalesInvoiceAllocationsAppend,
+    SalesInvoiceForReceiptAllocation,
+)
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
-from app.services.finance import get_party_ledger_statement, post_customer_sales_invoice_receivable, post_party_ledger_entry
+from app.services.finance import (
+    add_sales_invoice_allocations_to_existing_party_payment,
+    get_party_ledger_statement,
+    list_customer_incoming_party_payments_for_invoice_allocation,
+    list_customer_sales_invoices_for_receipt_allocation,
+    post_customer_sales_invoice_receivable,
+    post_party_ledger_entry,
+    record_party_payment,
+)
 from app.services.pricing import resolve_price_for_customer
 from app.services.schemes import (
     apply_schemes_to_sales_order,
@@ -171,7 +187,9 @@ async def _build_sales_product_summary(db: AsyncSession, product: Product) -> Sa
         product_id=product.id,
         sku=product.sku,
         name=product.name,
-        brand=None, # Brand could be fetched but keeping it simple for now
+        brand=product.brand,
+        category=product.category,
+        sub_category=product.sub_category,
         description=product.description,
         hsn_code=hsn.hsn_code if hsn else None,
         tax_percent=Decimal(product.tax_percent or 0),
@@ -319,6 +337,8 @@ async def preview_sales_order(
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
 
+    raise_if_duplicate_line_products(payload.items)
+
     preview_items = await build_sales_order_preview(
         db,
         customer=customer,
@@ -373,6 +393,8 @@ async def create_sales_order(
     customer = await db.get(Customer, payload.customer_id)
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    raise_if_duplicate_line_products(payload.items)
 
     if auth.portal == "CUSTOMER":
         order_source = OrderSource.CUSTOMER
@@ -483,6 +505,8 @@ async def update_sales_order(
     invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
     if invoice_number is None:
         invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+
+    raise_if_duplicate_line_products(payload.items)
 
     try:
         await release_reserved_stock_for_sales_order(db, order)
@@ -761,7 +785,7 @@ async def list_customer_pending_sales_orders(
                 "created_at": row["created_at"].isoformat() if row["created_at"] else "",
                 "items": items,
             }
-        )
+    )
     return response
 
 
@@ -1273,10 +1297,12 @@ async def create_final_invoice(
     if order is None or order.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sales order not found")
 
+    due_dt = payload.due_date if payload.due_date is not None else payload.invoice_date
     final_invoice = SalesFinalInvoice(
         sales_order_id=payload.sales_order_id,
         invoice_number=payload.invoice_number,
         invoice_date=payload.invoice_date,
+        due_date=due_dt,
         subtotal=payload.subtotal,
         gst_amount=payload.gst_amount,
         total_amount=payload.total_amount,
@@ -1403,10 +1429,12 @@ async def create_final_invoice_from_sales_order(
     if invoice_number is None:
         invoice_number = f"SFI-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 
+    due_dt = payload.due_date if payload.due_date is not None else payload.invoice_date
     final_invoice = SalesFinalInvoice(
         sales_order_id=order.id,
         invoice_number=invoice_number,
         invoice_date=payload.invoice_date,
+        due_date=due_dt,
         subtotal=subtotal,
         gst_amount=gst_amount,
         total_amount=total_amount,
@@ -1459,6 +1487,8 @@ async def create_direct_final_invoice(
     customer = await db.get(Customer, payload.customer_id)
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    raise_if_duplicate_line_products(payload.items)
 
     invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
     if invoice_number is None:
@@ -1517,6 +1547,7 @@ async def create_direct_final_invoice(
         sales_order_id=order.id,
         invoice_number=payload.invoice_number,
         invoice_date=payload.invoice_date,
+        due_date=payload.due_date,
         items=[
             SalesFinalInvoiceItemIn(sales_order_item_id=item.id, quantity=item.quantity)
             for item in order_items
@@ -1575,6 +1606,8 @@ async def edit_final_invoice(
         invoice.delivery_status = payload.delivery_status
         if payload.delivery_status.upper() == "DELIVERED":
             invoice.delivered_at = datetime.now(timezone.utc)
+    if payload.due_date is not None:
+        invoice.due_date = payload.due_date
 
     invoice.version = next_version
 
@@ -1729,3 +1762,104 @@ async def list_sales_expiries(
     _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
 ):
     return (await db.execute(select(SalesExpiry).where(SalesExpiry.deleted_at.is_(None)))).scalars().all()
+
+
+@router.post("/sales-entry/customer-receipts", dependencies=[Depends(require_permission("sales", "create"))])
+async def create_sales_entry_customer_receipt(
+    payload: PartyLedgerPaymentCreate,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    """Record incoming customer receipt with optional sales-invoice allocations (same ledger as Accounting module)."""
+    try:
+        resolved_party_type = PartyType(payload.party_type.upper())
+        if resolved_party_type != PartyType.CUSTOMER:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="party_type must be CUSTOMER")
+        resolved_direction = PaymentFlowDirection(payload.direction.upper())
+        if resolved_direction != PaymentFlowDirection.INCOMING:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="direction must be INCOMING for customer receipts")
+        payment = await record_party_payment(
+            db,
+            party_type=resolved_party_type,
+            party_id=payload.party_id,
+            amount=payload.amount,
+            direction=resolved_direction,
+            self_account_id=payload.self_account_id,
+            payment_mode=payload.payment_mode,
+            payment_date_value=payload.payment_date,
+            reference_no=payload.reference_no,
+            note=payload.note,
+            purchase_bill_allocations=[],
+            sales_invoice_allocations=[
+                {"sales_final_invoice_id": row.sales_final_invoice_id, "allocated_amount": row.allocated_amount}
+                for row in payload.sales_invoice_allocations
+            ],
+        )
+        return jsonable_encoder(payment)
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
+@router.get(
+    "/sales-entry/customers/{customer_id}/sales-invoices-for-receipt",
+    response_model=list[SalesInvoiceForReceiptAllocation],
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def list_sales_entry_customer_invoices_for_receipt(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    rows = await list_customer_sales_invoices_for_receipt_allocation(db, customer_id=customer_id)
+    return [SalesInvoiceForReceiptAllocation(**r) for r in rows]
+
+
+@router.get(
+    "/sales-entry/customers/{customer_id}/payments-for-invoice-allocation",
+    response_model=list[CustomerIncomingPaymentForAllocation],
+    dependencies=[Depends(require_permission("sales", "read"))],
+)
+async def list_sales_entry_customer_payments_for_invoice_allocation(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    rows = await list_customer_incoming_party_payments_for_invoice_allocation(db, customer_id=customer_id)
+    return [CustomerIncomingPaymentForAllocation(**r) for r in rows]
+
+
+@router.post(
+    "/sales-entry/customers/{customer_id}/payments/{payment_id}/sales-invoice-allocations",
+    dependencies=[Depends(require_permission("sales", "create"))],
+)
+async def append_sales_entry_customer_payment_invoice_allocations(
+    customer_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    payload: SalesInvoiceAllocationsAppend,
+    db: AsyncSession = Depends(get_db),
+    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
+):
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    try:
+        await add_sales_invoice_allocations_to_existing_party_payment(
+            db,
+            payment_id=payment_id,
+            customer_id=customer_id,
+            sales_invoice_allocations=[
+                {"sales_final_invoice_id": row.sales_final_invoice_id, "allocated_amount": row.allocated_amount}
+                for row in payload.allocations
+            ],
+        )
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    return {"ok": True}

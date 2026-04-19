@@ -1,7 +1,9 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, select
+import uuid
+
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
@@ -25,6 +27,7 @@ from app.models.entities import (
     PurchaseBillPaymentAllocation,
     PurchaseBillItem,
     SalesFinalInvoice,
+    SalesFinalInvoicePartyLedgerPaymentAllocation,
     SalesOrder,
     SelfAccount,
     Transaction,
@@ -294,6 +297,7 @@ async def record_party_payment(
     reference_no: str | None = None,
     note: str | None = None,
     purchase_bill_allocations: list[dict] | None = None,
+    sales_invoice_allocations: list[dict] | None = None,
 ) -> PartyLedgerPayment:
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero")
@@ -394,9 +398,333 @@ async def record_party_payment(
         if allocated_total > amount:
             raise ValueError("Purchase bill allocations exceed payment amount")
 
+    if party_type == PartyType.CUSTOMER and sales_invoice_allocations:
+        if direction != PaymentFlowDirection.INCOMING:
+            raise ValueError("Sales invoice allocations apply only to incoming customer receipts")
+        allocated_total = Decimal("0")
+        for allocation in sales_invoice_allocations:
+            allocated_amount = Decimal(allocation["allocated_amount"])
+            if allocated_amount <= 0:
+                raise ValueError("Allocated amount must be greater than zero")
+            inv = await session.get(SalesFinalInvoice, allocation["sales_final_invoice_id"])
+            if inv is None or inv.deleted_at is not None:
+                raise ValueError("Sales invoice not found")
+            order = await session.get(SalesOrder, inv.sales_order_id)
+            if order is None or order.customer_id != party_id:
+                raise ValueError("Sales invoice does not belong to selected customer")
+            session.add(
+                SalesFinalInvoicePartyLedgerPaymentAllocation(
+                    party_ledger_payment_id=payment_row.id,
+                    sales_final_invoice_id=inv.id,
+                    allocated_amount=allocated_amount,
+                )
+            )
+            allocated_total += allocated_amount
+        if allocated_total > amount:
+            raise ValueError("Sales invoice allocations exceed payment amount")
+
     await session.commit()
     await session.refresh(payment_row)
     return payment_row
+
+
+async def add_purchase_bill_allocations_to_existing_payment(
+    session: AsyncSession,
+    *,
+    payment_id: uuid.UUID,
+    vendor_id: uuid.UUID,
+    purchase_bill_allocations: list[dict],
+) -> None:
+    """Add or increase purchase bill allocations on an existing vendor outgoing payment."""
+    if not purchase_bill_allocations:
+        raise ValueError("No allocations provided")
+
+    payment = await session.get(PartyLedgerPayment, payment_id)
+    if payment is None:
+        raise ValueError("Payment not found")
+
+    account = await session.get(PartyLedgerAccount, payment.account_id)
+    if account is None or account.party_type != PartyType.VENDOR or account.party_id != vendor_id:
+        raise ValueError("Payment does not belong to this vendor")
+
+    if payment.direction != PaymentFlowDirection.OUTGOING:
+        raise ValueError("Only outgoing vendor payments can be allocated to purchase bills")
+
+    merged: dict[uuid.UUID, Decimal] = {}
+    for allocation in purchase_bill_allocations:
+        bill_id = allocation["purchase_bill_id"]
+        amt = Decimal(allocation["allocated_amount"])
+        if amt <= 0:
+            raise ValueError("Allocated amount must be greater than zero")
+        merged[bill_id] = merged.get(bill_id, Decimal("0")) + amt
+
+    for bill_id in merged:
+        bill = await session.get(PurchaseBill, bill_id)
+        if bill is None or bill.deleted_at is not None:
+            raise ValueError("Purchase bill not found")
+        if bill.vendor_id != vendor_id:
+            raise ValueError("Purchase bill does not belong to selected vendor")
+
+    current_total = (
+        await session.execute(
+            select(func.coalesce(func.sum(PurchaseBillPaymentAllocation.allocated_amount), 0)).where(
+                PurchaseBillPaymentAllocation.party_ledger_payment_id == payment_id
+            )
+        )
+    ).scalar_one()
+    delta = sum(merged.values(), Decimal("0"))
+    if current_total + delta > payment.amount:
+        raise ValueError("Purchase bill allocations exceed payment amount")
+
+    for bill_id, add_amt in merged.items():
+        existing = (
+            await session.execute(
+                select(PurchaseBillPaymentAllocation).where(
+                    and_(
+                        PurchaseBillPaymentAllocation.party_ledger_payment_id == payment_id,
+                        PurchaseBillPaymentAllocation.purchase_bill_id == bill_id,
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.allocated_amount = existing.allocated_amount + add_amt
+        else:
+            session.add(
+                PurchaseBillPaymentAllocation(
+                    party_ledger_payment_id=payment_id,
+                    purchase_bill_id=bill_id,
+                    allocated_amount=add_amt,
+                )
+            )
+
+    await session.commit()
+
+
+async def list_vendor_outgoing_payments_for_bill_allocation(
+    session: AsyncSession,
+    *,
+    vendor_id: uuid.UUID,
+) -> list[dict]:
+    account = (
+        await session.execute(
+            select(PartyLedgerAccount).where(
+                PartyLedgerAccount.party_type == PartyType.VENDOR,
+                PartyLedgerAccount.party_id == vendor_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        return []
+
+    alloc_subq = (
+        select(
+            PurchaseBillPaymentAllocation.party_ledger_payment_id.label("pid"),
+            func.sum(PurchaseBillPaymentAllocation.allocated_amount).label("allocated"),
+        )
+        .group_by(PurchaseBillPaymentAllocation.party_ledger_payment_id)
+        .subquery()
+    )
+
+    rows = (
+        await session.execute(
+            select(
+                PartyLedgerPayment.id,
+                PartyLedgerPayment.amount,
+                PartyLedgerPayment.payment_date,
+                PartyLedgerPayment.reference_no,
+                func.coalesce(alloc_subq.c.allocated, 0).label("allocated_total"),
+            )
+            .select_from(PartyLedgerPayment)
+            .outerjoin(alloc_subq, alloc_subq.c.pid == PartyLedgerPayment.id)
+            .where(
+                PartyLedgerPayment.account_id == account.id,
+                PartyLedgerPayment.direction == PaymentFlowDirection.OUTGOING,
+            )
+            .order_by(PartyLedgerPayment.payment_date.desc(), PartyLedgerPayment.created_at.desc())
+        )
+    ).all()
+
+    out = []
+    for row in rows:
+        pid, amount, pdate, ref, allocated = row
+        allocated_d = Decimal(allocated or 0)
+        remaining = amount - allocated_d
+        out.append(
+            {
+                "id": pid,
+                "amount": amount,
+                "payment_date": pdate,
+                "reference_no": ref,
+                "allocated_total": allocated_d,
+                "remaining": remaining,
+            }
+        )
+    return out
+
+
+async def add_sales_invoice_allocations_to_existing_party_payment(
+    session: AsyncSession,
+    *,
+    payment_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    sales_invoice_allocations: list[dict],
+) -> None:
+    """Add or increase sales invoice allocations on an existing customer incoming party-ledger payment."""
+    if not sales_invoice_allocations:
+        raise ValueError("No allocations provided")
+
+    payment = await session.get(PartyLedgerPayment, payment_id)
+    if payment is None:
+        raise ValueError("Payment not found")
+
+    account = await session.get(PartyLedgerAccount, payment.account_id)
+    if account is None or account.party_type != PartyType.CUSTOMER or account.party_id != customer_id:
+        raise ValueError("Payment does not belong to this customer")
+
+    if payment.direction != PaymentFlowDirection.INCOMING:
+        raise ValueError("Only incoming customer receipts can be allocated to sales invoices")
+
+    merged: dict[uuid.UUID, Decimal] = {}
+    for allocation in sales_invoice_allocations:
+        inv_id = allocation["sales_final_invoice_id"]
+        amt = Decimal(allocation["allocated_amount"])
+        if amt <= 0:
+            raise ValueError("Allocated amount must be greater than zero")
+        merged[inv_id] = merged.get(inv_id, Decimal("0")) + amt
+
+    for inv_id in merged:
+        inv = await session.get(SalesFinalInvoice, inv_id)
+        if inv is None or inv.deleted_at is not None:
+            raise ValueError("Sales invoice not found")
+        order = await session.get(SalesOrder, inv.sales_order_id)
+        if order is None or order.customer_id != customer_id:
+            raise ValueError("Sales invoice does not belong to selected customer")
+
+    current_total = (
+        await session.execute(
+            select(func.coalesce(func.sum(SalesFinalInvoicePartyLedgerPaymentAllocation.allocated_amount), 0)).where(
+                SalesFinalInvoicePartyLedgerPaymentAllocation.party_ledger_payment_id == payment_id
+            )
+        )
+    ).scalar_one()
+    delta = sum(merged.values(), Decimal("0"))
+    if current_total + delta > payment.amount:
+        raise ValueError("Sales invoice allocations exceed payment amount")
+
+    for inv_id, add_amt in merged.items():
+        existing = (
+            await session.execute(
+                select(SalesFinalInvoicePartyLedgerPaymentAllocation).where(
+                    and_(
+                        SalesFinalInvoicePartyLedgerPaymentAllocation.party_ledger_payment_id == payment_id,
+                        SalesFinalInvoicePartyLedgerPaymentAllocation.sales_final_invoice_id == inv_id,
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.allocated_amount = existing.allocated_amount + add_amt
+        else:
+            session.add(
+                SalesFinalInvoicePartyLedgerPaymentAllocation(
+                    party_ledger_payment_id=payment_id,
+                    sales_final_invoice_id=inv_id,
+                    allocated_amount=add_amt,
+                )
+            )
+
+    await session.commit()
+
+
+async def list_customer_sales_invoices_for_receipt_allocation(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+) -> list[dict]:
+    rows = (
+        await session.execute(
+            select(SalesFinalInvoice)
+            .join(SalesOrder, SalesOrder.id == SalesFinalInvoice.sales_order_id)
+            .where(
+                SalesOrder.customer_id == customer_id,
+                SalesFinalInvoice.deleted_at.is_(None),
+            )
+            .order_by(SalesFinalInvoice.invoice_date.desc(), SalesFinalInvoice.created_at.desc())
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": inv.id,
+            "invoice_number": inv.invoice_number,
+            "invoice_date": inv.invoice_date,
+            "due_date": inv.due_date,
+            "total_amount": inv.total_amount or Decimal("0"),
+        }
+        for inv in rows
+    ]
+
+
+async def list_customer_incoming_party_payments_for_invoice_allocation(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+) -> list[dict]:
+    account = (
+        await session.execute(
+            select(PartyLedgerAccount).where(
+                PartyLedgerAccount.party_type == PartyType.CUSTOMER,
+                PartyLedgerAccount.party_id == customer_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        return []
+
+    alloc_subq = (
+        select(
+            SalesFinalInvoicePartyLedgerPaymentAllocation.party_ledger_payment_id.label("pid"),
+            func.sum(SalesFinalInvoicePartyLedgerPaymentAllocation.allocated_amount).label("allocated"),
+        )
+        .group_by(SalesFinalInvoicePartyLedgerPaymentAllocation.party_ledger_payment_id)
+        .subquery()
+    )
+
+    rows = (
+        await session.execute(
+            select(
+                PartyLedgerPayment.id,
+                PartyLedgerPayment.amount,
+                PartyLedgerPayment.payment_date,
+                PartyLedgerPayment.reference_no,
+                func.coalesce(alloc_subq.c.allocated, 0).label("allocated_total"),
+            )
+            .select_from(PartyLedgerPayment)
+            .outerjoin(alloc_subq, alloc_subq.c.pid == PartyLedgerPayment.id)
+            .where(
+                PartyLedgerPayment.account_id == account.id,
+                PartyLedgerPayment.direction == PaymentFlowDirection.INCOMING,
+            )
+            .order_by(PartyLedgerPayment.payment_date.desc(), PartyLedgerPayment.created_at.desc())
+        )
+    ).all()
+
+    out = []
+    for row in rows:
+        pid, amount, pdate, ref, allocated = row
+        allocated_d = Decimal(allocated or 0)
+        remaining = amount - allocated_d
+        out.append(
+            {
+                "id": pid,
+                "amount": amount,
+                "payment_date": pdate,
+                "reference_no": ref,
+                "allocated_total": allocated_d,
+                "remaining": remaining,
+            }
+        )
+    return out
 
 
 async def create_self_account(session: AsyncSession, payload) -> SelfAccount:

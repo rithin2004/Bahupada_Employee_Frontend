@@ -134,6 +134,53 @@ class PurchaseBillPaymentAllocationCreate(BaseModel):
     allocated_amount: Decimal
 
 
+class SalesInvoiceLedgerAllocationCreate(BaseModel):
+    sales_final_invoice_id: uuid.UUID
+    allocated_amount: Decimal
+
+
+class PurchaseBillAllocationsAppend(BaseModel):
+    """Additional bill amounts to attach to an existing vendor payment (increments per bill)."""
+
+    allocations: list[PurchaseBillPaymentAllocationCreate]
+
+
+class VendorOutgoingPaymentForAllocation(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    amount: Decimal
+    payment_date: date
+    reference_no: str | None
+    allocated_total: Decimal
+    remaining: Decimal
+
+
+class CustomerIncomingPaymentForAllocation(BaseModel):
+    """Incoming customer receipt on party ledger, with allocation totals (same shape as vendor outgoing)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    amount: Decimal
+    payment_date: date
+    reference_no: str | None
+    allocated_total: Decimal
+    remaining: Decimal
+
+
+class SalesInvoiceForReceiptAllocation(BaseModel):
+    id: uuid.UUID
+    invoice_number: str
+    invoice_date: date
+    due_date: date
+    total_amount: Decimal
+
+
+class SalesInvoiceAllocationsAppend(BaseModel):
+    allocations: list[SalesInvoiceLedgerAllocationCreate]
+
+
 class PurchaseBillPaymentAllocationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -201,6 +248,7 @@ class PartyLedgerPaymentCreate(BaseModel):
     reference_no: str | None = None
     note: str | None = None
     purchase_bill_allocations: list[PurchaseBillPaymentAllocationCreate] = []
+    sales_invoice_allocations: list[SalesInvoiceLedgerAllocationCreate] = []
 
 
 class SelfAccountCreate(BaseModel):

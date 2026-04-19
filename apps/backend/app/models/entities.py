@@ -4,6 +4,7 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -351,6 +352,19 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class EntryDraft(Base):
+    """Autosave payload for purchase/sales entry UIs (one row per user + document kind)."""
+
+    __tablename__ = "entry_drafts"
+    __table_args__ = (UniqueConstraint("user_id", "draft_kind", name="uq_entry_drafts_user_kind"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    draft_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class LoginAttempt(Base):
     __tablename__ = "login_attempts"
 
@@ -654,6 +668,7 @@ class PurchaseChallan(Base, TimestampMixin):
     warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
     rack_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("racks.id"), nullable=True)
     reference_no: Mapped[str] = mapped_column(String(100), unique=True)
+    entry_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     challan_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     challan_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default=VoucherStatus.DRAFT.value)
@@ -878,6 +893,7 @@ class SalesFinalInvoice(Base, TimestampMixin):
     sales_order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_orders.id"), nullable=False)
     invoice_number: Mapped[str] = mapped_column(String(100), unique=True)
     invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
     subtotal: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
     gst_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
     total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
@@ -1450,6 +1466,22 @@ class PurchaseBillPaymentAllocation(Base, TimestampMixin):
     allocated_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
 
 
+class SalesFinalInvoicePartyLedgerPaymentAllocation(Base, TimestampMixin):
+    __tablename__ = "sales_final_invoice_party_ledger_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint(
+            "party_ledger_payment_id",
+            "sales_final_invoice_id",
+            name="uq_sf_invoice_party_ledger_payment",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    party_ledger_payment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("party_ledger_payments.id"), nullable=False)
+    sales_final_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_final_invoices.id"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+
+
 class CreditNote(Base, TimestampMixin):
     __tablename__ = "credit_notes"
 
@@ -1530,6 +1562,14 @@ Index("idx_transactions_party", Transaction.party_type, Transaction.party_id, Tr
 Index("idx_transactions_self_account", Transaction.self_account_id, Transaction.transaction_date.desc())
 Index("idx_purchase_bill_payment_alloc_payment", PurchaseBillPaymentAllocation.party_ledger_payment_id)
 Index("idx_purchase_bill_payment_alloc_bill", PurchaseBillPaymentAllocation.purchase_bill_id)
+Index(
+    "idx_sf_inv_party_ledger_alloc_payment",
+    SalesFinalInvoicePartyLedgerPaymentAllocation.party_ledger_payment_id,
+)
+Index(
+    "idx_sf_inv_party_ledger_alloc_invoice",
+    SalesFinalInvoicePartyLedgerPaymentAllocation.sales_final_invoice_id,
+)
 Index("idx_sales_final_invoices_delivery_status", SalesFinalInvoice.delivery_status, SalesFinalInvoice.created_at.desc())
 Index("idx_invoice_assignment_batches_wh_status", InvoiceAssignmentBatch.warehouse_id, InvoiceAssignmentBatch.status, InvoiceAssignmentBatch.created_at.desc())
 Index("idx_invoice_assignment_batch_invoices_status", InvoiceAssignmentBatchInvoice.status, InvoiceAssignmentBatchInvoice.created_at.desc())

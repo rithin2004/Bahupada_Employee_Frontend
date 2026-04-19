@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SalesBillWorkspace } from "@/components/modules/sales-bill-workspace";
+import { SalesInvoiceRefWizard } from "@/components/modules/sales-invoice-ref-wizard";
 
 type SalesChallanSummary = {
   id: string;
@@ -142,6 +143,8 @@ export function SalesCreateFlow() {
   );
 
   const [activeTab, setActiveTab] = useState<"challan" | "bill">("bill");
+  const [receiptWizardOpen, setReceiptWizardOpen] = useState(false);
+  const [receiptWizardCtx, setReceiptWizardCtx] = useState<{ customerId: string; salesFinalInvoiceId?: string } | null>(null);
 
   if (showWorkspace) {
     return (
@@ -154,12 +157,16 @@ export function SalesCreateFlow() {
           void loadChallans();
           void loadBills();
         }}
-        onSaved={() => {
+        onSaved={(detail) => {
           setShowWorkspace(false);
           setEditingId("");
           setActiveTab(workspaceMode);
           void loadChallans();
           void loadBills();
+          if (detail?.salesFinalInvoiceId && workspaceMode === "bill") {
+            setReceiptWizardCtx({ customerId: detail.customerId, salesFinalInvoiceId: detail.salesFinalInvoiceId });
+            setReceiptWizardOpen(true);
+          }
         }}
         initialId={editingId}
         mode={workspaceMode}
@@ -323,6 +330,23 @@ export function SalesCreateFlow() {
           </Card>
         </TabsContent>
       </Tabs>
+      {receiptWizardCtx ? (
+        <SalesInvoiceRefWizard
+          open={receiptWizardOpen}
+          onOpenChange={(open) => {
+            setReceiptWizardOpen(open);
+            if (!open) {
+              setReceiptWizardCtx(null);
+            }
+          }}
+          customerId={receiptWizardCtx.customerId}
+          highlightSalesFinalInvoiceId={receiptWizardCtx.salesFinalInvoiceId}
+          apiBase="sales"
+          onRecorded={() => {
+            void loadBills();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -10,15 +10,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-type PurchaseBillRow = {
+type SalesInvoiceRow = {
   id: string;
-  bill_number: string;
-  bill_date: string;
-  vendor_id: string | null;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string;
   total_amount: string;
 };
 
-type VendorPaymentForAllocation = {
+type CustomerPaymentForAllocation = {
   id: string;
   amount: string;
   payment_date: string;
@@ -27,71 +27,67 @@ type VendorPaymentForAllocation = {
   remaining: string;
 };
 
-/** Procurement routes use `purchase` permissions; accounting routes use `credit-debit-notes` (same backend logic). */
-export type PurchaseBillRefApiBase = "procurement" | "accounting";
+export type SalesInvoiceRefApiBase = "sales" | "accounting";
 
-type PurchaseBillRefWizardProps = {
+type SalesInvoiceRefWizardProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  vendorId: string;
-  /** Bill just saved — pre-selected for allocation when linking payments. */
-  highlightPurchaseBillId?: string;
-  /** Defaults to procurement (after saving a bill from Purchase). Use `accounting` from the Accounting module. */
-  apiBase?: PurchaseBillRefApiBase;
-  /** Called after a payment is saved successfully (refresh ledger / bills in parent). */
+  customerId: string;
+  highlightSalesFinalInvoiceId?: string;
+  apiBase?: SalesInvoiceRefApiBase;
   onRecorded?: () => void | Promise<void>;
 };
 
-function paymentApiPaths(apiBase: PurchaseBillRefApiBase, vendorId: string) {
+function receiptApiPaths(apiBase: SalesInvoiceRefApiBase, customerId: string) {
   if (apiBase === "accounting") {
     return {
-      purchaseBills: `/finance/party-ledger/vendors/${vendorId}/purchase-bills-for-payment`,
+      invoices: `/finance/party-ledger/customers/${customerId}/sales-invoices-for-receipt`,
       createPayment: `/finance/party-ledger/payments`,
-      paymentsForAllocation: `/finance/party-ledger/vendors/${vendorId}/payments-for-allocation`,
+      paymentsForAllocation: `/finance/party-ledger/customers/${customerId}/payments-for-invoice-allocation`,
       appendAllocations: (paymentId: string) =>
-        `/finance/party-ledger/vendors/${vendorId}/payments/${paymentId}/purchase-bill-allocations`,
+        `/finance/party-ledger/customers/${customerId}/payments/${paymentId}/sales-invoice-allocations`,
     };
   }
   return {
-    purchaseBills: `/procurement/purchase-bills`,
-    createPayment: `/procurement/purchase-entry/vendor-payments`,
-    paymentsForAllocation: `/procurement/purchase-entry/vendors/${vendorId}/payments-for-allocation`,
+    invoices: `/sales/sales-entry/customers/${customerId}/sales-invoices-for-receipt`,
+    createPayment: `/sales/sales-entry/customer-receipts`,
+    paymentsForAllocation: `/sales/sales-entry/customers/${customerId}/payments-for-invoice-allocation`,
     appendAllocations: (paymentId: string) =>
-      `/procurement/purchase-entry/vendors/${vendorId}/vendor-payments/${paymentId}/purchase-bill-allocations`,
+      `/sales/sales-entry/customers/${customerId}/payments/${paymentId}/sales-invoice-allocations`,
   };
 }
 
-export function PurchaseBillRefWizard({
+export function SalesInvoiceRefWizard({
   open,
   onOpenChange,
-  vendorId,
-  highlightPurchaseBillId,
-  apiBase = "procurement",
+  customerId,
+  highlightSalesFinalInvoiceId,
+  apiBase = "sales",
   onRecorded,
-}: PurchaseBillRefWizardProps) {
+}: SalesInvoiceRefWizardProps) {
   const [step, setStep] = useState<"choose" | "newPay" | "onAccount" | "linkExisting">("choose");
-  const [bills, setBills] = useState<PurchaseBillRow[]>([]);
-  const [loadingBills, setLoadingBills] = useState(false);
-  const [vendorPayments, setVendorPayments] = useState<VendorPaymentForAllocation[]>([]);
+  const [invoices, setInvoices] = useState<SalesInvoiceRow[]>([]);
+  const [loadingInvoices, setLoadingInvoices] = useState(false);
+  const [customerPayments, setCustomerPayments] = useState<CustomerPaymentForAllocation[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const [amount, setAmount] = useState("");
   const [referenceNo, setReferenceNo] = useState("");
   const [note, setNote] = useState("");
-  const [paymentMode, setPaymentMode] = useState("NEFT");
+  const [paymentMode, setPaymentMode] = useState("UPI");
   const [allocations, setAllocations] = useState<Record<string, string>>({});
 
   const [selectedPaymentId, setSelectedPaymentId] = useState<string>("");
 
-  const paths = useMemo(() => paymentApiPaths(apiBase, vendorId), [apiBase, vendorId]);
+  const paths = useMemo(() => receiptApiPaths(apiBase, customerId), [apiBase, customerId]);
 
   const reset = useCallback(() => {
     setStep("choose");
     setAmount("");
     setReferenceNo("");
     setNote("");
-    setPaymentMode("NEFT");
+    setPaymentMode("UPI");
     setAllocations({});
     setSelectedPaymentId("");
   }, []);
@@ -101,36 +97,36 @@ export function PurchaseBillRefWizard({
       reset();
       return;
     }
-    setLoadingBills(true);
+    setLoadingInvoices(true);
     void (async () => {
       try {
-        const res = await fetchBackend(paths.purchaseBills);
+        const res = await fetchBackend(paths.invoices);
         const rows = asArray(res).map((row) => {
           const o = asObject(row);
           return {
             id: String(o.id ?? ""),
-            bill_number: String(o.bill_number ?? ""),
-            bill_date: String(o.bill_date ?? ""),
-            vendor_id: o.vendor_id ? String(o.vendor_id) : null,
+            invoice_number: String(o.invoice_number ?? ""),
+            invoice_date: String(o.invoice_date ?? ""),
+            due_date: String(o.due_date ?? ""),
             total_amount: String(o.total_amount ?? "0"),
-          } satisfies PurchaseBillRow;
+          } satisfies SalesInvoiceRow;
         });
-        setBills(apiBase === "accounting" ? rows : rows.filter((b) => b.vendor_id === vendorId));
+        setInvoices(rows);
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Failed to load bills");
-        setBills([]);
+        toast.error(e instanceof Error ? e.message : "Failed to load invoices");
+        setInvoices([]);
       } finally {
-        setLoadingBills(false);
+        setLoadingInvoices(false);
       }
     })();
-  }, [open, reset, vendorId, paths.purchaseBills, apiBase]);
+  }, [open, reset, paths.invoices]);
 
   useEffect(() => {
-    if (!open || !highlightPurchaseBillId) return;
-    setAllocations((prev) => ({ ...prev, [highlightPurchaseBillId]: prev[highlightPurchaseBillId] ?? "" }));
-  }, [highlightPurchaseBillId, open]);
+    if (!open || !highlightSalesFinalInvoiceId) return;
+    setAllocations((prev) => ({ ...prev, [highlightSalesFinalInvoiceId]: prev[highlightSalesFinalInvoiceId] ?? "" }));
+  }, [highlightSalesFinalInvoiceId, open]);
 
-  const loadVendorPayments = useCallback(async () => {
+  const loadCustomerPayments = useCallback(async () => {
     setLoadingPayments(true);
     try {
       const res = await fetchBackend(paths.paymentsForAllocation);
@@ -143,12 +139,12 @@ export function PurchaseBillRefWizard({
           reference_no: o.reference_no != null ? String(o.reference_no) : null,
           allocated_total: String(o.allocated_total ?? "0"),
           remaining: String(o.remaining ?? "0"),
-        } satisfies VendorPaymentForAllocation;
+        } satisfies CustomerPaymentForAllocation;
       });
-      setVendorPayments(rows);
+      setCustomerPayments(rows);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to load payments");
-      setVendorPayments([]);
+      toast.error(e instanceof Error ? e.message : "Failed to load receipts");
+      setCustomerPayments([]);
     } finally {
       setLoadingPayments(false);
     }
@@ -156,141 +152,141 @@ export function PurchaseBillRefWizard({
 
   useEffect(() => {
     if (!open || step !== "linkExisting") return;
-    void loadVendorPayments();
-  }, [open, step, loadVendorPayments]);
-
-  const vendorBills = useMemo(() => bills, [bills]);
+    void loadCustomerPayments();
+  }, [open, step, loadCustomerPayments]);
 
   const selectedPayment = useMemo(
-    () => vendorPayments.find((p) => p.id === selectedPaymentId),
-    [vendorPayments, selectedPaymentId],
+    () => customerPayments.find((p) => p.id === selectedPaymentId),
+    [customerPayments, selectedPaymentId],
   );
 
-  const buildNewPaymentAllocations = useCallback(
+  const buildNewReceiptAllocations = useCallback(
     (amt: number) => {
       const rows = Object.entries(allocations)
-        .map(([purchase_bill_id, v]) => ({
-          purchase_bill_id,
+        .map(([sales_final_invoice_id, v]) => ({
+          sales_final_invoice_id,
           allocated_amount: Number(v),
         }))
         .filter((r) => Number.isFinite(r.allocated_amount) && r.allocated_amount > 0);
       if (rows.length > 0) {
         return rows.map((r) => ({
-          purchase_bill_id: r.purchase_bill_id,
+          sales_final_invoice_id: r.sales_final_invoice_id,
           allocated_amount: r.allocated_amount,
         }));
       }
-      if (highlightPurchaseBillId && Number.isFinite(amt) && amt > 0) {
-        return [{ purchase_bill_id: highlightPurchaseBillId, allocated_amount: amt }];
+      if (highlightSalesFinalInvoiceId && Number.isFinite(amt) && amt > 0) {
+        return [{ sales_final_invoice_id: highlightSalesFinalInvoiceId, allocated_amount: amt }];
       }
       return [];
     },
-    [allocations, highlightPurchaseBillId],
+    [allocations, highlightSalesFinalInvoiceId],
+  );
+
+  const partyBodyBase = useCallback(
+    () => ({
+      party_type: "CUSTOMER",
+      party_id: customerId,
+      payment_mode: paymentMode || null,
+      payment_date: new Date().toISOString().slice(0, 10),
+      reference_no: referenceNo.trim() || null,
+      purchase_bill_allocations: [] as { purchase_bill_id: string; allocated_amount: number }[],
+    }),
+    [customerId, paymentMode, referenceNo],
   );
 
   const submitOnAccount = useCallback(async () => {
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
-      toast.error("Enter a valid payment amount.");
+      toast.error("Enter a valid receipt amount.");
       return;
     }
     setSubmitting(true);
     try {
       await postBackend(paths.createPayment, {
-        party_type: "VENDOR",
-        party_id: vendorId,
+        ...partyBodyBase(),
         amount: amt,
-        direction: "OUTGOING",
-        payment_mode: paymentMode || null,
-        payment_date: new Date().toISOString().slice(0, 10),
-        reference_no: referenceNo.trim() || null,
-        note: note.trim() || "On-account vendor payment",
-        purchase_bill_allocations: [],
+        direction: "INCOMING",
+        note: note.trim() || "On-account customer receipt",
         sales_invoice_allocations: [],
       });
-      toast.success("Vendor payment recorded.");
+      toast.success("Customer receipt recorded.");
       await onRecorded?.();
       onOpenChange(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Payment failed");
+      toast.error(e instanceof Error ? e.message : "Receipt failed");
     } finally {
       setSubmitting(false);
     }
-  }, [amount, note, onOpenChange, onRecorded, paymentMode, paths.createPayment, referenceNo, vendorId]);
+  }, [amount, note, onOpenChange, onRecorded, partyBodyBase, paths.createPayment]);
 
   const submitNewPay = useCallback(async () => {
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
-      toast.error("Enter total payment amount.");
+      toast.error("Enter total receipt amount.");
       return;
     }
-    const purchase_bill_allocations = buildNewPaymentAllocations(amt);
-    if (purchase_bill_allocations.length === 0) {
-      toast.error("Allocate to at least one bill, or use “Link existing payment” if the cash is already posted.");
+    const sales_invoice_allocations = buildNewReceiptAllocations(amt);
+    if (sales_invoice_allocations.length === 0) {
+      toast.error("Allocate to at least one invoice, or use “Link existing receipt” if funds were already posted.");
       return;
     }
-    const sum = purchase_bill_allocations.reduce((s, r) => s + r.allocated_amount, 0);
+    const sum = sales_invoice_allocations.reduce((s, r) => s + r.allocated_amount, 0);
     if (sum > amt + 0.0001) {
-      toast.error("Allocations cannot exceed payment amount.");
+      toast.error("Allocations cannot exceed receipt amount.");
       return;
     }
     setSubmitting(true);
     try {
       await postBackend(paths.createPayment, {
-        party_type: "VENDOR",
-        party_id: vendorId,
+        ...partyBodyBase(),
         amount: amt,
-        direction: "OUTGOING",
-        payment_mode: paymentMode || null,
-        payment_date: new Date().toISOString().slice(0, 10),
-        reference_no: referenceNo.trim() || null,
-        note: note.trim() || "Vendor payment with bill allocations",
-        purchase_bill_allocations: purchase_bill_allocations.map((r) => ({
-          purchase_bill_id: r.purchase_bill_id,
+        direction: "INCOMING",
+        note: note.trim() || "Customer receipt with invoice allocations",
+        sales_invoice_allocations: sales_invoice_allocations.map((r) => ({
+          sales_final_invoice_id: r.sales_final_invoice_id,
           allocated_amount: r.allocated_amount,
         })),
-        sales_invoice_allocations: [],
       });
-      toast.success("Payment recorded and linked to bills.");
+      toast.success("Receipt recorded and linked to invoices.");
       await onRecorded?.();
       onOpenChange(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Payment failed");
+      toast.error(e instanceof Error ? e.message : "Receipt failed");
     } finally {
       setSubmitting(false);
     }
-  }, [amount, buildNewPaymentAllocations, note, onOpenChange, onRecorded, paymentMode, paths.createPayment, referenceNo, vendorId]);
+  }, [amount, buildNewReceiptAllocations, note, onOpenChange, onRecorded, partyBodyBase, paths.createPayment]);
 
   const submitLinkExisting = useCallback(async () => {
     if (!selectedPaymentId) {
-      toast.error("Select a payment to link.");
+      toast.error("Select a receipt to link.");
       return;
     }
     const rows = Object.entries(allocations)
-      .map(([purchase_bill_id, v]) => ({
-        purchase_bill_id,
+      .map(([sales_final_invoice_id, v]) => ({
+        sales_final_invoice_id,
         allocated_amount: Number(v),
       }))
       .filter((r) => Number.isFinite(r.allocated_amount) && r.allocated_amount > 0);
     if (!rows.length) {
-      toast.error("Enter at least one bill allocation.");
+      toast.error("Enter at least one invoice allocation.");
       return;
     }
     const sum = rows.reduce((s, r) => s + r.allocated_amount, 0);
     const rem = selectedPayment ? Number(selectedPayment.remaining) : 0;
     if (selectedPayment && sum > rem + 0.0001) {
-      toast.error("Allocations exceed the unallocated amount on this payment.");
+      toast.error("Allocations exceed the unallocated amount on this receipt.");
       return;
     }
     setSubmitting(true);
     try {
       await postBackend(paths.appendAllocations(selectedPaymentId), {
         allocations: rows.map((r) => ({
-          purchase_bill_id: r.purchase_bill_id,
+          sales_final_invoice_id: r.sales_final_invoice_id,
           allocated_amount: r.allocated_amount,
         })),
       });
-      toast.success("Payment linked to bills.");
+      toast.success("Receipt linked to invoices.");
       await onRecorded?.();
       onOpenChange(false);
     } catch (e) {
@@ -304,25 +300,25 @@ export function PurchaseBillRefWizard({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg font-mono">
         <DialogHeader>
-          <DialogTitle>Payment reference</DialogTitle>
+          <DialogTitle>Receipt reference</DialogTitle>
         </DialogHeader>
         {step === "choose" ? (
           <div className="space-y-3 text-sm">
             <p className="text-muted-foreground">
               {apiBase === "accounting"
-                ? "Record a vendor payment and tie it to purchase bills: new payment with allocations, link an existing ledger payment, or post on-account."
-                : "Tie this purchase bill to vendor payments: record a new outgoing payment with bill links, or attach amounts from a payment already on the ledger (for example from the Accounting module)."}
+                ? "Record a customer receipt against sales invoices (credit sales): new receipt with allocations, link an existing incoming payment, or post on-account."
+                : "After a credit sale, record how this receipt applies: new incoming payment with invoice links, link an existing receipt, or on-account only."}
             </p>
-            {loadingBills ? <p className="text-xs text-muted-foreground">Loading vendor bills…</p> : null}
+            {loadingInvoices ? <p className="text-xs text-muted-foreground">Loading invoices…</p> : null}
             <div className="flex flex-col gap-2">
               <Button type="button" variant="outline" onClick={() => setStep("newPay")}>
-                New payment — link to one or more bills
+                New receipt — link to one or more invoices
               </Button>
               <Button type="button" variant="outline" onClick={() => setStep("linkExisting")}>
-                Link existing payment — allocate to bills
+                Link existing receipt — allocate to invoices
               </Button>
               <Button type="button" variant="outline" onClick={() => setStep("onAccount")}>
-                On-account only — no bill link
+                On-account only — no invoice link
               </Button>
               <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
                 Skip
@@ -334,48 +330,51 @@ export function PurchaseBillRefWizard({
         {step === "newPay" ? (
           <div className="space-y-3 text-sm">
             <p className="text-muted-foreground">
-              Creates one outgoing payment. Enter per-bill amounts below
-              {highlightPurchaseBillId ? " (this bill is highlighted; leave lines empty to put the full amount on it)" : ""}.
+              Creates one incoming receipt. Enter per-invoice amounts below
+              {highlightSalesFinalInvoiceId
+                ? " (this invoice is highlighted; leave lines empty to put the full amount on it)"
+                : ""}
+              . Due dates show when the credit is expected.
             </p>
             <div className="space-y-1">
-              <Label htmlFor="pay-amount">Total payment amount</Label>
-              <Input id="pay-amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <Label htmlFor="rcpt-amount">Total receipt amount</Label>
+              <Input id="rcpt-amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="pay-ref">Reference no</Label>
-              <Input id="pay-ref" value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} />
+              <Label htmlFor="rcpt-ref">Reference no</Label>
+              <Input id="rcpt-ref" value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="pay-mode">Payment mode</Label>
-              <Input id="pay-mode" value={paymentMode} onChange={(e) => setPaymentMode(e.target.value)} />
+              <Label htmlFor="rcpt-mode">Payment mode</Label>
+              <Input id="rcpt-mode" value={paymentMode} onChange={(e) => setPaymentMode(e.target.value)} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="pay-note">Note</Label>
-              <Input id="pay-note" value={note} onChange={(e) => setNote(e.target.value)} />
+              <Label htmlFor="rcpt-note">Note</Label>
+              <Input id="rcpt-note" value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
             <div className="max-h-48 space-y-2 overflow-y-auto rounded border p-2">
-              {vendorBills.length ? (
-                vendorBills.map((b) => (
-                  <div key={b.id} className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs">
+              {invoices.length ? (
+                invoices.map((inv) => (
+                  <div key={inv.id} className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs">
                     <div>
                       <div className="font-semibold">
-                        {b.bill_number}
-                        {b.id === highlightPurchaseBillId ? <span className="ml-2 text-primary">(this bill)</span> : null}
+                        {inv.invoice_number}
+                        {inv.id === highlightSalesFinalInvoiceId ? <span className="ml-2 text-primary">(this invoice)</span> : null}
                       </div>
                       <div className="text-muted-foreground">
-                        {b.bill_date} · total {Number(b.total_amount).toFixed(2)}
+                        inv {inv.invoice_date} · due {inv.due_date} · total {Number(inv.total_amount).toFixed(2)}
                       </div>
                     </div>
                     <Input
                       className="h-8 w-24 text-right"
                       placeholder="0"
-                      value={allocations[b.id] ?? ""}
-                      onChange={(e) => setAllocations((prev) => ({ ...prev, [b.id]: e.target.value }))}
+                      value={allocations[inv.id] ?? ""}
+                      onChange={(e) => setAllocations((prev) => ({ ...prev, [inv.id]: e.target.value }))}
                     />
                   </div>
                 ))
               ) : (
-                <p className="text-xs text-muted-foreground">No bills for this vendor.</p>
+                <p className="text-xs text-muted-foreground">No invoices for this customer.</p>
               )}
             </div>
             <DialogFooter className="gap-2 sm:gap-0">
@@ -383,7 +382,7 @@ export function PurchaseBillRefWizard({
                 Back
               </Button>
               <Button type="button" disabled={submitting} onClick={() => void submitNewPay()}>
-                {submitting ? "Saving…" : "Record payment"}
+                {submitting ? "Saving…" : "Record receipt"}
               </Button>
             </DialogFooter>
           </div>
@@ -391,10 +390,10 @@ export function PurchaseBillRefWizard({
 
         {step === "onAccount" ? (
           <div className="space-y-3 text-sm">
-            <p className="text-muted-foreground">Records an outgoing vendor payment without linking to specific bills.</p>
+            <p className="text-muted-foreground">Records an incoming receipt without linking to specific invoices.</p>
             <div className="space-y-1">
-              <Label htmlFor="oa-amount">Amount</Label>
-              <Input id="oa-amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <Label htmlFor="oa-amt">Amount</Label>
+              <Input id="oa-amt" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="oa-ref">Reference no</Label>
@@ -413,7 +412,7 @@ export function PurchaseBillRefWizard({
                 Back
               </Button>
               <Button type="button" disabled={submitting} onClick={() => void submitOnAccount()}>
-                {submitting ? "Saving…" : "Record payment"}
+                {submitting ? "Saving…" : "Record receipt"}
               </Button>
             </DialogFooter>
           </div>
@@ -422,25 +421,19 @@ export function PurchaseBillRefWizard({
         {step === "linkExisting" ? (
           <div className="space-y-3 text-sm">
             <p className="text-muted-foreground">
-              Choose a payment that still has unallocated amount, then split how much applies to each bill (increments existing
-              links if you add to the same bill again).
+              Choose a receipt that still has unallocated amount, then split how much applies to each invoice.
             </p>
             {loadingPayments ? (
-              <p className="text-xs text-muted-foreground">Loading payments…</p>
+              <p className="text-xs text-muted-foreground">Loading receipts…</p>
             ) : (
               <div className="space-y-1">
-                <Label>Existing payment</Label>
-                <Select
-                  value={selectedPaymentId || undefined}
-                  onValueChange={(v) => {
-                    setSelectedPaymentId(v);
-                  }}
-                >
+                <Label>Existing receipt</Label>
+                <Select value={selectedPaymentId || undefined} onValueChange={(v) => setSelectedPaymentId(v)}>
                   <SelectTrigger className="w-full font-mono text-xs">
-                    <SelectValue placeholder="Select payment" />
+                    <SelectValue placeholder="Select receipt" />
                   </SelectTrigger>
                   <SelectContent>
-                    {vendorPayments
+                    {customerPayments
                       .filter((p) => Number(p.remaining) > 0.0001)
                       .map((p) => (
                         <SelectItem key={p.id} value={p.id} className="font-mono text-xs">
@@ -458,28 +451,28 @@ export function PurchaseBillRefWizard({
               </div>
             )}
             <div className="max-h-48 space-y-2 overflow-y-auto rounded border p-2">
-              {vendorBills.length ? (
-                vendorBills.map((b) => (
-                  <div key={b.id} className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs">
+              {invoices.length ? (
+                invoices.map((inv) => (
+                  <div key={inv.id} className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs">
                     <div>
                       <div className="font-semibold">
-                        {b.bill_number}
-                        {b.id === highlightPurchaseBillId ? <span className="ml-2 text-primary">(this bill)</span> : null}
+                        {inv.invoice_number}
+                        {inv.id === highlightSalesFinalInvoiceId ? <span className="ml-2 text-primary">(this invoice)</span> : null}
                       </div>
                       <div className="text-muted-foreground">
-                        {b.bill_date} · total {Number(b.total_amount).toFixed(2)}
+                        inv {inv.invoice_date} · due {inv.due_date} · total {Number(inv.total_amount).toFixed(2)}
                       </div>
                     </div>
                     <Input
                       className="h-8 w-24 text-right"
                       placeholder="0"
-                      value={allocations[b.id] ?? ""}
-                      onChange={(e) => setAllocations((prev) => ({ ...prev, [b.id]: e.target.value }))}
+                      value={allocations[inv.id] ?? ""}
+                      onChange={(e) => setAllocations((prev) => ({ ...prev, [inv.id]: e.target.value }))}
                     />
                   </div>
                 ))
               ) : (
-                <p className="text-xs text-muted-foreground">No bills for this vendor.</p>
+                <p className="text-xs text-muted-foreground">No invoices for this customer.</p>
               )}
             </div>
             <DialogFooter className="gap-2 sm:gap-0">
@@ -487,7 +480,7 @@ export function PurchaseBillRefWizard({
                 Back
               </Button>
               <Button type="button" disabled={submitting || !selectedPaymentId} onClick={() => void submitLinkExisting()}>
-                {submitting ? "Saving…" : "Link to bills"}
+                {submitting ? "Saving…" : "Link to invoices"}
               </Button>
             </DialogFooter>
           </div>

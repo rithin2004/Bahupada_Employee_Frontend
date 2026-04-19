@@ -11,6 +11,7 @@ from sqlalchemy import and_, case, func, or_, select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.utils.line_items import raise_if_duplicate_line_products
 from app.api.routers.auth import require_permission
 from app.db.session import get_db
 from app.models.entities import (
@@ -50,7 +51,19 @@ from app.models.entities import (
     WarehouseTransfer,
     WarehouseTransferItem,
 )
-from app.schemas.finance import PartyLedgerPaymentCreate, PartyLedgerStatementResponse
+from app.schemas.finance import (
+    PartyLedgerPaymentCreate,
+    PartyLedgerStatementResponse,
+    PurchaseBillAllocationsAppend,
+    VendorOutgoingPaymentForAllocation,
+)
+from app.services.finance import (
+    add_purchase_bill_allocations_to_existing_payment,
+    get_party_ledger_statement,
+    list_vendor_outgoing_payments_for_bill_allocation,
+    post_vendor_purchase_bill_payable,
+    record_party_payment,
+)
 from app.schemas.procurement import (
     PurchaseBillCreate,
     PurchaseBillUpdate,
@@ -64,7 +77,6 @@ from app.schemas.procurement import (
     WarehouseTransferCreate,
 )
 from app.services.idempotency import idempotency_precheck, idempotency_store_response
-from app.services.finance import get_party_ledger_statement, post_vendor_purchase_bill_payable, record_party_payment
 from app.services.stock import post_purchase_bill
 
 router = APIRouter()
@@ -485,6 +497,8 @@ async def _create_purchase_bill_internal(
     subtotal = Decimal("0")
     gst_total = Decimal("0")
 
+    raise_if_duplicate_line_products(payload.items)
+
     for index, item in enumerate(payload.items, start=1):
         if item.damaged_quantity < 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="damaged_quantity cannot be negative")
@@ -822,15 +836,19 @@ async def create_purchase_challan(
     if replay_body is not None:
         return replay_body
 
+    en = (payload.entry_number or "").strip() or None
     challan = PurchaseChallan(
         warehouse_id=payload.warehouse_id,
         vendor_id=payload.vendor_id,
         rack_id=payload.rack_id,
         reference_no=payload.reference_no,
+        entry_number=en or _purchase_entry_number(),
         status=VoucherStatus.CREATED.value,
     )
     db.add(challan)
     await db.flush()
+
+    raise_if_duplicate_line_products(payload.items)
 
     for index, item in enumerate(payload.items, start=1):
         batch_no = _challan_batch_no(challan.id, index, challan.created_at)
@@ -954,6 +972,7 @@ async def list_purchase_challans(open_only: bool = False, db: AsyncSession = Dep
             {
                 "id": str(challan.id),
                 "reference_no": challan.reference_no,
+                "entry_number": challan.entry_number,
                 "status": challan.status,
                 "vendor_id": str(challan.vendor_id),
                 "vendor_name": vendor.name if vendor else "",
@@ -1017,6 +1036,7 @@ async def get_purchase_challan(purchase_challan_id: uuid.UUID, db: AsyncSession 
     return {
         "id": str(challan.id),
         "reference_no": challan.reference_no,
+        "entry_number": challan.entry_number,
         "vendor_id": str(challan.vendor_id),
         "warehouse_id": str(challan.warehouse_id),
         "rack_id": str(challan.rack_id) if challan.rack_id else None,
@@ -1047,8 +1067,15 @@ async def update_purchase_challan(
         challan.warehouse_id = payload.warehouse_id
         challan.rack_id = payload.rack_id
         challan.reference_no = payload.reference_no
+        en = (payload.entry_number or "").strip() or None
+        if en:
+            challan.entry_number = en
+        elif not challan.entry_number:
+            challan.entry_number = _purchase_entry_number()
         challan.status = VoucherStatus.CREATED.value
         await db.flush()
+
+        raise_if_duplicate_line_products(payload.items)
 
         for index, item in enumerate(payload.items, start=1):
             batch_no = _challan_batch_no(challan.id, index, challan.created_at)
@@ -1531,6 +1558,48 @@ async def create_purchase_entry_vendor_payment(payload: PartyLedgerPaymentCreate
     except ValueError as exc:
         code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
+@router.get(
+    "/purchase-entry/vendors/{vendor_id}/payments-for-allocation",
+    response_model=list[VendorOutgoingPaymentForAllocation],
+    dependencies=[Depends(require_permission("purchase", "read"))],
+)
+async def list_vendor_payments_for_bill_allocation(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    rows = await list_vendor_outgoing_payments_for_bill_allocation(db, vendor_id=vendor_id)
+    return [VendorOutgoingPaymentForAllocation(**r) for r in rows]
+
+
+@router.post(
+    "/purchase-entry/vendors/{vendor_id}/vendor-payments/{payment_id}/purchase-bill-allocations",
+    dependencies=[Depends(require_permission("purchase", "create"))],
+)
+async def append_purchase_bill_allocations_to_vendor_payment(
+    vendor_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    payload: PurchaseBillAllocationsAppend,
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    try:
+        await add_purchase_bill_allocations_to_existing_payment(
+            db,
+            payment_id=payment_id,
+            vendor_id=vendor_id,
+            purchase_bill_allocations=[
+                {"purchase_bill_id": row.purchase_bill_id, "allocated_amount": row.allocated_amount}
+                for row in payload.allocations
+            ],
+        )
+    except ValueError as exc:
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.get("/purchase-entry/products/search", dependencies=[Depends(require_permission("purchase", "read"))])
