@@ -400,13 +400,14 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, 
     }
     setCreatingCustomer(true);
     try {
+      const trimmedGstin = newCustomerForm.gstin.trim();
       const payload = {
         name: newCustomerForm.name.trim(),
         outlet_name: newCustomerForm.name.trim(),
-        gst_number: newCustomerForm.gstin.trim() || "",
-        email: newCustomerForm.gstin.trim() ? `${newCustomerForm.gstin.trim().toLowerCase()}@placeholder.com` : "",
+        gst_number: trimmedGstin || null,
+        email: trimmedGstin ? `${trimmedGstin.toLowerCase()}@placeholder.com` : "no-reply@placeholder.com",
         phone: newCustomerForm.phone.trim() || null,
-        gstin: newCustomerForm.gstin.trim() || null,
+        gstin: trimmedGstin || null,
         street_address_1: newCustomerForm.street_address_1.trim() || null,
         city: newCustomerForm.city.trim() || null,
         state: newCustomerForm.state.trim() || null,

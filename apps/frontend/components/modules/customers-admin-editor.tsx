@@ -515,8 +515,8 @@ export function CustomersAdminEditor() {
     if (!canWriteCustomers) {
       return;
     }
-    if (!form.outlet_name.trim() || !form.gst_number.trim() || !form.email.trim()) {
-      toast.error("Outlet Name, GSTIN, and Email are required.", { duration: 4000 });
+    if (!form.outlet_name.trim() || !form.email.trim()) {
+      toast.error("Outlet Name and Email are required.", { duration: 4000 });
       return;
     }
 
@@ -544,6 +544,7 @@ export function CustomersAdminEditor() {
         panDocPath = String(response.path ?? "");
       }
 
+      const trimmedGstNumber = form.gst_number.trim();
       await postBackend("/masters/customers", {
         outlet_name: form.outlet_name.trim() || null,
         customer_type: form.customer_type,
@@ -552,7 +553,7 @@ export function CustomersAdminEditor() {
         account_category_id: form.account_category_id || sundryDebtorsCategory?.id || null,
         whatsapp_number: form.whatsapp_number.trim() || null,
         alternate_number: form.alternate_number.trim() || null,
-        gst_number: form.gst_number.trim() || null,
+        gst_number: trimmedGstNumber || null,
         gst_doc: gstDocPath || null,
         owner_name: form.owner_name.trim() || null,
         pan_number: form.pan_number.trim() || null,
