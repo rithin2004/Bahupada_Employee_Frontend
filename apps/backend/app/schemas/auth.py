@@ -1,8 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
-    username: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    identifier: str = Field(validation_alias="username")
     password: str
     portal: str | None = None
 
@@ -23,7 +25,9 @@ class PasswordChangeRequest(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    username: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    identifier: str = Field(validation_alias="username")
     portal: str | None = None
 
 
@@ -35,6 +39,7 @@ class ResetPasswordRequest(BaseModel):
 class PasswordResetTokenResponse(BaseModel):
     message: str
     reset_token: str | None = None
+    reset_link: str | None = None
 
 
 class MessageResponse(BaseModel):

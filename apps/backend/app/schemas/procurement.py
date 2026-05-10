@@ -22,6 +22,10 @@ class PurchaseChallanItemIn(BaseModel):
     rate_unit_level: int | None = None
     discount_percent: Decimal | None = None
     discount_lumpsum: Decimal | None = None
+    discount_mode: str | None = None
+    free_buy_quantity: Decimal | None = None
+    free_quantity: Decimal | None = None
+    effective_unit_cost: Decimal | None = None
     line_subtotal: Decimal | None = None
     line_discount_amount: Decimal | None = None
     line_taxable_amount: Decimal | None = None
@@ -61,6 +65,10 @@ class PurchaseBillItemIn(BaseModel):
     rate_unit_level: int | None = None
     discount_percent: Decimal | None = None
     discount_lumpsum: Decimal | None = None
+    discount_mode: str | None = None
+    free_buy_quantity: Decimal | None = None
+    free_quantity: Decimal | None = None
+    effective_unit_cost: Decimal | None = None
     line_subtotal: Decimal | None = None
     line_discount_amount: Decimal | None = None
     line_taxable_amount: Decimal | None = None
@@ -141,6 +149,9 @@ class PurchaseEntryProductSummary(BaseModel):
     tax_percent: Decimal
     mrp: Decimal
     cost_price: Decimal
+    a_class_price: Decimal = Decimal("0")
+    b_class_price: Decimal = Decimal("0")
+    c_class_price: Decimal = Decimal("0")
     unit_1st_name: str | None = None
     unit_2nd_name: str | None = None
     unit_3rd_name: str | None = None

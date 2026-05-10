@@ -17,8 +17,18 @@ let meInFlight: Promise<Record<string, unknown>> | null = null;
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 /** Bumped on cache invalidation so in-flight GETs do not upsert stale payloads after mutations. */
 let apiCacheGeneration = 0;
+const API_CACHE_INVALIDATION_CHANNEL = "bahu-api-cache-invalidation-v1";
+let invalidationChannel: BroadcastChannel | null = null;
 
-function applyCacheInvalidation(prefixes: string[]) {
+if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+  invalidationChannel = new BroadcastChannel(API_CACHE_INVALIDATION_CHANNEL);
+  invalidationChannel.onmessage = (event) => {
+    const prefixes = Array.isArray(event.data?.prefixes) ? event.data.prefixes.map(String) : [];
+    applyCacheInvalidation(prefixes, { broadcast: false });
+  };
+}
+
+function applyCacheInvalidation(prefixes: string[], options?: { broadcast?: boolean }) {
   if (!prefixes.length) {
     return;
   }
@@ -29,6 +39,9 @@ function applyCacheInvalidation(prefixes: string[]) {
     }
   }
   store.dispatch(invalidateByPrefixes(prefixes));
+  if (options?.broadcast !== false) {
+    invalidationChannel?.postMessage({ prefixes, at: Date.now() });
+  }
 }
 
 type PortalSession = {
@@ -390,6 +403,17 @@ function resolveInvalidationPrefixes(path: string): string[] {
     prefixes.add("/procurement/reorder-logs");
     prefixes.add("/procurement/purchase-challans");
     prefixes.add("/procurement/purchase-bills");
+  }
+  if (primary.startsWith("/sales/")) {
+    prefixes.add("/sales/sales-orders");
+    prefixes.add("/sales/sales-final-invoices");
+    prefixes.add("/sales/sales-entry");
+    prefixes.add("/procurement/stock-snapshot");
+  }
+  if (primary.startsWith("/masters/")) {
+    prefixes.add("/masters/customers");
+    prefixes.add("/masters/products");
+    prefixes.add("/masters/pricing");
   }
 
   return [...prefixes];

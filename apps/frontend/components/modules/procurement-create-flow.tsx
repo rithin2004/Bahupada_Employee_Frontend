@@ -286,6 +286,7 @@ function ProductFormFields({
     ? subCategories.filter((item) => !item.category_id || item.category_id === form.category_id)
     : subCategories;
   const selectedHsn = hsnOptions.find((item) => item.id === form.hsn_id) ?? null;
+  const primaryUnit = units.find((item) => item.id === form.primary_unit_id) ?? null;
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -413,12 +414,12 @@ function ProductFormFields({
         </div>
       ) : null}
       <div className="space-y-1">
-        <Label>Weight in grams</Label>
+        <Label>Weight in grams{primaryUnit ? ` for ${primaryUnit.unit_name}` : ""}</Label>
         <Input value={form.weight_in_grams} onChange={(e) => setForm((prev) => ({ ...prev, weight_in_grams: e.target.value }))} />
       </div>
       <div className="space-y-1">
-        <Label>GST / Tax % *</Label>
-        <Input value={form.tax_percent} onChange={(e) => setForm((prev) => ({ ...prev, tax_percent: e.target.value }))} />
+        <Label>GST %</Label>
+        <Input value={form.tax_percent || "0"} readOnly className="bg-muted" />
         {selectedHsn ? <p className="text-xs text-muted-foreground">Auto-filled from HSN {selectedHsn.hsn_code}.</p> : null}
       </div>
     </div>
@@ -1045,8 +1046,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     if (
       !newProductForm.sku.trim() ||
       !newProductForm.name.trim() ||
-      !newProductForm.primary_unit_id ||
-      !newProductForm.tax_percent.trim()
+      !newProductForm.primary_unit_id
     ) {
       return;
     }
@@ -1910,8 +1910,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
               creatingProduct ||
               !newProductForm.sku.trim() ||
               !newProductForm.name.trim() ||
-              !newProductForm.primary_unit_id ||
-              !newProductForm.tax_percent.trim()
+              !newProductForm.primary_unit_id
             }
           >
             {creatingProduct ? "Creating..." : "Create Product"}

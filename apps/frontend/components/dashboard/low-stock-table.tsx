@@ -1,13 +1,24 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { lowStock } from "@/components/dashboard/data";
+import type { DashboardStockAlertItem } from "@/components/dashboard/types";
 
-export function LowStockTable() {
+type LowStockTableProps = {
+  items: DashboardStockAlertItem[];
+};
+
+function formatQuantity(value: string | number | undefined | null): string {
+  const amount = typeof value === "number" ? value : Number(value ?? 0);
+  return new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 4,
+  }).format(Number.isFinite(amount) ? amount : 0);
+}
+
+export function LowStockTable({ items }: LowStockTableProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Reorder Attention</CardTitle>
-        <CardDescription>Products below threshold based on reorder policy.</CardDescription>
+        <CardTitle>Stock Attention</CardTitle>
+        <CardDescription>Products from the latest reorder snapshot.</CardDescription>
       </CardHeader>
       <CardContent>
         <Table>
@@ -16,20 +27,27 @@ export function LowStockTable() {
               <TableHead>SKU</TableHead>
               <TableHead>Product</TableHead>
               <TableHead>Available</TableHead>
-              <TableHead>Reorder Level</TableHead>
+              <TableHead>Suggested</TableHead>
               <TableHead>Warehouse</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {lowStock.map((row) => (
-              <TableRow key={row.sku}>
+            {items.map((row) => (
+              <TableRow key={`${row.product_id}-${row.warehouse_name}`}>
                 <TableCell className="font-medium">{row.sku}</TableCell>
-                <TableCell>{row.product}</TableCell>
-                <TableCell>{row.stock}</TableCell>
-                <TableCell>{row.reorder}</TableCell>
-                <TableCell>{row.warehouse}</TableCell>
+                <TableCell>{row.product_name}</TableCell>
+                <TableCell>{formatQuantity(row.available_quantity)}</TableCell>
+                <TableCell>{formatQuantity(row.final_qty ?? row.suggested_qty ?? row.reorder_norm_qty)}</TableCell>
+                <TableCell>{row.warehouse_name}</TableCell>
               </TableRow>
             ))}
+            {items.length === 0 ? (
+              <TableRow>
+                <TableCell className="text-muted-foreground" colSpan={5}>
+                  No reorder snapshot available yet.
+                </TableCell>
+              </TableRow>
+            ) : null}
           </TableBody>
         </Table>
       </CardContent>

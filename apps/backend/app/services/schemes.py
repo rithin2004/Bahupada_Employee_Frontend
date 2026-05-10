@@ -9,7 +9,7 @@ import uuid
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.entities import Customer, CustomerCategory, Product, ProductBrand, SalesOrder, SalesOrderItem, Scheme
+from app.models.entities import Customer, CustomerCategory, Product, ProductBrand, SalesOrder, SalesOrderItem, Scheme, SchemeProduct
 from app.services.pricing import resolve_price_for_customer
 
 
@@ -45,6 +45,7 @@ def _matches_scope(
     scheme: Scheme,
     *,
     brand_name_by_id: dict[uuid.UUID, str] | None = None,
+    scope_product_ids: set[uuid.UUID] | None = None,
 ) -> bool:
     if scheme.brand:
         pb = (product.brand or "").strip()
@@ -56,9 +57,25 @@ def _matches_scope(
         return False
     if scheme.sub_category and (product.sub_category or "") != scheme.sub_category:
         return False
+    if scope_product_ids:
+        return product.id in scope_product_ids
     if scheme.product_id and product.id != scheme.product_id:
         return False
     return True
+
+
+async def _load_scheme_scope_product_ids(session: AsyncSession, scheme_ids: list[uuid.UUID]) -> dict[uuid.UUID, set[uuid.UUID]]:
+    if not scheme_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(SchemeProduct.scheme_id, SchemeProduct.product_id).where(SchemeProduct.scheme_id.in_(scheme_ids))
+        )
+    ).all()
+    mapping: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    for scheme_id, product_id in rows:
+        mapping[scheme_id].add(product_id)
+    return mapping
 
 
 def _metric_for_scheme(
@@ -120,6 +137,7 @@ async def build_sales_order_preview(
         )
     )
     schemes = schemes_res.scalars().all()
+    scope_product_ids_by_scheme = await _load_scheme_scope_product_ids(session, [scheme.id for scheme in schemes])
     reward_product_ids = {
         scheme.reward_product_id for scheme in schemes if scheme.reward_product_id is not None
     }
@@ -173,7 +191,12 @@ async def build_sales_order_preview(
         matching_items = [
             item
             for item in base_line_items
-            if _matches_scope(product_by_id[item.product_id], scheme, brand_name_by_id=brand_name_by_id)
+            if _matches_scope(
+                product_by_id[item.product_id],
+                scheme,
+                brand_name_by_id=brand_name_by_id,
+                scope_product_ids=scope_product_ids_by_scheme.get(scheme.id),
+            )
         ]
         if not matching_items:
             continue
@@ -381,6 +404,7 @@ async def split_schemes_for_product_line(
         .order_by(Scheme.scheme_name.asc())
     )
     schemes = list(schemes_res.scalars().all())
+    scope_product_ids_by_scheme = await _load_scheme_scope_product_ids(session, [scheme.id for scheme in schemes])
     brand_ids = {product.brand_id} if product.brand_id else set()
     brand_name_by_id: dict[uuid.UUID, str] = {}
     if brand_ids:
@@ -388,7 +412,7 @@ async def split_schemes_for_product_line(
         brand_name_by_id = {row[0]: row[1] for row in br.all()}
     matching: list[Scheme] = []
     for s in schemes:
-        if _matches_scope(product, s, brand_name_by_id=brand_name_by_id):
+        if _matches_scope(product, s, brand_name_by_id=brand_name_by_id, scope_product_ids=scope_product_ids_by_scheme.get(s.id)):
             matching.append(s)
     matching_ids = {s.id for s in matching}
     other = [s for s in schemes if s.id not in matching_ids]
@@ -423,4 +447,5 @@ async def serialize_scheme_for_sales_popup(session: AsyncSession, scheme: Scheme
         "category": scheme.category,
         "sub_category": scheme.sub_category,
         "product_id": scheme.product_id,
+        "product_ids": list((await _load_scheme_scope_product_ids(session, [scheme.id])).get(scheme.id, set()) or ([] if scheme.product_id is None else [scheme.product_id])),
     }

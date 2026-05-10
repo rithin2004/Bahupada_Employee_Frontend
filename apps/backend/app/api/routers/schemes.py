@@ -35,6 +35,32 @@ async def _require_active_product(db: AsyncSession, product_id: uuid.UUID, *, fi
     return product
 
 
+async def _load_scheme_product_ids(db: AsyncSession, scheme_id: uuid.UUID) -> list[uuid.UUID]:
+    rows = (
+        await db.execute(select(SchemeProduct.product_id).where(SchemeProduct.scheme_id == scheme_id).order_by(SchemeProduct.id.asc()))
+    ).scalars().all()
+    return [uuid.UUID(str(row)) if not isinstance(row, uuid.UUID) else row for row in rows]
+
+
+async def _sync_scheme_products(db: AsyncSession, scheme: Scheme, product_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    normalized_ids = list(dict.fromkeys(product_ids))
+    existing_rows = (
+        await db.execute(select(SchemeProduct).where(SchemeProduct.scheme_id == scheme.id))
+    ).scalars().all()
+    existing_by_product = {row.product_id: row for row in existing_rows}
+    keep_ids = set(normalized_ids)
+    for row in existing_rows:
+        if row.product_id not in keep_ids:
+            await db.delete(row)
+    for index, product_id in enumerate(normalized_ids):
+        if product_id in existing_by_product:
+            continue
+        db.add(SchemeProduct(scheme_id=scheme.id, product_id=product_id))
+    scheme.product_id = normalized_ids[0] if normalized_ids else None
+    await db.flush()
+    return normalized_ids
+
+
 async def _effective_brand_name_for_product(db: AsyncSession, product: Product) -> str | None:
     """Resolve display brand: denormalized string, else name from product_brands."""
     if (product.brand or "").strip():
@@ -70,12 +96,21 @@ async def _serialize_scheme(db: AsyncSession, scheme: Scheme) -> dict[str, objec
     else:
         category_name = "All categories"
 
-    product_name: str | None = None
-    if scheme.product_id:
-        product_name = (
-            await db.execute(select(Product.display_name, Product.name).where(Product.id == scheme.product_id))
-        ).first()
-        product_name = str(product_name[0] or product_name[1]) if product_name else None
+    product_ids = await _load_scheme_product_ids(db, scheme.id)
+    if not product_ids and scheme.product_id is not None:
+        product_ids = [scheme.product_id]
+    product_names: list[str] = []
+    if product_ids:
+        rows = (
+            await db.execute(
+                select(Product.id, Product.display_name, Product.name).where(Product.id.in_(product_ids))
+            )
+        ).all()
+        product_name_by_id = {
+            row[0]: str(row[1] or row[2]) for row in rows if row[0] is not None
+        }
+        product_names = [product_name_by_id.get(product_id, "") for product_id in product_ids if product_id in product_name_by_id]
+    product_name: str | None = product_names[0] if product_names else None
 
     reward_product_name: str | None = None
     if scheme.reward_product_id:
@@ -97,6 +132,8 @@ async def _serialize_scheme(db: AsyncSession, scheme: Scheme) -> dict[str, objec
         "sub_category": scheme.sub_category,
         "product_id": scheme.product_id,
         "product_name": product_name,
+        "product_ids": product_ids,
+        "product_names": product_names,
         "reward_type": scheme.reward_type,
         "reward_discount_percent": scheme.reward_discount_percent,
         "reward_product_id": scheme.reward_product_id,
@@ -144,13 +181,16 @@ async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db
     if payload.customer_category_id is not None:
         await _require_active_customer_category(db, payload.customer_category_id)
 
-    scoped_product: Product | None = None
-    if payload.product_id:
-        scoped_product = await _require_active_product(db, payload.product_id)
+    selected_product_ids = list(
+        dict.fromkeys([*list(payload.product_ids or []), *([payload.product_id] if payload.product_id else [])])
+    )
+    scoped_products: list[Product] = []
+    for product_id in selected_product_ids:
+        scoped_products.append(await _require_active_product(db, product_id))
     if payload.reward_type == "FREE_ITEM" and payload.reward_product_id:
         await _require_active_product(db, payload.reward_product_id, field_name="reward_product_id")
 
-    if scoped_product:
+    for scoped_product in scoped_products:
         if payload.brand:
             eff_brand = await _effective_brand_name_for_product(db, scoped_product)
             if eff_brand != payload.brand:
@@ -168,10 +208,16 @@ async def create_scheme(payload: SchemeCreate, db: AsyncSession = Depends(get_db
 
     data = payload.model_dump()
     data["scheme_type"] = _scheme_type_from_reward(payload.reward_type)
+    data["product_id"] = selected_product_ids[0] if selected_product_ids else None
+    data.pop("product_ids", None)
     scheme = Scheme(**data)
     db.add(scheme)
     await db.commit()
     await db.refresh(scheme)
+    if selected_product_ids:
+        await _sync_scheme_products(db, scheme, selected_product_ids)
+        await db.commit()
+        await db.refresh(scheme)
     return await _serialize_scheme(db, scheme)
 
 
@@ -182,17 +228,24 @@ async def update_scheme(scheme_id: uuid.UUID, payload: SchemeUpdate, db: AsyncSe
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheme not found")
 
     data = payload.model_dump(exclude_unset=True)
+    product_ids = data.pop("product_ids", None) if "product_ids" in data else None
     if "reward_type" in data:
         data["scheme_type"] = _scheme_type_from_reward(data["reward_type"])
     if "customer_category_id" in data and data["customer_category_id"] is not None:
         await _require_active_customer_category(db, data["customer_category_id"])
-    if "product_id" in data and data["product_id"] is not None:
-        await _require_active_product(db, data["product_id"])
+    selected_product_ids = list(
+        dict.fromkeys([*list(product_ids or []), *([data["product_id"]] if data.get("product_id") else [])])
+    )
+    if selected_product_ids:
+        for product_id in selected_product_ids:
+            await _require_active_product(db, product_id)
     if "reward_product_id" in data and data["reward_product_id"] is not None:
         await _require_active_product(db, data["reward_product_id"], field_name="reward_product_id")
 
     for key, value in data.items():
         setattr(scheme, key, value)
+    if product_ids is not None or "product_id" in data:
+        await _sync_scheme_products(db, scheme, selected_product_ids)
 
     await db.commit()
     await db.refresh(scheme)
@@ -318,16 +371,31 @@ async def list_sub_categories_for_scope(
 
 @router.get("/meta/products", response_model=list[SchemeProductOption], dependencies=[Depends(require_permission("schemes", "read"))])
 async def list_products_for_scheme_scope(
-    brand: str,
-    category: str,
-    sub_category: str,
+    q: str | None = Query(None),
+    brand: str | None = None,
+    category: str | None = None,
+    sub_category: str | None = None,
+    limit: int = Query(500, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = (
-        await db.execute(
-            _product_scope_stmt(brand=brand, category=category, sub_category=sub_category).order_by(Product.display_name.asc(), Product.name.asc())
+    stmt = _product_scope_stmt(
+        brand=brand.strip() if brand else None,
+        category=category.strip() if category else None,
+        sub_category=sub_category.strip() if sub_category else None,
+    )
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Product.sku.ilike(term),
+                Product.name.ilike(term),
+                Product.display_name.ilike(term),
+                Product.brand.ilike(term),
+                Product.category.ilike(term),
+                Product.sub_category.ilike(term),
+            )
         )
-    ).scalars().all()
+    rows = (await db.execute(stmt.order_by(Product.display_name.asc(), Product.name.asc()).limit(limit))).scalars().all()
     return [
         {
             "id": row.id,

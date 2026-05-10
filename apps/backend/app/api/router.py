@@ -5,6 +5,7 @@ from app.api.routers import (
     customer_portal,
     delivery,
     delivery_workflow,
+    dashboard,
     entry_drafts,
     finance,
     masters,
@@ -17,7 +18,7 @@ from app.api.routers import (
     schemes,
     system,
 )
-from app.api.routers.auth import require_admin_portal, require_module_access
+from app.api.routers.auth import require_admin_portal, require_employee_or_admin_portal, require_module_access
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -27,6 +28,7 @@ api_router.include_router(
     tags=["entry-drafts"],
     dependencies=[Depends(require_admin_portal)],
 )
+api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_employee_or_admin_portal)])
 api_router.include_router(masters.router, prefix="/masters", tags=["masters"], dependencies=[Depends(require_admin_portal)])
 api_router.include_router(procurement.router, prefix="/procurement", tags=["procurement"], dependencies=[Depends(require_admin_portal)])
 api_router.include_router(sales.router, prefix="/sales", tags=["sales"])

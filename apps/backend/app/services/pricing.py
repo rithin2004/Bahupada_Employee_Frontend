@@ -58,9 +58,11 @@ async def resolve_price_for_customer(
     class_price: Decimal | None = None
     if pricing_row is not None:
         resolved_price_class: str | None = None
+        if customer.price_class:
+            resolved_price_class = str(customer.price_class or "").upper()
         if customer.customer_category_id is not None:
             category = await session.get(CustomerCategory, customer.customer_category_id)
-            if category is not None and category.is_active:
+            if resolved_price_class is None and category is not None and category.is_active:
                 resolved_price_class = str(category.price_class or "").upper()
 
         if resolved_price_class is None:

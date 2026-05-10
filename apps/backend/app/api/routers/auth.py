@@ -94,8 +94,6 @@ def _get_display_name(
         return customer.name
     if employee is not None:
         return employee.full_name
-    if user.username:
-        return user.username
     if user.email:
         return user.email
     if user.phone:
@@ -141,8 +139,8 @@ async def _load_linked_entities(db: AsyncSession, user: User) -> tuple[Employee 
 
 
 def _identifier_match_clause(normalized: str):
-    """Match login identifier to username, phone, or email (emails compared case-insensitively)."""
-    parts = [User.username == normalized, User.phone == normalized]
+    """Match login identifier to phone or email (emails compared case-insensitively)."""
+    parts = [User.phone == normalized]
     if "@" in normalized:
         parts.append(func.lower(User.email) == normalized.lower())
     else:
@@ -417,9 +415,14 @@ def require_permission(module_name: str, action_name: str) -> Callable[..., Any]
 @router.post("/login", response_model=TokenPair)
 async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenPair:
     requested_portal = _normalize_portal(payload.portal)
-    user = await _find_user(db, payload.username, requested_portal)
+    user = await _find_user(db, payload.identifier, requested_portal)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if user.password_set_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password not set. Use forgot password to create one.",
+        )
 
     if user.locked_until and user.locked_until > _utcnow():
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="Account locked")
@@ -508,6 +511,7 @@ async def change_password(
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
+    user.password_set_at = _utcnow().replace(microsecond=0)
     sessions = (await db.execute(select(UserSession).where(UserSession.user_id == user.id))).scalars().all()
     for session in sessions:
         session.revoked = True
@@ -518,15 +522,15 @@ async def change_password(
 @router.post("/forgot-password", response_model=PasswordResetTokenResponse)
 async def forgot_password(payload: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)) -> PasswordResetTokenResponse:
     requested_portal = _normalize_portal(payload.portal)
-    user = await _find_user(db, payload.username, requested_portal)
+    user = await _find_user(db, payload.identifier, requested_portal)
     if user is None or not user.is_active:
-        return PasswordResetTokenResponse(message="If the account exists, a reset token has been issued.", reset_token=None)
+        return PasswordResetTokenResponse(message="If the account exists, a reset link has been issued.", reset_token=None, reset_link=None)
 
     employee, role, customer = await _load_linked_entities(db, user)
     portal_scope = _infer_portal_scope(user, employee, role)
     resolved_portal = requested_portal or ("CUSTOMER" if user.account_type == AccountType.CUSTOMER else "EMPLOYEE")
     if not _portal_matches(resolved_portal, user, employee, portal_scope):
-        return PasswordResetTokenResponse(message="If the account exists, a reset token has been issued.", reset_token=None)
+        return PasswordResetTokenResponse(message="If the account exists, a reset link has been issued.", reset_token=None, reset_link=None)
 
     reset_token = jwt.encode(
         {
@@ -539,10 +543,8 @@ async def forgot_password(payload: ForgotPasswordRequest, db: AsyncSession = Dep
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )
-    return PasswordResetTokenResponse(
-        message="Reset token issued. Use it with /auth/reset-password.",
-        reset_token=reset_token,
-    )
+    reset_link = f"/auth/reset-password?token={reset_token}&portal={resolved_portal}"
+    return PasswordResetTokenResponse(message="Reset link issued.", reset_token=reset_token, reset_link=reset_link)
 
 
 @router.post("/reset-password", response_model=MessageResponse)
@@ -560,6 +562,7 @@ async def reset_password(payload: ResetPasswordRequest, db: AsyncSession = Depen
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive account")
 
     user.password_hash = hash_password(payload.new_password)
+    user.password_set_at = _utcnow().replace(microsecond=0)
     sessions = (await db.execute(select(UserSession).where(UserSession.user_id == user.id))).scalars().all()
     for session in sessions:
         session.revoked = True

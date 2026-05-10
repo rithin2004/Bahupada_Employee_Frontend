@@ -11,7 +11,7 @@ export default function HomePage() {
         <div className="text-center">
           <p className="text-sm text-muted-foreground">Bahu ERP</p>
           <h1 className="text-2xl font-semibold tracking-tight">Choose Login Portal</h1>
-          <p className="text-sm text-muted-foreground">Authentication is bypassed for now. Click to enter dashboards directly.</p>
+          <p className="text-sm text-muted-foreground">Use the right portal to sign in with the registered email or phone number.</p>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
@@ -27,9 +27,6 @@ export default function HomePage() {
               <Button asChild className="w-full">
                 <Link href="/auth/admin-login">Go to Admin Login</Link>
               </Button>
-              <Button asChild variant="outline" className="w-full">
-                <Link href="/dashboard">Open Admin Dashboard Directly</Link>
-              </Button>
             </CardContent>
           </Card>
 
@@ -44,9 +41,6 @@ export default function HomePage() {
             <CardContent className="space-y-2">
               <Button asChild className="w-full">
                 <Link href="/auth/employee-login">Go to Employee Login</Link>
-              </Button>
-              <Button asChild variant="outline" className="w-full">
-                <Link href="/dashboard">Open Employee Dashboard Directly</Link>
               </Button>
             </CardContent>
           </Card>

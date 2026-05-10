@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { asArray, asObject, deleteBackend, fetchBackendFresh, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
@@ -35,13 +36,18 @@ type VendorRow = {
   alternate_phone: string;
   email: string;
   street: string;
+  street_address_1: string;
+  street_address_2: string;
+  street_address_3: string;
   city: string;
   state: string;
   pincode: string;
-  bank_account_number: string;
-  ifsc_code: string;
   account_category_id: string;
   account_category_name: string;
+  area_id: string;
+  area_name: string;
+  route_id: string;
+  route_name: string;
   is_active: boolean;
 };
 
@@ -51,9 +57,16 @@ type AccountCategoryRow = {
   name: string;
 };
 
-type BrandRow = {
+type AreaRow = {
   id: string;
-  name: string;
+  area_name: string;
+};
+
+type RouteRow = {
+  id: string;
+  route_name: string;
+  area_id: string;
+  area_name: string;
 };
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -69,18 +82,33 @@ const EMPTY_CREATE_FORM = {
   alternate_phone: "",
   email: "",
   street: "",
+  street_address_1: "",
+  street_address_2: "",
+  street_address_3: "",
   city: "",
   state: "",
   pincode: "",
-  bank_account_number: "",
-  ifsc_code: "",
   account_category_id: "",
+  area_id: "",
+  route_id: "",
 };
 
 const EMPTY_CATEGORY_FORM = {
   code: "",
   name: "",
   description: "",
+};
+
+const EMPTY_AREA_FORM = {
+  area_name: "",
+  city: "",
+  state: "",
+  pincode: "",
+};
+
+const EMPTY_ROUTE_FORM = {
+  route_name: "",
+  area_id: "",
 };
 
 function mapRow(row: Record<string, unknown>): VendorRow {
@@ -97,13 +125,18 @@ function mapRow(row: Record<string, unknown>): VendorRow {
     alternate_phone: String(row.alternate_phone ?? ""),
     email: String(row.email ?? ""),
     street: String(row.street ?? ""),
+    street_address_1: String(row.street_address_1 ?? row.street ?? ""),
+    street_address_2: String(row.street_address_2 ?? ""),
+    street_address_3: String(row.street_address_3 ?? ""),
     city: String(row.city ?? ""),
     state: String(row.state ?? ""),
     pincode: String(row.pincode ?? ""),
-    bank_account_number: String(row.bank_account_number ?? ""),
-    ifsc_code: String(row.ifsc_code ?? ""),
     account_category_id: String(row.account_category_id ?? ""),
     account_category_name: String(row.account_category_name ?? ""),
+    area_id: String(row.area_id ?? ""),
+    area_name: String(row.area_name ?? ""),
+    route_id: String(row.route_id ?? ""),
+    route_name: String(row.route_name ?? ""),
     is_active: Boolean(row.is_active ?? true),
   };
 }
@@ -119,10 +152,18 @@ export function VendorsAdminEditor() {
   const [creating, setCreating] = useState(false);
   const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
   const [accountCategories, setAccountCategories] = useState<AccountCategoryRow[]>([]);
-  const [brands, setBrands] = useState<BrandRow[]>([]);
+  const [areas, setAreas] = useState<AreaRow[]>([]);
+  const [routes, setRoutes] = useState<RouteRow[]>([]);
   const [openCategoryDialog, setOpenCategoryDialog] = useState(false);
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [categoryForm, setCategoryForm] = useState({ ...EMPTY_CATEGORY_FORM });
+  const [openAreaDialog, setOpenAreaDialog] = useState(false);
+  const [creatingArea, setCreatingArea] = useState(false);
+  const [areaForm, setAreaForm] = useState({ ...EMPTY_AREA_FORM });
+  const [openRouteDialog, setOpenRouteDialog] = useState(false);
+  const [creatingRoute, setCreatingRoute] = useState(false);
+  const [routeForm, setRouteForm] = useState({ ...EMPTY_ROUTE_FORM });
+  const [fetchingGstin, setFetchingGstin] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const { currentPage, pageSize, setCurrentPage, setPageSize, resetPage } = usePersistedPage(
@@ -137,6 +178,23 @@ export function VendorsAdminEditor() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
+  const sundryCreditorsCategory = useMemo(
+    () =>
+      accountCategories.find(
+        (category) =>
+          category.name.trim().toUpperCase() === "SUNDRY CREDITORS" ||
+          ["SUNDRY_CREDITORS", "SUNDRY-CREDITORS"].includes(category.code.trim().toUpperCase())
+      ) ?? null,
+    [accountCategories]
+  );
+  const createRoutes = useMemo(
+    () => routes.filter((route) => !createForm.area_id || route.area_id === createForm.area_id),
+    [routes, createForm.area_id]
+  );
+  const selectedRoutes = useMemo(
+    () => routes.filter((route) => !selected?.area_id || route.area_id === selected.area_id),
+    [routes, selected?.area_id]
+  );
 
   async function loadAccountCategories() {
     if (!canReadVendors) {
@@ -156,20 +214,39 @@ export function VendorsAdminEditor() {
     }
   }
 
-  async function loadBrands() {
+  async function loadAreas() {
     if (!canReadVendors) {
       return;
     }
     try {
-      const response = asObject(await fetchBackendFresh("/masters/product-brands?page=1&page_size=100"));
-      setBrands(
+      const response = asObject(await fetchBackendFresh("/masters/areas?page=1&page_size=1000"));
+      setAreas(
         asArray(response.items).map((row) => ({
           id: String(row.id ?? ""),
-          name: String(row.name ?? ""),
+          area_name: String(row.area_name ?? ""),
         }))
       );
     } catch {
-      setBrands([]);
+      setAreas([]);
+    }
+  }
+
+  async function loadRoutes() {
+    if (!canReadVendors) {
+      return;
+    }
+    try {
+      const response = asObject(await fetchBackendFresh("/masters/routes?page=1&page_size=1000"));
+      setRoutes(
+        asArray(response.items).map((row) => ({
+          id: String(row.id ?? ""),
+          route_name: String(row.route_name ?? ""),
+          area_id: String(row.area_id ?? ""),
+          area_name: String(row.area_name ?? ""),
+        }))
+      );
+    } catch {
+      setRoutes([]);
     }
   }
 
@@ -240,8 +317,16 @@ export function VendorsAdminEditor() {
       return;
     }
     void loadAccountCategories();
-    void loadBrands();
+    void loadAreas();
+    void loadRoutes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permissionsLoaded, canReadVendors]);
+
+  useEffect(() => {
+    if (sundryCreditorsCategory && !createForm.account_category_id) {
+      setCreateForm((prev) => ({ ...prev, account_category_id: sundryCreditorsCategory.id }));
+    }
+  }, [sundryCreditorsCategory, createForm.account_category_id]);
 
   useEffect(() => {
     if (!permissionsLoaded || !canReadVendors) {
@@ -287,15 +372,17 @@ export function VendorsAdminEditor() {
         phone: selected.phone || null,
         alternate_phone: selected.alternate_phone || null,
         email: selected.email || null,
-        street: selected.street || null,
+        street: selected.street_address_1 || null,
+        street_address_1: selected.street_address_1 || null,
+        street_address_2: selected.street_address_2 || null,
+        street_address_3: selected.street_address_3 || null,
         city: selected.city || null,
         state: selected.state || null,
         pincode: selected.pincode || null,
-        bank_account_number: selected.bank_account_number || null,
-        ifsc_code: selected.ifsc_code || null,
-        account_category_id: selected.account_category_id || null,
-        purchase_type: selected.purchase_type || null,
-        brand_ids: selected.brand_ids,
+        account_category_id: selected.account_category_id || sundryCreditorsCategory?.id || null,
+        area_id: selected.area_id || null,
+        route_id: selected.route_id || null,
+        brand_ids: [],
         is_active: selected.is_active,
       });
       toast.success(`Vendor updated: ${selected.firm_name}`, { duration: 5000 });
@@ -314,7 +401,8 @@ export function VendorsAdminEditor() {
     if (!canWriteVendors) {
       return;
     }
-    if (!createForm.firm_name.trim()) {
+    if (!createForm.firm_name.trim() || !createForm.gstin.trim() || !createForm.owner_name.trim()) {
+      toast.error("Firm Name, GSTIN, and Owner Name are required.", { duration: 5000 });
       return;
     }
     setCreating(true);
@@ -322,21 +410,23 @@ export function VendorsAdminEditor() {
     try {
       await postBackend("/masters/vendors", {
         firm_name: createForm.firm_name.trim(),
-        purchase_type: createForm.purchase_type || null,
         gstin: createForm.gstin.trim() || null,
         pan: createForm.pan.trim() || null,
         owner_name: createForm.owner_name.trim() || null,
         phone: createForm.phone.trim() || null,
         alternate_phone: createForm.alternate_phone.trim() || null,
         email: createForm.email.trim() || null,
-        street: createForm.street.trim() || null,
+        street: createForm.street_address_1.trim() || null,
+        street_address_1: createForm.street_address_1.trim() || null,
+        street_address_2: createForm.street_address_2.trim() || null,
+        street_address_3: createForm.street_address_3.trim() || null,
         city: createForm.city.trim() || null,
         state: createForm.state.trim() || null,
         pincode: createForm.pincode.trim() || null,
-        bank_account_number: createForm.bank_account_number.trim() || null,
-        ifsc_code: createForm.ifsc_code.trim() || null,
-        account_category_id: createForm.account_category_id || null,
-        brand_ids: createForm.brand_ids,
+        account_category_id: createForm.account_category_id || sundryCreditorsCategory?.id || null,
+        area_id: createForm.area_id || null,
+        route_id: createForm.route_id || null,
+        brand_ids: [],
       });
       const createdName = createForm.firm_name.trim();
       setCreateForm({ ...EMPTY_CREATE_FORM });
@@ -382,6 +472,104 @@ export function VendorsAdminEditor() {
       toast.error(`Category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
     } finally {
       setCreatingCategory(false);
+    }
+  }
+
+  async function fetchGstinDetails(target: "create" | "edit") {
+    const gstin = target === "create" ? createForm.gstin.trim() : selected?.gstin.trim() ?? "";
+    if (!gstin) {
+      toast.error("Enter GSTIN before lookup.", { duration: 5000 });
+      return;
+    }
+    setFetchingGstin(true);
+    try {
+      const details = asObject(await fetchBackendFresh(`/masters/vendors/gstin-lookup?gstin=${encodeURIComponent(gstin)}`));
+      const patch = {
+        gstin: String(details.gstin ?? gstin),
+        firm_name: String(details.firm_name ?? ""),
+        pan: String(details.pan ?? ""),
+        owner_name: String(details.owner_name ?? ""),
+        street: String(details.street ?? ""),
+        street_address_1: String(details.street_address_1 ?? details.street ?? ""),
+        street_address_2: String(details.street_address_2 ?? ""),
+        street_address_3: String(details.street_address_3 ?? ""),
+        city: String(details.city ?? ""),
+        state: String(details.state ?? ""),
+        pincode: String(details.pincode ?? ""),
+        purchase_type: String(details.purchase_type ?? ""),
+      };
+      if (target === "create") {
+        setCreateForm((prev) => ({
+          ...prev,
+          ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value)),
+        }));
+      } else if (selected) {
+        setRows((prev) =>
+          prev.map((row) =>
+            row.id === selected.id
+              ? {
+                  ...row,
+                  ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value)),
+                }
+              : row
+          )
+        );
+      }
+      toast.success("GSTIN details fetched.", { duration: 5000 });
+    } catch (error) {
+      toast.error(`GSTIN lookup failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setFetchingGstin(false);
+    }
+  }
+
+  async function createInlineArea() {
+    if (!canWriteVendors || !areaForm.area_name.trim()) {
+      return;
+    }
+    setCreatingArea(true);
+    try {
+      const created = asObject(
+        await postBackend("/masters/areas", {
+          area_name: areaForm.area_name.trim(),
+          city: areaForm.city.trim() || null,
+          state: areaForm.state.trim() || null,
+          pincode: areaForm.pincode.trim() || null,
+        })
+      );
+      await loadAreas();
+      const id = String(created.id ?? "");
+      setCreateForm((prev) => ({ ...prev, area_id: id, route_id: "" }));
+      setRouteForm((prev) => ({ ...prev, area_id: id }));
+      setAreaForm({ ...EMPTY_AREA_FORM });
+      setOpenAreaDialog(false);
+      toast.success(`Area created: ${String(created.area_name ?? areaForm.area_name.trim())}`, { duration: 5000 });
+    } catch (error) {
+      toast.error(`Area create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingArea(false);
+    }
+  }
+
+  async function createInlineRoute() {
+    const areaId = routeForm.area_id || createForm.area_id || areas[0]?.id || "";
+    if (!canWriteVendors || !routeForm.route_name.trim() || !areaId) {
+      toast.error("Route name and area are required.", { duration: 5000 });
+      return;
+    }
+    setCreatingRoute(true);
+    try {
+      const created = asObject(await postBackend("/masters/routes", { route_name: routeForm.route_name.trim(), area_id: areaId }));
+      await loadRoutes();
+      const id = String(created.id ?? "");
+      setCreateForm((prev) => ({ ...prev, area_id: areaId, route_id: id }));
+      setRouteForm({ ...EMPTY_ROUTE_FORM, area_id: areaId });
+      setOpenRouteDialog(false);
+      toast.success(`Route created: ${String(created.route_name ?? routeForm.route_name.trim())}`, { duration: 5000 });
+    } catch (error) {
+      toast.error(`Route create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setCreatingRoute(false);
     }
   }
 
@@ -476,45 +664,50 @@ export function VendorsAdminEditor() {
             <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
               <DialogHeader>
                 <DialogTitle>Add Vendor</DialogTitle>
-                <DialogDescription>Create a vendor using the `VendorCreate` schema.</DialogDescription>
+                <DialogDescription>GSTIN lookup can fill the available TaxPro government profile fields.</DialogDescription>
               </DialogHeader>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1 md:col-span-2">
-                  <Label>Firm Name</Label>
+                  <Label>Firm Name *</Label>
                   <Input value={createForm.firm_name} onChange={(e) => setCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <Label>Type</Label>
-                  <select
-                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
-                    value={createForm.purchase_type}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, purchase_type: e.target.value }))}
-                  >
-                    <option value="CENTRAL">CENTRAL</option>
-                    <option value="LOCAL">LOCAL</option>
-                  </select>
+                  <Input value={createForm.purchase_type || "Auto from GSTIN"} readOnly className="bg-muted" />
                 </div>
                 <div className="space-y-1">
-                  <Label>GSTIN</Label>
-                  <Input value={createForm.gstin} onChange={(e) => setCreateForm((prev) => ({ ...prev, gstin: e.target.value }))} />
+                  <Label>GSTIN *</Label>
+                  <div className="flex gap-2">
+                    <Input value={createForm.gstin} onChange={(e) => setCreateForm((prev) => ({ ...prev, gstin: e.target.value }))} />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => void fetchGstinDetails("create")}
+                      disabled={fetchingGstin || !createForm.gstin.trim()}
+                      title="Fetch GSTIN details"
+                    >
+                      <Search className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <Label>PAN</Label>
                   <Input value={createForm.pan} onChange={(e) => setCreateForm((prev) => ({ ...prev, pan: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
-                  <Label>Owner Name</Label>
+                  <Label>Owner Name *</Label>
                   <Input
                     value={createForm.owner_name}
                     onChange={(e) => setCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Phone</Label>
+                  <Label>Whatsapp Number</Label>
                   <Input value={createForm.phone} onChange={(e) => setCreateForm((prev) => ({ ...prev, phone: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
-                  <Label>Alternate Phone</Label>
+                  <Label>Alternate Number</Label>
                   <Input
                     value={createForm.alternate_phone}
                     onChange={(e) => setCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))}
@@ -525,10 +718,24 @@ export function VendorsAdminEditor() {
                   <Input value={createForm.email} onChange={(e) => setCreateForm((prev) => ({ ...prev, email: e.target.value }))} />
                 </div>
                 <div className="space-y-1 md:col-span-2">
-                  <Label>Street</Label>
+                  <Label>Street Address 1</Label>
                   <Input
-                    value={createForm.street}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, street: e.target.value }))}
+                    value={createForm.street_address_1}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, street_address_1: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1 md:col-span-2">
+                  <Label>Street Address 2</Label>
+                  <Input
+                    value={createForm.street_address_2}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, street_address_2: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1 md:col-span-2">
+                  <Label>Street Address 3</Label>
+                  <Input
+                    value={createForm.street_address_3}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, street_address_3: e.target.value }))}
                   />
                 </div>
                 <div className="space-y-1">
@@ -544,20 +751,6 @@ export function VendorsAdminEditor() {
                   <Input
                     value={createForm.pincode}
                     onChange={(e) => setCreateForm((prev) => ({ ...prev, pincode: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Bank Account Number</Label>
-                  <Input
-                    value={createForm.bank_account_number}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>IFSC Code</Label>
-                  <Input
-                    value={createForm.ifsc_code}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))}
                   />
                 </div>
                 <div className="space-y-1 md:col-span-2">
@@ -611,9 +804,10 @@ export function VendorsAdminEditor() {
                     </Dialog>
                   </div>
                   <select
-                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                    className="border-input h-9 w-full rounded-md border bg-muted px-3 text-sm"
                     value={createForm.account_category_id}
                     onChange={(e) => setCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
+                    disabled
                   >
                     <option value="">Select account category</option>
                     {accountCategories.map((category) => (
@@ -623,31 +817,69 @@ export function VendorsAdminEditor() {
                     ))}
                   </select>
                 </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Linked Brands</Label>
-                  <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
-                    {brands.length ? brands.map((brand) => (
-                      <label key={brand.id} className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={createForm.brand_ids.includes(brand.id)}
-                          onChange={(e) =>
-                            setCreateForm((prev) => ({
-                              ...prev,
-                              brand_ids: e.target.checked
-                                ? [...prev.brand_ids, brand.id]
-                                : prev.brand_ids.filter((id) => id !== brand.id),
-                            }))
-                          }
-                        />
-                        {brand.name}
-                      </label>
-                    )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Area</Label>
+                    <Dialog open={openAreaDialog} onOpenChange={(open) => setOpenAreaDialog(canWriteVendors ? open : false)}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" type="button" variant="outline" disabled={!canWriteVendors}>+ Add Area</Button>
+                      </DialogTrigger>
+                      <DialogContent className="w-[92vw] max-w-[520px]">
+                        <DialogHeader><DialogTitle>Add Area</DialogTitle></DialogHeader>
+                        <div className="grid gap-3">
+                          <Input placeholder="Area name" value={areaForm.area_name} onChange={(e) => setAreaForm((prev) => ({ ...prev, area_name: e.target.value }))} />
+                          <Input placeholder="City" value={areaForm.city} onChange={(e) => setAreaForm((prev) => ({ ...prev, city: e.target.value }))} />
+                          <Input placeholder="State" value={areaForm.state} onChange={(e) => setAreaForm((prev) => ({ ...prev, state: e.target.value }))} />
+                          <Input placeholder="Pincode" value={areaForm.pincode} onChange={(e) => setAreaForm((prev) => ({ ...prev, pincode: e.target.value }))} />
+                        </div>
+                        <DialogFooter><Button type="button" onClick={createInlineArea} disabled={creatingArea || !areaForm.area_name.trim()}>{creatingArea ? "Adding..." : "Add Area"}</Button></DialogFooter>
+                      </DialogContent>
+                    </Dialog>
                   </div>
+                  <select
+                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                    value={createForm.area_id}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, area_id: e.target.value, route_id: "" }))}
+                  >
+                    <option value="">Select area</option>
+                    {areas.map((area) => <option key={area.id} value={area.id}>{area.area_name}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Route</Label>
+                    <Dialog open={openRouteDialog} onOpenChange={(open) => setOpenRouteDialog(canWriteVendors ? open : false)}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" type="button" variant="outline" disabled={!canWriteVendors}>+ Add Route</Button>
+                      </DialogTrigger>
+                      <DialogContent className="w-[92vw] max-w-[520px]">
+                        <DialogHeader><DialogTitle>Add Route</DialogTitle></DialogHeader>
+                        <div className="grid gap-3">
+                          <Input placeholder="Route name" value={routeForm.route_name} onChange={(e) => setRouteForm((prev) => ({ ...prev, route_name: e.target.value }))} />
+                          <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={routeForm.area_id || createForm.area_id} onChange={(e) => setRouteForm((prev) => ({ ...prev, area_id: e.target.value }))}>
+                            <option value="">Select area</option>
+                            {areas.map((area) => <option key={area.id} value={area.id}>{area.area_name}</option>)}
+                          </select>
+                        </div>
+                        <DialogFooter><Button type="button" onClick={createInlineRoute} disabled={creatingRoute || !routeForm.route_name.trim() || !(routeForm.area_id || createForm.area_id)}>{creatingRoute ? "Adding..." : "Add Route"}</Button></DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                  <select
+                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                    value={createForm.route_id}
+                    onChange={(e) => {
+                      const nextRoute = routes.find((route) => route.id === e.target.value);
+                      setCreateForm((prev) => ({ ...prev, route_id: e.target.value, area_id: nextRoute?.area_id || prev.area_id }));
+                    }}
+                  >
+                    <option value="">Select route</option>
+                    {createRoutes.map((route) => <option key={route.id} value={route.id}>{route.route_name}</option>)}
+                  </select>
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={createVendor} disabled={!canWriteVendors || creating || !createForm.firm_name.trim()}>
+                <Button onClick={createVendor} disabled={!canWriteVendors || creating || !createForm.firm_name.trim() || !createForm.gstin.trim() || !createForm.owner_name.trim()}>
                   {creating ? "Creating..." : "Create Vendor"}
                 </Button>
               </DialogFooter>
@@ -667,9 +899,10 @@ export function VendorsAdminEditor() {
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Firm Name</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Type</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">GSTIN</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Phone</TableHead>
-              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Brands</TableHead>
+              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Whatsapp</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Account Category</TableHead>
+              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Area</TableHead>
+              <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Route</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">City</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">State</TableHead>
               <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
@@ -688,6 +921,7 @@ export function VendorsAdminEditor() {
                     <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-10 dark:h-5" /></TableCell>
                     <TableCell><Skeleton className="h-8 w-16" /></TableCell>
@@ -696,7 +930,7 @@ export function VendorsAdminEditor() {
               : null}
             {!loading && rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center text-muted-foreground">
+                <TableCell colSpan={12} className="text-center text-muted-foreground">
                   No vendors found.
                 </TableCell>
               </TableRow>
@@ -715,8 +949,9 @@ export function VendorsAdminEditor() {
                   <TableCell>{row.purchase_type || "-"}</TableCell>
                   <TableCell>{row.gstin || "-"}</TableCell>
                   <TableCell>{row.phone || "-"}</TableCell>
-                  <TableCell>{row.brand_names.length ? row.brand_names.join(", ") : "-"}</TableCell>
                   <TableCell>{row.account_category_name || "-"}</TableCell>
+                  <TableCell>{row.area_name || "-"}</TableCell>
+                  <TableCell>{row.route_name || "-"}</TableCell>
                   <TableCell>{row.city || "-"}</TableCell>
                   <TableCell>{row.state || "-"}</TableCell>
                   <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
@@ -737,38 +972,43 @@ export function VendorsAdminEditor() {
                         {selected ? (
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1 md:col-span-2">
-                              <Label>Firm Name</Label>
+                              <Label>Firm Name *</Label>
                               <Input value={selected.firm_name} onChange={(e) => updateSelected("firm_name", e.target.value)} />
                             </div>
                             <div className="space-y-1">
                               <Label>Type</Label>
-                              <select
-                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
-                                value={selected.purchase_type}
-                                onChange={(e) => updateSelected("purchase_type", e.target.value)}
-                              >
-                                <option value="CENTRAL">CENTRAL</option>
-                                <option value="LOCAL">LOCAL</option>
-                              </select>
+                              <Input value={selected.purchase_type || "Auto from GSTIN"} readOnly className="bg-muted" />
                             </div>
                             <div className="space-y-1">
-                              <Label>GSTIN</Label>
-                              <Input value={selected.gstin} onChange={(e) => updateSelected("gstin", e.target.value)} />
+                              <Label>GSTIN *</Label>
+                              <div className="flex gap-2">
+                                <Input value={selected.gstin} onChange={(e) => updateSelected("gstin", e.target.value)} />
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="icon"
+                                  onClick={() => void fetchGstinDetails("edit")}
+                                  disabled={fetchingGstin || !selected.gstin.trim()}
+                                  title="Fetch GSTIN details"
+                                >
+                                  <Search className="h-4 w-4" />
+                                </Button>
+                              </div>
                             </div>
                             <div className="space-y-1">
                               <Label>PAN</Label>
                               <Input value={selected.pan} onChange={(e) => updateSelected("pan", e.target.value)} />
                             </div>
                             <div className="space-y-1">
-                              <Label>Owner Name</Label>
+                              <Label>Owner Name *</Label>
                               <Input value={selected.owner_name} onChange={(e) => updateSelected("owner_name", e.target.value)} />
                             </div>
                             <div className="space-y-1">
-                              <Label>Phone</Label>
+                              <Label>Whatsapp Number</Label>
                               <Input value={selected.phone} onChange={(e) => updateSelected("phone", e.target.value)} />
                             </div>
                             <div className="space-y-1">
-                              <Label>Alternate Phone</Label>
+                              <Label>Alternate Number</Label>
                               <Input
                                 value={selected.alternate_phone}
                                 onChange={(e) => updateSelected("alternate_phone", e.target.value)}
@@ -779,8 +1019,16 @@ export function VendorsAdminEditor() {
                               <Input value={selected.email} onChange={(e) => updateSelected("email", e.target.value)} />
                             </div>
                             <div className="space-y-1 md:col-span-2">
-                              <Label>Street</Label>
-                              <Input value={selected.street} onChange={(e) => updateSelected("street", e.target.value)} />
+                              <Label>Street Address 1</Label>
+                              <Input value={selected.street_address_1} onChange={(e) => updateSelected("street_address_1", e.target.value)} />
+                            </div>
+                            <div className="space-y-1 md:col-span-2">
+                              <Label>Street Address 2</Label>
+                              <Input value={selected.street_address_2} onChange={(e) => updateSelected("street_address_2", e.target.value)} />
+                            </div>
+                            <div className="space-y-1 md:col-span-2">
+                              <Label>Street Address 3</Label>
+                              <Input value={selected.street_address_3} onChange={(e) => updateSelected("street_address_3", e.target.value)} />
                             </div>
                             <div className="space-y-1">
                               <Label>City</Label>
@@ -794,21 +1042,10 @@ export function VendorsAdminEditor() {
                               <Label>Pincode</Label>
                               <Input value={selected.pincode} onChange={(e) => updateSelected("pincode", e.target.value)} />
                             </div>
-                            <div className="space-y-1">
-                              <Label>Bank Account Number</Label>
-                              <Input
-                                value={selected.bank_account_number}
-                                onChange={(e) => updateSelected("bank_account_number", e.target.value)}
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label>IFSC Code</Label>
-                              <Input value={selected.ifsc_code} onChange={(e) => updateSelected("ifsc_code", e.target.value)} />
-                            </div>
                             <div className="space-y-1 md:col-span-2">
                               <Label>Account Category</Label>
                               <select
-                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                className="border-input h-9 w-full rounded-md border bg-muted px-3 text-sm"
                                 value={selected.account_category_id}
                                 onChange={(e) => {
                                   const nextId = e.target.value;
@@ -825,6 +1062,7 @@ export function VendorsAdminEditor() {
                                     )
                                   );
                                 }}
+                                disabled
                               >
                                 <option value="">Select account category</option>
                                 {accountCategories.map((category) => (
@@ -834,37 +1072,52 @@ export function VendorsAdminEditor() {
                                 ))}
                               </select>
                             </div>
-                            <div className="space-y-2 md:col-span-2">
-                              <Label>Linked Brands</Label>
-                              <div className="grid gap-2 rounded-md border p-3 md:grid-cols-2">
-                                {brands.length ? brands.map((brand) => (
-                                  <label key={brand.id} className="flex items-center gap-2 text-sm">
-                                    <input
-                                      type="checkbox"
-                                      checked={selected.brand_ids.includes(brand.id)}
-                                      onChange={(e) => {
-                                        const nextIds = e.target.checked
-                                          ? [...selected.brand_ids, brand.id]
-                                          : selected.brand_ids.filter((id) => id !== brand.id);
-                                        setRows((prev) =>
-                                          prev.map((row) =>
-                                            row.id === selected.id
-                                              ? {
-                                                  ...row,
-                                                  brand_ids: nextIds,
-                                                  brand_names: brands
-                                                    .filter((item) => nextIds.includes(item.id))
-                                                    .map((item) => item.name),
-                                                }
-                                              : row
-                                          )
-                                        );
-                                      }}
-                                    />
-                                    {brand.name}
-                                  </label>
-                                )) : <p className="text-sm text-muted-foreground">No brands found.</p>}
-                              </div>
+                            <div className="space-y-1">
+                              <Label>Area</Label>
+                              <select
+                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                value={selected.area_id}
+                                onChange={(e) => {
+                                  const nextAreaId = e.target.value;
+                                  const nextArea = areas.find((area) => area.id === nextAreaId);
+                                  setRows((prev) =>
+                                    prev.map((row) =>
+                                      row.id === selected.id
+                                        ? { ...row, area_id: nextAreaId, area_name: nextArea?.area_name ?? "", route_id: "", route_name: "" }
+                                        : row
+                                    )
+                                  );
+                                }}
+                              >
+                                <option value="">Select area</option>
+                                {areas.map((area) => <option key={area.id} value={area.id}>{area.area_name}</option>)}
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Route</Label>
+                              <select
+                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                value={selected.route_id}
+                                onChange={(e) => {
+                                  const nextRoute = routes.find((route) => route.id === e.target.value);
+                                  setRows((prev) =>
+                                    prev.map((row) =>
+                                      row.id === selected.id
+                                        ? {
+                                            ...row,
+                                            route_id: e.target.value,
+                                            route_name: nextRoute?.route_name ?? "",
+                                            area_id: nextRoute?.area_id || row.area_id,
+                                            area_name: nextRoute?.area_name || row.area_name,
+                                          }
+                                        : row
+                                    )
+                                  );
+                                }}
+                              >
+                                <option value="">Select route</option>
+                                {selectedRoutes.map((route) => <option key={route.id} value={route.id}>{route.route_name}</option>)}
+                              </select>
                             </div>
                             <label className="flex items-center gap-2 text-sm">
                               <input
@@ -877,7 +1130,10 @@ export function VendorsAdminEditor() {
                           </div>
                         ) : null}
                         <DialogFooter>
-                          <Button onClick={saveSelected} disabled={!canWriteVendors || !selected || savingId === selected.id}>
+                          <Button
+                            onClick={saveSelected}
+                            disabled={!canWriteVendors || !selected || savingId === selected.id || !selected.firm_name.trim() || !selected.gstin.trim() || !selected.owner_name.trim()}
+                          >
                             {savingId === selected?.id ? "Saving..." : "Save"}
                           </Button>
                         </DialogFooter>

@@ -1,10 +1,10 @@
 import base64
 import json
-import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
+import httpx
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
@@ -38,6 +38,7 @@ from app.models.entities import (
     SalesFinalInvoiceItem,
     StockMovement,
     VendorBrand,
+    PartyType,
     Permission,
     PortalScope,
     Rack,
@@ -115,6 +116,16 @@ ADMIN_PERMISSION_MODULES: list[tuple[str, str]] = [
     ("vendors", "Vendor Module"),
     ("delivery", "Delivery Workflow"),
 ]
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _placeholder_password_hash() -> str:
+    return hash_password(uuid.uuid4().hex)
 
 
 async def _paginate(db: AsyncSession, stmt, page: int, page_size: int):
@@ -282,6 +293,7 @@ async def _apply_product_reference_fields(db: AsyncSession, data: dict) -> dict:
     brand = await _require_active_lookup(db, ProductBrand, data.get("brand_id"), "brand_id")
     category = await _require_active_lookup(db, ProductCategory, data.get("category_id"), "category_id")
     sub_category = await _require_active_lookup(db, ProductSubCategory, data.get("sub_category_id"), "sub_category_id")
+    hsn = await _require_active_lookup(db, HSNMaster, data.get("hsn_id"), "hsn_id")
 
     if sub_category is not None and category is not None and sub_category.category_id not in (None, category.id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="sub_category_id does not belong to category_id")
@@ -310,6 +322,7 @@ async def _apply_product_reference_fields(db: AsyncSession, data: dict) -> dict:
     data["brand"] = getattr(brand, "name", None)
     data["category"] = getattr(category, "name", None)
     data["sub_category"] = getattr(sub_category, "name", None)
+    data["tax_percent"] = hsn.gst_percent if hsn is not None else data.get("tax_percent") or Decimal("0")
     data["display_name"] = data.get("name")
     return data
 
@@ -400,6 +413,209 @@ async def _sync_vendor_brands(db: AsyncSession, vendor_id: uuid.UUID, brand_ids:
     return [str(row[0]) for row in linked_rows], [str(row[1] or "") for row in linked_rows]
 
 
+async def _default_vendor_account_category_id(db: AsyncSession) -> uuid.UUID:
+    category = (
+        await db.execute(
+            select(AccountCategory).where(
+                AccountCategory.party_type == PartyType.VENDOR,
+                AccountCategory.is_active.is_(True),
+                or_(
+                    func.upper(AccountCategory.name) == "SUNDRY CREDITORS",
+                    func.upper(AccountCategory.code).in_(["SUNDRY_CREDITORS", "SUNDRY-CREDITORS"]),
+                ),
+            )
+        )
+    ).scalars().first()
+    if category:
+        return category.id
+
+    category = AccountCategory(
+        code="SUNDRY_CREDITORS",
+        name="SUNDRY CREDITORS",
+        party_type=PartyType.VENDOR,
+        description="Default vendor account category",
+        is_active=True,
+    )
+    db.add(category)
+    await db.flush()
+    return category.id
+
+
+async def _default_customer_account_category_id(db: AsyncSession) -> uuid.UUID:
+    category = (
+        await db.execute(
+            select(AccountCategory).where(
+                AccountCategory.party_type == PartyType.CUSTOMER,
+                AccountCategory.is_active.is_(True),
+                or_(
+                    func.upper(AccountCategory.name) == "SUNDRY DEBTORS",
+                    func.upper(AccountCategory.code).in_(["SUNDRY_DEBTORS", "SUNDRY-DEBTORS"]),
+                ),
+            )
+        )
+    ).scalars().first()
+    if category:
+        return category.id
+
+    category = AccountCategory(
+        code="SUNDRY_DEBTORS",
+        name="SUNDRY DEBTORS",
+        party_type=PartyType.CUSTOMER,
+        description="Default customer account category",
+        is_active=True,
+    )
+    db.add(category)
+    await db.flush()
+    return category.id
+
+
+async def _active_company_gstin(db: AsyncSession) -> str | None:
+    return (
+        await db.execute(
+            select(Company.gstin)
+            .where(Company.is_active.is_(True), Company.gstin.is_not(None))
+            .order_by(Company.created_at.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _derive_purchase_type(company_gstin: str | None, vendor_gstin: str | None) -> str:
+    company_prefix = (company_gstin or "").strip()[:2]
+    vendor_prefix = (vendor_gstin or "").strip()[:2]
+    if company_prefix and vendor_prefix and company_prefix == vendor_prefix:
+        return "LOCAL"
+    return "CENTRAL"
+
+
+async def _apply_vendor_defaults_and_validate(db: AsyncSession, data: dict) -> dict:
+    firm_name = (data.get("firm_name") or "").strip()
+    gstin = (data.get("gstin") or "").strip()
+    owner_name = (data.get("owner_name") or "").strip()
+    if not firm_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="firm_name is required")
+    if not gstin:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gstin is required")
+    if not owner_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="owner_name is required")
+
+    data["firm_name"] = firm_name
+    data["gstin"] = gstin
+    data["owner_name"] = owner_name
+    data["name"] = firm_name
+    data["purchase_type"] = _derive_purchase_type(await _active_company_gstin(db), gstin)
+    if not data.get("street_address_1") and data.get("street"):
+        data["street_address_1"] = data["street"]
+    if not data.get("street") and data.get("street_address_1"):
+        data["street"] = data["street_address_1"]
+
+    account_category_id = data.get("account_category_id") or await _default_vendor_account_category_id(db)
+    await _require_account_category(db, account_category_id, party_type="VENDOR")
+    data["account_category_id"] = account_category_id
+
+    area_id = data.get("area_id")
+    route_id = data.get("route_id")
+    if area_id:
+        await _require_active_lookup(db, AreaMaster, area_id, "area_id")
+    if route_id:
+        route = await _require_active_lookup(db, RouteMaster, route_id, "route_id")
+        if area_id and route.area_id != area_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="route_id does not belong to area_id")
+        if not area_id:
+            data["area_id"] = route.area_id
+    return data
+
+
+def _first_text(*values: object) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int):
+            return str(value)
+    return ""
+
+
+def _taxpro_normalize_profile(payload: dict, gstin: str) -> dict:
+    data = payload
+    for key in ("data", "result", "response", "taxpayer", "taxpayerInfo"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            data = value
+            break
+    principal = data.get("pradr") if isinstance(data.get("pradr"), dict) else {}
+    address = principal.get("addr") if isinstance(principal.get("addr"), dict) else principal
+    street_1 = _first_text(address.get("bno"), address.get("bnm"))
+    street_2 = _first_text(address.get("flno"), address.get("st"))
+    street_3 = _first_text(address.get("loc"), address.get("dst"))
+    legal_name = _first_text(data.get("tradeNam"), data.get("trade_name"), data.get("lgnm"), data.get("legal_name"))
+    owner_name = _first_text(data.get("lgnm"), data.get("legal_name"), data.get("tradeNam"))
+    return {
+        "gstin": _first_text(data.get("gstin"), gstin),
+        "firm_name": legal_name,
+        "owner_name": owner_name,
+        "pan": _first_text(data.get("pan"), _first_text(data.get("gstin"), gstin)[2:12]),
+        "street_address_1": street_1,
+        "street_address_2": street_2,
+        "street_address_3": street_3,
+        "street": street_1,
+        "city": _first_text(address.get("city"), address.get("loc"), address.get("dst")),
+        "state": _first_text(address.get("stcd"), address.get("state")),
+        "pincode": _first_text(address.get("pncd"), address.get("pincode")),
+        "raw": payload,
+    }
+
+
+async def _apply_customer_defaults_and_validate(db: AsyncSession, data: dict) -> dict:
+    outlet_name = (data.get("outlet_name") or "").strip()
+    gst_number = (data.get("gst_number") or data.get("gstin") or "").strip()
+    email = (data.get("email") or "").strip()
+    owner_name = (data.get("owner_name") or "").strip()
+    if not outlet_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="outlet_name is required")
+    if not gst_number:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gst_number is required")
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email is required")
+
+    data["outlet_name"] = outlet_name
+    data["name"] = (data.get("name") or outlet_name).strip() or outlet_name
+    data["gst_number"] = gst_number
+    data["gstin"] = gst_number
+    data["email"] = email
+    if owner_name:
+        data["owner_name"] = owner_name
+    if not data.get("whatsapp_number") and data.get("phone"):
+        data["whatsapp_number"] = data["phone"]
+    if not data.get("phone") and data.get("whatsapp_number"):
+        data["phone"] = data["whatsapp_number"]
+
+    account_category_id = data.get("account_category_id") or await _default_customer_account_category_id(db)
+    await _require_account_category(db, account_category_id, party_type="CUSTOMER")
+    data["account_category_id"] = account_category_id
+
+    category_id = data.get("customer_category_id")
+    if category_id:
+        category = await db.get(CustomerCategory, category_id)
+        if category is None or not category.is_active:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid customer_category_id")
+        if data.get("customer_type") is None:
+            data["customer_type"] = category.customer_type
+        if data.get("price_class") is None:
+            data["price_class"] = category.price_class
+
+    if data.get("customer_type") is None:
+        data["customer_type"] = CustomerType.B2B
+    if data.get("customer_class") is None:
+        data["customer_class"] = CustomerClass.B2C if data["customer_type"] == CustomerType.B2C else CustomerClass.B2B_SEMI_WHOLESALE
+    if data.get("price_class") is None:
+        data["price_class"] = "C" if data["customer_type"] == CustomerType.B2C else "A"
+
+    data["tax_type"] = _derive_purchase_type(await _active_company_gstin(db), gst_number)
+    if data.get("marital_status") != "MARRIED":
+        data["anniversary"] = None
+    return data
+
+
 @router.post("/companies")
 async def create_company(payload: CompanyCreate, db: AsyncSession = Depends(get_db)):
     obj = Company(**payload.model_dump())
@@ -457,9 +673,9 @@ async def create_vehicle(payload: VehicleCreate, db: AsyncSession = Depends(get_
 @router.post("/employees", dependencies=[Depends(require_permission("employees", "create"))])
 async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(get_db)):
     data = payload.model_dump()
-    username = data.pop("username", None)
-    password = data.pop("password", None)
     data["name"] = data["full_name"]
+    if data.get("marital_status") != "MARRIED":
+        data["anniversary"] = None
     if data.get("role_id") is None:
         role = await _resolve_role_for_employee_role(db, payload.role)
         if role is not None:
@@ -467,7 +683,7 @@ async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(ge
     obj = Employee(**data)
     db.add(obj)
     await db.flush()
-    await _upsert_employee_credentials(db, obj, username, password)
+    await _upsert_employee_credentials(db, obj)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -489,12 +705,9 @@ async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_
 
 @router.post("/vendors", dependencies=[Depends(require_permission("vendors", "create"))])
 async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db)):
-    await _require_account_category(db, payload.account_category_id, party_type="VENDOR")
     data = payload.model_dump()
     brand_ids = data.pop("brand_ids", [])
-    if not (data.get("firm_name") or "").strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="firm_name is required")
-    data["name"] = data["firm_name"]
+    data = await _apply_vendor_defaults_and_validate(db, data)
     obj = Vendor(**data)
     db.add(obj)
     await db.flush()
@@ -505,6 +718,71 @@ async def create_vendor(payload: VendorCreate, db: AsyncSession = Depends(get_db
     response["brand_ids"] = linked_brand_ids
     response["brand_names"] = linked_brand_names
     return response
+
+
+@router.get("/vendors/gstin-lookup", dependencies=[Depends(require_permission("vendors", "read"))])
+async def lookup_vendor_gstin(gstin: str = Query(..., min_length=1), db: AsyncSession = Depends(get_db)):
+    normalized_gstin = gstin.strip().upper()
+    if not settings.taxpro_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="TAXPRO_API_KEY is not configured")
+    if not settings.taxpro_gst_lookup_url:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="TAXPRO_GST_LOOKUP_URL is not configured")
+
+    headers = {
+        "Authorization": f"Bearer {settings.taxpro_api_key}",
+        "x-api-key": settings.taxpro_api_key,
+        "X-API-Key": settings.taxpro_api_key,
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(settings.taxpro_gst_lookup_url, params={"gstin": normalized_gstin}, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"TaxPro GST lookup failed: {exc.response.status_code}",
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="TaxPro GST lookup failed") from exc
+
+    profile = _taxpro_normalize_profile(payload if isinstance(payload, dict) else {"data": payload}, normalized_gstin)
+    profile["purchase_type"] = _derive_purchase_type(await _active_company_gstin(db), profile["gstin"])
+    return profile
+
+
+@router.get("/customers/gstin-lookup", dependencies=[Depends(require_permission("customers", "read"))])
+async def lookup_customer_gstin(gstin: str = Query(..., min_length=1), db: AsyncSession = Depends(get_db)):
+    normalized_gstin = gstin.strip().upper()
+    if not settings.taxpro_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="TAXPRO_API_KEY is not configured")
+    if not settings.taxpro_gst_lookup_url:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="TAXPRO_GST_LOOKUP_URL is not configured")
+
+    headers = {
+        "Authorization": f"Bearer {settings.taxpro_api_key}",
+        "x-api-key": settings.taxpro_api_key,
+        "X-API-Key": settings.taxpro_api_key,
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(settings.taxpro_gst_lookup_url, params={"gstin": normalized_gstin}, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"TaxPro GST lookup failed: {exc.response.status_code}",
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="TaxPro GST lookup failed") from exc
+
+    profile = _taxpro_normalize_profile(payload if isinstance(payload, dict) else {"data": payload}, normalized_gstin)
+    profile["tax_type"] = _derive_purchase_type(await _active_company_gstin(db), profile["gstin"])
+    profile["gst_number"] = profile["gstin"]
+    return profile
 
 
 @router.post("/customer-documents/upload", dependencies=[Depends(require_permission("customers", "update"))])
@@ -519,34 +797,12 @@ async def upload_customer_document(
 @router.post("/customers", dependencies=[Depends(require_permission("customers", "create"))])
 async def create_customer(payload: CustomerCreate, db: AsyncSession = Depends(get_db)):
     data = payload.model_dump()
-    username = data.pop("username", None)
-    password = data.pop("password", None)
-    if not data.get("whatsapp_number") and data.get("phone"):
-        data["whatsapp_number"] = data["phone"]
-    if not data.get("alternate_number") and data.get("alternate_phone"):
-        data["alternate_number"] = data["alternate_phone"]
-    if not data.get("gst_number") and data.get("gstin"):
-        data["gst_number"] = data["gstin"]
-    await _require_account_category(db, data.get("account_category_id"), party_type="CUSTOMER")
-
-    category_id = data.get("customer_category_id")
-    if category_id:
-        category = await db.get(CustomerCategory, category_id)
-        if category is None or not category.is_active:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid customer_category_id")
-        data["customer_type"] = category.customer_type
-
-    customer_class = data.get("customer_class")
-    if data.get("customer_type") is None:
-        data["customer_type"] = CustomerType.B2C if customer_class == CustomerClass.B2C else CustomerType.B2B
-
-    if customer_class is None:
-        data["customer_class"] = CustomerClass.B2C if data["customer_type"] == CustomerType.B2C else CustomerClass.B2B_SEMI_WHOLESALE
+    data = await _apply_customer_defaults_and_validate(db, data)
 
     obj = Customer(**data)
     db.add(obj)
     await db.flush()
-    await _upsert_customer_credentials(db, obj, username, password)
+    await _upsert_customer_credentials(db, obj)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -810,26 +1066,37 @@ async def list_customers(
             Customer.name.label("name"),
             Customer.outlet_name.label("outlet_name"),
             Customer.customer_type.label("customer_type"),
+            Customer.tax_type.label("tax_type"),
             Customer.customer_category_id.label("customer_category_id"),
             CustomerCategory.name.label("category_name"),
+            CustomerCategory.price_class.label("category_price_class"),
             Customer.account_category_id.label("account_category_id"),
             AccountCategory.name.label("account_category_name"),
             Customer.whatsapp_number.label("whatsapp_number"),
             Customer.alternate_number.label("alternate_number"),
             Customer.gst_number.label("gst_number"),
+            Customer.gstin.label("gstin"),
+            Customer.owner_name.label("owner_name"),
             Customer.pan_number.label("pan_number"),
             Customer.email.label("email"),
             Customer.street_address_1.label("street_address_1"),
             Customer.street_address_2.label("street_address_2"),
+            Customer.street_address_3.label("street_address_3"),
             Customer.city.label("city"),
             Customer.state.label("state"),
             Customer.pincode.label("pincode"),
             Customer.latitude.label("latitude"),
             Customer.longitude.label("longitude"),
+            Customer.opening_balance.label("opening_balance"),
             Customer.credit_limit.label("credit_limit"),
+            Customer.owner_birthday.label("owner_birthday"),
+            Customer.gender.label("gender"),
+            Customer.marital_status.label("marital_status"),
+            Customer.anniversary.label("anniversary"),
+            Customer.price_class.label("price_class"),
             Customer.is_line_sale_outlet.label("is_line_sale_outlet"),
             Customer.is_active.label("is_active"),
-            User.username.label("username"),
+            User.password_set_at.is_not(None).label("password_is_set"),
             Customer.created_at.label("created_at"),
         )
         .select_from(Customer)
@@ -1057,6 +1324,18 @@ async def list_vendors(
             )
         ).all()
         account_categories = {row[0]: str(row[1] or "") for row in account_rows}
+    route_areas: dict[uuid.UUID, dict[str, str | None]] = {}
+    if vendor_ids:
+        route_area_rows = (
+            await db.execute(
+                select(Vendor.id, AreaMaster.area_name, RouteMaster.route_name)
+                .select_from(Vendor)
+                .outerjoin(AreaMaster, AreaMaster.id == Vendor.area_id)
+                .outerjoin(RouteMaster, RouteMaster.id == Vendor.route_id)
+                .where(Vendor.id.in_(vendor_ids))
+            )
+        ).all()
+        route_areas = {row[0]: {"area_name": row[1], "route_name": row[2]} for row in route_area_rows}
     brand_rows = (
         await db.execute(
             select(VendorBrand.vendor_id, VendorBrand.brand_id, ProductBrand.name)
@@ -1085,6 +1364,9 @@ async def list_vendors(
                 "alternate_phone": vendor.alternate_phone,
                 "email": vendor.email,
                 "street": vendor.street,
+                "street_address_1": vendor.street_address_1,
+                "street_address_2": vendor.street_address_2,
+                "street_address_3": vendor.street_address_3,
                 "city": vendor.city,
                 "state": vendor.state,
                 "pincode": vendor.pincode,
@@ -1093,6 +1375,10 @@ async def list_vendors(
                 "ifsc_code": vendor.ifsc_code,
                 "account_category_id": str(vendor.account_category_id) if vendor.account_category_id else None,
                 "account_category_name": account_categories.get(vendor.id, ""),
+                "area_id": str(vendor.area_id) if vendor.area_id else None,
+                "area_name": route_areas.get(vendor.id, {}).get("area_name") or "",
+                "route_id": str(vendor.route_id) if vendor.route_id else None,
+                "route_name": route_areas.get(vendor.id, {}).get("route_name") or "",
                 "brand_ids": brand_entry["brand_ids"],
                 "brand_names": brand_entry["brand_names"],
                 "is_active": vendor.is_active,
@@ -1301,18 +1587,20 @@ async def list_employees(
             Employee.role.label("role"),
             Employee.role_id.label("role_id"),
             Role.role_name.label("sub_role_name"),
+            Employee.dob.label("dob"),
             Employee.gender.label("gender"),
+            Employee.marital_status.label("marital_status"),
+            Employee.anniversary.label("anniversary"),
             Employee.phone.label("phone"),
             Employee.alternate_phone.label("alternate_phone"),
             Employee.email.label("email"),
-            Employee.dob.label("dob"),
             Employee.aadhaar_hash.label("aadhaar_hash"),
             Employee.pan_number.label("pan_number"),
             Employee.driver_license_no.label("driver_license_no"),
             Employee.driver_license_expiry.label("driver_license_expiry"),
             Employee.warehouse_id.label("warehouse_id"),
             Warehouse.name.label("warehouse_name"),
-            User.username.label("username"),
+            User.password_set_at.is_not(None).label("password_is_set"),
             Employee.is_active.label("is_active"),
             Employee.created_at.label("created_at"),
         )
@@ -1328,7 +1616,7 @@ async def list_employees(
             or_(
                 Employee.full_name.ilike(q),
                 Employee.phone.ilike(q),
-                User.username.ilike(q),
+                Employee.email.ilike(q),
                 func.cast(Employee.role, String).ilike(q),
                 Warehouse.name.ilike(q),
             )
@@ -1361,7 +1649,7 @@ async def list_admin_users(db: AsyncSession = Depends(get_db)):
             Warehouse.name.label("warehouse_name"),
             Employee.is_active.label("is_active"),
             User.id.label("user_id"),
-            User.username.label("username"),
+            User.password_set_at.is_not(None).label("password_is_set"),
             User.is_super_admin.label("is_super_admin"),
             Role.id.label("role_id"),
             Role.role_name.label("role_name"),
@@ -1403,7 +1691,7 @@ async def create_admin_user(payload: AdminUserCreate, db: AsyncSession = Depends
     )
     db.add(employee)
     await db.flush()
-    await _upsert_employee_credentials(db, employee, payload.username, payload.password)
+    await _upsert_employee_credentials(db, employee)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -1524,34 +1812,11 @@ async def _resolve_role_for_employee_role(db: AsyncSession, employee_role: Emplo
     ).scalar_one_or_none()
 
 
-def _slug_username(value: str, fallback_prefix: str, fallback_suffix: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9]+", ".", value.strip().lower()).strip(".")
-    if not cleaned:
-        cleaned = f"{fallback_prefix}.{fallback_suffix}"
-    return cleaned[:80]
-
-
-def _default_employee_username(employee: Employee) -> str:
-    suffix = employee.id.hex[-4:]
-    seed = str(employee.email or employee.full_name or employee.phone or "")
-    return _slug_username(seed, "emp", suffix)
-
-
-def _default_customer_username(customer: Customer) -> str:
-    suffix = customer.id.hex[-4:]
-    seed = str(customer.email or customer.name or customer.whatsapp_number or customer.phone or "")
-    return _slug_username(seed, "customer", suffix)
-
-
 async def _upsert_employee_credentials(
     db: AsyncSession,
     employee: Employee,
-    username: str | None,
-    password: str | None,
 ) -> None:
     user = (await db.execute(select(User).where(User.employee_id == employee.id).limit(1))).scalar_one_or_none()
-    resolved_username = (username or "").strip() or _default_employee_username(employee)
-    resolved_password = (password or "").strip() or "ChangeMe@123"
     if user is None:
         db.add(
             User(
@@ -1559,30 +1824,25 @@ async def _upsert_employee_credentials(
                 account_type=AccountType.EMPLOYEE,
                 phone=employee.phone,
                 email=employee.email,
-                username=resolved_username,
-                password_hash=hash_password(resolved_password),
+                username=None,
+                password_hash=_placeholder_password_hash(),
+                password_set_at=None,
                 is_active=employee.is_active,
             )
         )
         return
 
-    user.username = resolved_username
+    user.username = None
     user.phone = employee.phone
     user.email = employee.email
     user.is_active = employee.is_active
-    if (password or "").strip():
-        user.password_hash = hash_password(password.strip())
 
 
 async def _upsert_customer_credentials(
     db: AsyncSession,
     customer: Customer,
-    username: str | None,
-    password: str | None,
 ) -> None:
     user = (await db.execute(select(User).where(User.customer_id == customer.id).limit(1))).scalar_one_or_none()
-    resolved_username = (username or "").strip() or _default_customer_username(customer)
-    resolved_password = (password or "").strip() or "ChangeMe@123"
     phone_value = customer.whatsapp_number or customer.phone
     if user is None:
         db.add(
@@ -1591,19 +1851,18 @@ async def _upsert_customer_credentials(
                 account_type=AccountType.CUSTOMER,
                 phone=phone_value,
                 email=customer.email,
-                username=resolved_username,
-                password_hash=hash_password(resolved_password),
+                username=None,
+                password_hash=_placeholder_password_hash(),
+                password_set_at=None,
                 is_active=customer.is_active,
             )
         )
         return
 
-    user.username = resolved_username
+    user.username = None
     user.phone = phone_value
     user.email = customer.email
     user.is_active = customer.is_active
-    if (password or "").strip():
-        user.password_hash = hash_password(password.strip())
 
 
 @router.get("/products/{product_id}", dependencies=[Depends(require_permission("products", "read"))])
@@ -1707,13 +1966,12 @@ async def patch_customer(customer_id: str, payload: CustomerUpdate, db: AsyncSes
 
     obj = await _get_or_404(db, Customer, uuid.UUID(customer_id), "Customer")
     patch_data = payload.model_dump(exclude_unset=True)
-    username = patch_data.pop("username", None) if "username" in patch_data else None
-    password = patch_data.pop("password", None) if "password" in patch_data else None
     if "phone" in patch_data and "whatsapp_number" not in patch_data:
         patch_data["whatsapp_number"] = patch_data["phone"]
     if "gstin" in patch_data and "gst_number" not in patch_data:
         patch_data["gst_number"] = patch_data["gstin"]
     if "account_category_id" in patch_data:
+        patch_data["account_category_id"] = patch_data["account_category_id"] or await _default_customer_account_category_id(db)
         await _require_account_category(db, patch_data["account_category_id"], party_type="CUSTOMER")
     if "customer_category_id" in patch_data and patch_data["customer_category_id"]:
         category = await db.get(CustomerCategory, patch_data["customer_category_id"])
@@ -1721,11 +1979,35 @@ async def patch_customer(customer_id: str, payload: CustomerUpdate, db: AsyncSes
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid customer_category_id")
         if "customer_type" not in patch_data:
             patch_data["customer_type"] = category.customer_type
+        if "price_class" not in patch_data:
+            patch_data["price_class"] = category.price_class
     if "customer_class" in patch_data and "customer_type" not in patch_data:
         patch_data["customer_type"] = CustomerType.B2C if patch_data["customer_class"] == CustomerClass.B2C else CustomerType.B2B
+    if "outlet_name" in patch_data and patch_data["outlet_name"] is not None:
+        patch_data["outlet_name"] = patch_data["outlet_name"].strip()
+        if "name" not in patch_data:
+            patch_data["name"] = patch_data["outlet_name"]
+    if "email" in patch_data and patch_data["email"] is not None:
+        patch_data["email"] = patch_data["email"].strip()
+    if "gst_number" in patch_data and patch_data["gst_number"] is not None:
+        patch_data["gst_number"] = patch_data["gst_number"].strip()
+        patch_data["gstin"] = patch_data["gst_number"]
+        patch_data["tax_type"] = _derive_purchase_type(await _active_company_gstin(db), patch_data["gst_number"])
+    if "marital_status" in patch_data and patch_data["marital_status"] != "MARRIED":
+        patch_data["anniversary"] = None
+
+    next_outlet_name = patch_data.get("outlet_name", obj.outlet_name)
+    next_email = patch_data.get("email", obj.email)
+    next_gst_number = patch_data.get("gst_number", obj.gst_number)
+    if not (next_outlet_name or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="outlet_name is required")
+    if not (next_email or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email is required")
+    if not (next_gst_number or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gst_number is required")
     for key, value in patch_data.items():
         setattr(obj, key, value)
-    await _upsert_customer_credentials(db, obj, username, password)
+    await _upsert_customer_credentials(db, obj)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -1833,9 +2115,37 @@ async def patch_vendor(vendor_id: str, payload: VendorUpdate, db: AsyncSession =
     patch_data = payload.model_dump(exclude_unset=True)
     brand_ids = patch_data.pop("brand_ids", None)
     if "account_category_id" in patch_data:
+        patch_data["account_category_id"] = patch_data["account_category_id"] or await _default_vendor_account_category_id(db)
         await _require_account_category(db, patch_data["account_category_id"], party_type="VENDOR")
     if "firm_name" in patch_data and patch_data["firm_name"] is not None:
+        patch_data["firm_name"] = patch_data["firm_name"].strip()
         patch_data["name"] = patch_data["firm_name"]
+    if "gstin" in patch_data and patch_data["gstin"] is not None:
+        patch_data["gstin"] = patch_data["gstin"].strip()
+        patch_data["purchase_type"] = _derive_purchase_type(await _active_company_gstin(db), patch_data["gstin"])
+    if "owner_name" in patch_data and patch_data["owner_name"] is not None:
+        patch_data["owner_name"] = patch_data["owner_name"].strip()
+    if "street_address_1" in patch_data and "street" not in patch_data:
+        patch_data["street"] = patch_data["street_address_1"]
+    area_id = patch_data.get("area_id", obj.area_id)
+    route_id = patch_data.get("route_id", obj.route_id)
+    if "area_id" in patch_data and patch_data["area_id"]:
+        await _require_active_lookup(db, AreaMaster, patch_data["area_id"], "area_id")
+    if "route_id" in patch_data and patch_data["route_id"]:
+        route = await _require_active_lookup(db, RouteMaster, patch_data["route_id"], "route_id")
+        if area_id and route.area_id != area_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="route_id does not belong to area_id")
+        if not area_id:
+            patch_data["area_id"] = route.area_id
+    next_firm_name = patch_data.get("firm_name", obj.firm_name)
+    next_gstin = patch_data.get("gstin", obj.gstin)
+    next_owner_name = patch_data.get("owner_name", obj.owner_name)
+    if not (next_firm_name or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="firm_name is required")
+    if not (next_gstin or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gstin is required")
+    if not (next_owner_name or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="owner_name is required")
     for key, value in patch_data.items():
         setattr(obj, key, value)
     linked_brand_ids, linked_brand_names = await _sync_vendor_brands(db, obj.id, brand_ids)
@@ -2025,19 +2335,19 @@ async def patch_employee(employee_id: str, payload: EmployeeUpdate, db: AsyncSes
 
     obj = await _get_or_404(db, Employee, uuid.UUID(employee_id), "Employee")
     data = payload.model_dump(exclude_unset=True)
-    username = data.pop("username", None) if "username" in data else None
-    password = data.pop("password", None) if "password" in data else None
     if "full_name" in data:
         obj.full_name = data["full_name"]
         obj.name = data["full_name"]
         data.pop("full_name")
+    if "marital_status" in data and data["marital_status"] != "MARRIED":
+        data["anniversary"] = None
     if "role" in data and data["role"] is not None and "role_id" not in data:
         role = await _resolve_role_for_employee_role(db, data["role"])
         if role is not None:
             data["role_id"] = role.id
     for key, value in data.items():
         setattr(obj, key, value)
-    await _upsert_employee_credentials(db, obj, username, password)
+    await _upsert_employee_credentials(db, obj)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -2053,8 +2363,6 @@ async def patch_admin_user(employee_id: str, payload: AdminUserUpdate, db: Async
     if obj.role != EmployeeRole.ADMIN:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee is not an admin")
     data = payload.model_dump(exclude_unset=True)
-    username = data.pop("username", None) if "username" in data else None
-    password = data.pop("password", None) if "password" in data else None
     permissions = data.pop("permissions", None) if "permissions" in data else None
     if "role_id" in data and data["role_id"] is not None:
         await _ensure_admin_role(db, data["role_id"])
@@ -2078,7 +2386,7 @@ async def patch_admin_user(employee_id: str, payload: AdminUserUpdate, db: Async
         )
         obj.role_id = role.id
         await _apply_admin_role_permissions(db, role, permissions)
-    await _upsert_employee_credentials(db, obj, username, password)
+    await _upsert_employee_credentials(db, obj)
     try:
         await db.commit()
     except IntegrityError as exc:

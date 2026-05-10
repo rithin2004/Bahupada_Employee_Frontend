@@ -100,11 +100,11 @@ class EmployeeCreate(StrictModel):
     full_name: str
     role: EmployeeRole
     phone: str
-    username: str | None = None
-    password: str | None = None
     role_id: uuid.UUID | None = None
     dob: date | None = None
     gender: Gender | None = None
+    marital_status: Literal["MARRIED", "UNMARRIED"] | None = None
+    anniversary: date | None = None
     alternate_phone: str | None = None
     email: str | None = None
     aadhaar_hash: str | None = None
@@ -129,34 +129,38 @@ class ProductCreate(StrictModel):
     weight_in_grams: Decimal | None = None
     is_bundle: bool = False
     bundle_price_override: Decimal | None = None
-    tax_percent: Decimal
+    tax_percent: Decimal | None = None
 
 
 class VendorCreate(StrictModel):
     firm_name: str
     brand_ids: list[uuid.UUID] = Field(default_factory=list)
     purchase_type: Literal["LOCAL", "CENTRAL"] | None = None
-    gstin: str | None = None
+    gstin: str
     pan: str | None = None
-    owner_name: str | None = None
+    owner_name: str
     phone: str | None = None
     alternate_phone: str | None = None
     email: str | None = None
     street: str | None = None
+    street_address_1: str | None = None
+    street_address_2: str | None = None
+    street_address_3: str | None = None
     city: str | None = None
     state: str | None = None
     pincode: str | None = None
     bank_account_number: str | None = None
     ifsc_code: str | None = None
     account_category_id: uuid.UUID | None = None
+    area_id: uuid.UUID | None = None
+    route_id: uuid.UUID | None = None
 
 
 class CustomerCreate(StrictModel):
-    name: str
-    username: str | None = None
-    password: str | None = None
-    outlet_name: str | None = None
+    name: str | None = None
+    outlet_name: str
     customer_type: CustomerType | None = None
+    tax_type: Literal["LOCAL", "CENTRAL"] | None = None
     customer_category_id: uuid.UUID | None = None
     account_category_id: uuid.UUID | None = None
     customer_class: CustomerClass | None = None
@@ -164,22 +168,29 @@ class CustomerCreate(StrictModel):
     route_name: str | None = None
     pan_number: str | None = None
     pan_doc: str | None = None
-    gst_number: str | None = None
+    gst_number: str
     gst_doc: str | None = None
     whatsapp_number: str | None = None
     alternate_number: str | None = None
     gstin: str | None = None
     owner_name: str | None = None
     phone: str | None = None
-    email: str | None = None
+    email: str
     street_address_1: str | None = None
     street_address_2: str | None = None
+    street_address_3: str | None = None
     city: str | None = None
     state: str | None = None
     pincode: str | None = None
+    opening_balance: Decimal = Decimal("0")
     credit_limit: Decimal = Decimal("0")
     latitude: Decimal | None = None
     longitude: Decimal | None = None
+    owner_birthday: date | None = None
+    gender: Gender | None = None
+    marital_status: Literal["MARRIED", "UNMARRIED"] | None = None
+    anniversary: date | None = None
+    price_class: str | None = Field(default=None, pattern="^[ABC]$")
     is_line_sale_outlet: bool = False
 
 
@@ -238,10 +249,9 @@ class PricingUpdate(BaseModel):
 
 class CustomerUpdate(BaseModel):
     name: str | None = None
-    username: str | None = None
-    password: str | None = None
     outlet_name: str | None = None
     customer_type: CustomerType | None = None
+    tax_type: Literal["LOCAL", "CENTRAL"] | None = None
     customer_category_id: uuid.UUID | None = None
     account_category_id: uuid.UUID | None = None
     customer_class: CustomerClass | None = None
@@ -259,12 +269,19 @@ class CustomerUpdate(BaseModel):
     email: str | None = None
     street_address_1: str | None = None
     street_address_2: str | None = None
+    street_address_3: str | None = None
     city: str | None = None
     state: str | None = None
     pincode: str | None = None
+    opening_balance: Decimal | None = None
     credit_limit: Decimal | None = None
     latitude: Decimal | None = None
     longitude: Decimal | None = None
+    owner_birthday: date | None = None
+    gender: Gender | None = None
+    marital_status: Literal["MARRIED", "UNMARRIED"] | None = None
+    anniversary: date | None = None
+    price_class: str | None = Field(default=None, pattern="^[ABC]$")
     is_line_sale_outlet: bool | None = None
     is_active: bool | None = None
 
@@ -292,12 +309,17 @@ class VendorUpdate(BaseModel):
     alternate_phone: str | None = None
     email: str | None = None
     street: str | None = None
+    street_address_1: str | None = None
+    street_address_2: str | None = None
+    street_address_3: str | None = None
     city: str | None = None
     state: str | None = None
     pincode: str | None = None
     bank_account_number: str | None = None
     ifsc_code: str | None = None
     account_category_id: uuid.UUID | None = None
+    area_id: uuid.UUID | None = None
+    route_id: uuid.UUID | None = None
     is_active: bool | None = None
 
 
@@ -305,12 +327,17 @@ class EmployeeUpdate(BaseModel):
     full_name: str | None = None
     role: EmployeeRole | None = None
     phone: str | None = None
-    username: str | None = None
-    password: str | None = None
     warehouse_id: uuid.UUID | None = None
+    dob: date | None = None
     gender: Gender | None = None
+    marital_status: Literal["MARRIED", "UNMARRIED"] | None = None
+    anniversary: date | None = None
     alternate_phone: str | None = None
     email: str | None = None
+    aadhaar_hash: str | None = None
+    pan_number: str | None = None
+    driver_license_no: str | None = None
+    driver_license_expiry: date | None = None
     is_active: bool | None = None
 
 
@@ -352,8 +379,6 @@ class AdminUserCreate(StrictModel):
     warehouse_id: uuid.UUID
     full_name: str
     phone: str
-    username: str | None = None
-    password: str | None = None
     email: str | None = None
     alternate_phone: str | None = None
     role_id: uuid.UUID | None = None
@@ -365,8 +390,6 @@ class AdminUserUpdate(BaseModel):
     warehouse_id: uuid.UUID | None = None
     full_name: str | None = None
     phone: str | None = None
-    username: str | None = None
-    password: str | None = None
     email: str | None = None
     alternate_phone: str | None = None
     role_id: uuid.UUID | None = None

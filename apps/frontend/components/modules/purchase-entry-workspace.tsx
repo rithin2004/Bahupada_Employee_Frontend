@@ -70,6 +70,9 @@ type ProductSummary = {
   tax_percent: string;
   mrp: string;
   cost_price: string;
+  a_class_price: string;
+  b_class_price: string;
+  c_class_price: string;
   unit_1st_name: string | null;
   unit_2nd_name: string | null;
   unit_3rd_name: string | null;
@@ -161,6 +164,17 @@ type ProductCreateForm = {
   weight_in_grams: string;
   tax_percent: string;
 };
+type PricingForm = {
+  productId: string;
+  productName: string;
+  mrp: string;
+  aClassPrice: string;
+  bClassPrice: string;
+  cClassPrice: string;
+  aMargin: string;
+  bMargin: string;
+  cMargin: string;
+};
 
 type LineDraft = {
   id: string;
@@ -171,8 +185,11 @@ type LineDraft = {
   mrp: string;
   rateValue: string;
   rateUnitLevel: 1 | 2 | 3;
+  discountMode: "PERCENT" | "FREE";
   discountPercent: string;
   discountLumpsum: string;
+  freeBuyQuantity: string;
+  freeQuantity: string;
   amount: string;
 };
 
@@ -201,8 +218,11 @@ function serializePurchaseEntryDraft(d: {
     mrp: line.mrp,
     rv: line.rateValue,
     rul: line.rateUnitLevel,
+    dm: line.discountMode,
     dp: line.discountPercent,
     dl: line.discountLumpsum,
+    fbq: line.freeBuyQuantity,
+    fq: line.freeQuantity,
     amt: line.amount,
   }));
   return JSON.stringify({
@@ -327,18 +347,18 @@ function displayWholeQty(stateValue: string): string {
   return String(Math.round(n));
 }
 
-/** Money / % fields: at most 2 decimal places (rounded). */
-function roundMoney2(raw: string | number | null | undefined): string {
+/** Money / % fields: at most 4 decimal places (rounded). */
+function roundMoney4(raw: string | number | null | undefined): string {
   if (raw === null || raw === undefined) return "";
   const s = String(raw).trim().replace(/,/g, "");
   if (!s) return "";
   const n = Number(s);
   if (!Number.isFinite(n)) return String(raw).trim();
-  return n.toFixed(2);
+  return n.toFixed(4);
 }
 
-/** DISC % / DISC AMT typing: max 2 fractional digits; rounds if user pastes extra precision; keeps trailing "." while editing. */
-function sanitizeMoneyInput2dp(raw: string): string {
+/** Decimal typing: max 4 fractional digits; rounds if user pastes extra precision; keeps trailing "." while editing. */
+function sanitizeDecimalInput4dp(raw: string): string {
   const s = String(raw ?? "").trim().replace(/,/g, "").replace(/[^0-9.]/g, "");
   if (!s) return "";
   const firstDot = s.indexOf(".");
@@ -348,12 +368,12 @@ function sanitizeMoneyInput2dp(raw: string): string {
   if (fracRaw.length === 0 && s.endsWith(".")) {
     return (intPart || "0") + ".";
   }
-  if (fracRaw.length <= 2) {
+  if (fracRaw.length <= 4) {
     return (intPart || "0") + "." + fracRaw;
   }
   const n = Number((intPart || "0") + "." + fracRaw);
   if (!Number.isFinite(n)) return s;
-  return roundMoney2(n);
+  return roundMoney4(n);
 }
 
 /** Beats Input defaults (text-base / md:text-sm, h-9, px-3) so grid numbers fit h-7 without clipping. */
@@ -370,9 +390,12 @@ function makeLine(): LineDraft {
     mrp: "",
     rateValue: "",
     rateUnitLevel: 1,
+    discountMode: "PERCENT",
     discountPercent: "",
     discountLumpsum: "",
-    amount: "0.00",
+    freeBuyQuantity: "",
+    freeQuantity: "",
+    amount: "0.0000",
   };
 }
 
@@ -384,8 +407,11 @@ type LineField =
   | "mrp"
   | "rateValue"
   | "rateUnitLevel"
+  | "discountMode"
   | "discountPercent"
   | "discountLumpsum"
+  | "freeBuyQuantity"
+  | "freeQuantity"
   | "taxable"
   | "lineAmount";
 const LINE_FIELD_ORDER: LineField[] = [
@@ -396,8 +422,11 @@ const LINE_FIELD_ORDER: LineField[] = [
   "mrp",
   "rateValue",
   "rateUnitLevel",
+  "discountMode",
   "discountPercent",
   "discountLumpsum",
+  "freeBuyQuantity",
+  "freeQuantity",
   "taxable",
   "lineAmount",
 ];
@@ -454,8 +483,11 @@ function getLineFieldOrder(line: LineDraft | null): LineField[] {
     "mrp",
     "rateValue",
     "rateUnitLevel",
+    "discountMode",
     "discountPercent",
     "discountLumpsum",
+    "freeBuyQuantity",
+    "freeQuantity",
     "taxable",
     "lineAmount",
   ];
@@ -584,36 +616,84 @@ function lineUnitPrice(line: LineDraft) {
   return rate;
 }
 
-function computeLineAmount(line: LineDraft) {
+function computeLineSubtotal(line: LineDraft) {
   if (!line.product) return 0;
-  const baseQty = lineBaseQuantity(line);
-  const subtotal = baseQty * lineUnitPrice(line);
-  const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-  const discountAmount = subtotal * (discountPercent / 100);
-  const taxable = subtotal - discountAmount;
-  const tax = taxable * (asDecimal(line.product.tax_percent) / 100);
-  return Math.max(0, taxable + tax);
-}
-
-function computeLineTaxableAmount(line: LineDraft) {
-  if (!line.product) return 0;
-  const baseQty = lineBaseQuantity(line);
-  const subtotal = baseQty * lineUnitPrice(line);
-  const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-  const discountAmount = subtotal * (discountPercent / 100);
-  return Math.max(0, subtotal - discountAmount);
+  return lineBaseQuantity(line) * lineUnitPrice(line);
 }
 
 function computeLineDiscountAmount(line: LineDraft) {
   if (!line.product) return 0;
   const baseQty = lineBaseQuantity(line);
-  const subtotal = baseQty * lineUnitPrice(line);
+  const subtotal = computeLineSubtotal(line);
+  if (line.discountMode === "FREE") {
+    const boughtQty = asDecimal(line.freeBuyQuantity);
+    const freeQty = asDecimal(line.freeQuantity);
+    const schemeQty = boughtQty + freeQty;
+    if (baseQty <= 0 || boughtQty <= 0 || freeQty <= 0 || schemeQty <= 0) return 0;
+    const freeBaseQty = baseQty * (freeQty / schemeQty);
+    return Math.min(subtotal, Math.max(0, freeBaseQty * lineUnitPrice(line)));
+  }
   const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-  return subtotal * (discountPercent / 100);
+  const percentDiscountAmount = subtotal * (discountPercent / 100);
+  const discountLumpsum = asDecimal(line.discountLumpsum);
+  return Math.min(subtotal, Math.max(0, percentDiscountAmount + discountLumpsum));
+}
+
+function computeLineTaxableAmount(line: LineDraft) {
+  if (!line.product) return 0;
+  return Math.max(0, computeLineSubtotal(line) - computeLineDiscountAmount(line));
+}
+
+function computeLineTaxAmount(line: LineDraft) {
+  if (!line.product) return 0;
+  return computeLineTaxableAmount(line) * (asDecimal(line.product.tax_percent) / 100);
+}
+
+function computeLineAmount(line: LineDraft) {
+  if (!line.product) return 0;
+  const taxable = computeLineTaxableAmount(line);
+  const tax = taxable * (asDecimal(line.product.tax_percent) / 100);
+  return Math.max(0, taxable + tax);
+}
+
+function computeLineEffectiveUnitCost(line: LineDraft) {
+  const baseQty = lineBaseQuantity(line);
+  if (baseQty <= 0) return 0;
+  return computeLineTaxableAmount(line) / baseQty;
+}
+
+function validateFreeDiscountLine(line: LineDraft): string | null {
+  if (line.discountMode !== "FREE") return null;
+  const baseQty = lineBaseQuantity(line);
+  const boughtQty = asDecimal(line.freeBuyQuantity);
+  const freeQty = asDecimal(line.freeQuantity);
+  const schemeQty = boughtQty + freeQty;
+  if (baseQty <= 0 || boughtQty <= 0 || freeQty <= 0) {
+    return "Enter bought and free quantity for free-product discount lines.";
+  }
+  const sets = baseQty / schemeQty;
+  if (!Number.isFinite(sets) || Math.abs(sets - Math.round(sets)) > 0.0001) {
+    return "Free-product discount should match the entered quantity. Total quantity must be a whole multiple of bought + free.";
+  }
+  return null;
+}
+
+function marginFromPrice(mrp: string | number, price: string | number) {
+  const mrpValue = asDecimal(mrp);
+  const priceValue = asDecimal(price);
+  if (mrpValue <= 0 || priceValue <= 0) return "0.0000";
+  return (((mrpValue / priceValue) - 1) * 100).toFixed(4);
+}
+
+function priceFromMargin(mrp: string | number, margin: string | number) {
+  const mrpValue = asDecimal(mrp);
+  const marginValue = asDecimal(margin);
+  if (mrpValue <= 0 || marginValue <= -100) return "0.0000";
+  return (mrpValue / (1 + marginValue / 100)).toFixed(4);
 }
 
 function roundCurrency(value: number) {
-  return Math.round(value);
+  return Number(value.toFixed(4));
 }
 
 function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
@@ -664,6 +744,9 @@ function mapProductSummary(row: Record<string, unknown>): ProductSummary {
     tax_percent: String(row.tax_percent ?? "0"),
     mrp: String(row.mrp ?? "0"),
     cost_price: String(row.cost_price ?? "0"),
+    a_class_price: String(row.a_class_price ?? "0"),
+    b_class_price: String(row.b_class_price ?? "0"),
+    c_class_price: String(row.c_class_price ?? "0"),
     unit_1st_name: row.unit_1st_name ? String(row.unit_1st_name) : null,
     unit_2nd_name: row.unit_2nd_name ? String(row.unit_2nd_name) : null,
     unit_3rd_name: row.unit_3rd_name ? String(row.unit_3rd_name) : null,
@@ -741,6 +824,9 @@ export function PurchaseEntryWorkspace({
   const [paymentModeIndex, setPaymentModeIndex] = useState(0);
   const [warehousePickerOpen, setWarehousePickerOpen] = useState(false);
   const [warehouseIndex, setWarehouseIndex] = useState(0);
+  const [warehouseCreateOpen, setWarehouseCreateOpen] = useState(false);
+  const [creatingWarehouse, setCreatingWarehouse] = useState(false);
+  const [warehouseForm, setWarehouseForm] = useState({ code: "", name: "", street: "", city: "", state: "", pincode: "" });
   const [taxType, setTaxType] = useState<"LOCAL" | "CENTRAL">("CENTRAL");
   const [freightAmount, setFreightAmount] = useState("0");
   const [notes, setNotes] = useState("");
@@ -767,6 +853,9 @@ export function PurchaseEntryWorkspace({
   const [ledgerRows, setLedgerRows] = useState<LedgerEntry[]>([]);
   const [productEditOpen, setProductEditOpen] = useState(false);
   const [productEditForm, setProductEditForm] = useState<ProductEditForm>(EMPTY_PRODUCT_EDIT);
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingSaving, setPricingSaving] = useState(false);
+  const [pricingForm, setPricingForm] = useState<PricingForm | null>(null);
   const [hsnOptions, setHsnOptions] = useState<HsnOption[]>([]);
   const [unitOptions, setUnitOptions] = useState<UnitOption[]>([]);
   const [brandOptions, setBrandOptions] = useState<LookupOption[]>([]);
@@ -892,27 +981,15 @@ export function PurchaseEntryWorkspace({
   const totals = useMemo(() => {
     const valueOfGoods = lines.reduce((sum, line) => {
       if (!line.product) return sum;
-      const baseQty = lineBaseQuantity(line);
-      const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-      const discountAmount = subtotal * (discountPercent / 100);
-      return sum + Math.max(0, subtotal - discountAmount);
+      return sum + computeLineTaxableAmount(line);
     }, 0);
     const gst = lines.reduce((sum, line) => {
       if (!line.product) return sum;
-      const baseQty = lineBaseQuantity(line);
-      const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-      const discountAmount = subtotal * (discountPercent / 100);
-      const taxable = Math.max(0, subtotal - discountAmount);
-      return sum + taxable * (asDecimal(line.product.tax_percent) / 100);
+      return sum + computeLineTaxAmount(line);
     }, 0);
     const discount = lines.reduce((sum, line) => {
       if (!line.product) return sum;
-      const baseQty = lineBaseQuantity(line);
-      const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || line.product.latest_discount_percent || "0");
-      return sum + subtotal * (discountPercent / 100);
+      return sum + computeLineDiscountAmount(line);
     }, 0);
     const freight = asDecimal(freightAmount);
     const grossFinalAmount = valueOfGoods + gst + freight;
@@ -1051,12 +1128,15 @@ export function PurchaseEntryWorkspace({
               quantity1: displayWholeQty(String(item.quantity ?? item.quantity_1st ?? "")),
               quantity2: displayWholeQty(String(item.quantity_2nd ?? "")),
               quantity3: displayWholeQty(String(item.quantity_3rd ?? "")),
-              mrp: roundMoney2(String(item.mrp ?? "0")),
-              rateValue: roundMoney2(String(item.rate_value ?? "0")),
+              mrp: roundMoney4(String(item.mrp ?? "0")),
+              rateValue: roundMoney4(String(item.rate_value ?? "0")),
               rateUnitLevel: (Number(item.rate_unit_level) || 1) as 1 | 2 | 3,
-              discountPercent: roundMoney2(String(item.discount_percent ?? "0")),
-              discountLumpsum: roundMoney2(String(item.discount_lumpsum ?? "0")),
-              amount: roundMoney2(String(item.line_total_amount ?? "0")),
+              discountMode: item.discount_mode === "FREE" ? "FREE" : "PERCENT",
+              discountPercent: roundMoney4(String(item.discount_percent ?? "0")),
+              discountLumpsum: roundMoney4(String(item.discount_lumpsum ?? "0")),
+              freeBuyQuantity: roundMoney4(String(item.free_buy_quantity ?? "")),
+              freeQuantity: roundMoney4(String(item.free_quantity ?? "")),
+              amount: roundMoney4(String(item.line_total_amount ?? "0")),
             };
             return line;
           }));
@@ -1213,12 +1293,15 @@ export function PurchaseEntryWorkspace({
           quantity1: displayWholeQty(String(o.q1 ?? "")),
           quantity2: displayWholeQty(String(o.q2 ?? "")),
           quantity3: displayWholeQty(String(o.q3 ?? "")),
-          mrp: roundMoney2(String(o.mrp ?? "0")),
-          rateValue: roundMoney2(String(o.rv ?? "0")),
+          mrp: roundMoney4(String(o.mrp ?? "0")),
+          rateValue: roundMoney4(String(o.rv ?? "0")),
           rateUnitLevel: (Number(o.rul) || 1) as 1 | 2 | 3,
-          discountPercent: roundMoney2(String(o.dp ?? "0")),
-          discountLumpsum: roundMoney2(String(o.dl ?? "0")),
-          amount: roundMoney2(String(o.amt ?? "0")),
+          discountMode: o.dm === "FREE" ? "FREE" : "PERCENT",
+          discountPercent: roundMoney4(String(o.dp ?? "0")),
+          discountLumpsum: roundMoney4(String(o.dl ?? "0")),
+          freeBuyQuantity: roundMoney4(String(o.fbq ?? "")),
+          freeQuantity: roundMoney4(String(o.fq ?? "")),
+          amount: roundMoney4(String(o.amt ?? "0")),
         });
       }
       if (!nextLines.some((l) => l.product === null)) {
@@ -1483,12 +1566,15 @@ export function PurchaseEntryWorkspace({
             quantity1: displayWholeQty(String(item.quantity ?? item.quantity_1st ?? item.quantity1 ?? "")),
             quantity2: displayWholeQty(String(item.quantity_2nd ?? item.quantity2 ?? "")),
             quantity3: displayWholeQty(String(item.quantity_3rd ?? item.quantity3 ?? "")),
-            mrp: roundMoney2(String(item.mrp ?? "0")),
-            rateValue: roundMoney2(String(item.rate_value ?? item.rateValue ?? "0")),
+            mrp: roundMoney4(String(item.mrp ?? "0")),
+            rateValue: roundMoney4(String(item.rate_value ?? item.rateValue ?? "0")),
             rateUnitLevel: (item.rate_unit_level === 1 || item.rate_unit_level === 2 || item.rate_unit_level === 3) ? item.rate_unit_level : 1,
-            discountPercent: roundMoney2(String(item.discount_percent ?? item.discountPercent ?? "0")),
-            discountLumpsum: roundMoney2(String(item.discount_lumpsum ?? item.discountLumpsum ?? "0")),
-            amount: roundMoney2(String(item.line_total_amount ?? item.amount ?? "0")),
+            discountMode: item.discount_mode === "FREE" ? "FREE" : "PERCENT",
+            discountPercent: roundMoney4(String(item.discount_percent ?? item.discountPercent ?? "0")),
+            discountLumpsum: roundMoney4(String(item.discount_lumpsum ?? item.discountLumpsum ?? "0")),
+            freeBuyQuantity: roundMoney4(String(item.free_buy_quantity ?? "")),
+            freeQuantity: roundMoney4(String(item.free_quantity ?? "")),
+            amount: roundMoney4(String(item.line_total_amount ?? item.amount ?? "0")),
           };
           console.log("Mapped line:", line);
           return line;
@@ -1653,24 +1739,17 @@ export function PurchaseEntryWorkspace({
         if (idx !== index) return line;
         let next = { ...line, ...patch };
 
-        // Bi-directional discount calculation (per-unit basis)
-        if (next.product) {
-          const rate = asDecimal(next.rateValue || next.product.latest_rate_value || next.product.cost_price);
-
-          if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
-            const pct = asDecimal(patch.discountPercent);
-            next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
-          } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
-            const amt = asDecimal(patch.discountLumpsum);
-            next.discountPercent = rate > 0 ? ((amt / rate) * 100).toFixed(2) : "0.00";
-          } else if ("rateValue" in patch || "rateUnitLevel" in patch) {
-            // If rate changes, keep percent and update per-unit discount amount
-            const pct = asDecimal(next.discountPercent);
-            next.discountLumpsum = rate > 0 ? (rate * (pct / 100)).toFixed(2) : "0.00";
+        if ("discountMode" in patch) {
+          if (patch.discountMode === "FREE") {
+            next.discountPercent = "0.0000";
+            next.discountLumpsum = "0.0000";
+          } else {
+            next.freeBuyQuantity = "";
+            next.freeQuantity = "";
           }
         }
 
-        return { ...next, amount: computeLineAmount(next).toFixed(2) };
+        return { ...next, amount: computeLineAmount(next).toFixed(4) };
       }),
     );
   }, []);
@@ -1736,10 +1815,14 @@ export function PurchaseEntryWorkspace({
     const rv = product.latest_rate_value || product.cost_price || "0";
     updateLine(targetRow, {
       product,
-      mrp: product.mrp ? roundMoney2(product.mrp) : "0.00",
-      rateValue: roundMoney2(rv),
+      mrp: product.mrp ? roundMoney4(product.mrp) : "0.0000",
+      rateValue: roundMoney4(rv),
       rateUnitLevel: (product.latest_rate_unit_level as 1 | 2 | 3 | null) ?? 1,
-      discountPercent: product.latest_discount_percent ? roundMoney2(product.latest_discount_percent) : "0.00",
+      discountMode: "PERCENT",
+      discountPercent: product.latest_discount_percent ? roundMoney4(product.latest_discount_percent) : "0.0000",
+      discountLumpsum: "0.0000",
+      freeBuyQuantity: "",
+      freeQuantity: "",
     });
     setProductSearchOpen(false);
     setProductSearch("");
@@ -1761,6 +1844,58 @@ export function PurchaseEntryWorkspace({
     setProductSearchOpen(true);
   }, [activeRow, vendorSummary?.vendor_id]);
 
+  const openPricingForLine = useCallback((rowIndex: number) => {
+    const product = linesRef.current[rowIndex]?.product;
+    if (!product) return;
+    const mrp = roundMoney4(product.mrp || linesRef.current[rowIndex]?.mrp || "0") || "0.0000";
+    const aClassPrice = roundMoney4(product.a_class_price || "0") || "0.0000";
+    const bClassPrice = roundMoney4(product.b_class_price || "0") || "0.0000";
+    const cClassPrice = roundMoney4(product.c_class_price || "0") || "0.0000";
+    setPricingForm({
+      productId: product.product_id,
+      productName: product.name,
+      mrp,
+      aClassPrice,
+      bClassPrice,
+      cClassPrice,
+      aMargin: marginFromPrice(mrp, aClassPrice),
+      bMargin: marginFromPrice(mrp, bClassPrice),
+      cMargin: marginFromPrice(mrp, cClassPrice),
+    });
+    setPricingOpen(true);
+  }, []);
+
+  async function savePricingForm() {
+    if (!pricingForm) return;
+    setPricingSaving(true);
+    try {
+      await patchBackend(`/masters/pricing/${pricingForm.productId}`, {
+        mrp: Number(pricingForm.mrp || 0),
+        a_class_price: Number(pricingForm.aClassPrice || 0),
+        b_class_price: Number(pricingForm.bClassPrice || 0),
+        c_class_price: Number(pricingForm.cClassPrice || 0),
+        is_active: true,
+      });
+      setLines((prev) => prev.map((line) => line.product?.product_id === pricingForm.productId ? {
+        ...line,
+        product: {
+          ...line.product,
+          mrp: pricingForm.mrp,
+          a_class_price: pricingForm.aClassPrice,
+          b_class_price: pricingForm.bClassPrice,
+          c_class_price: pricingForm.cClassPrice,
+        },
+        mrp: pricingForm.mrp,
+      } : line));
+      setPricingOpen(false);
+      toast.success("Pricing updated");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update pricing");
+    } finally {
+      setPricingSaving(false);
+    }
+  }
+
   const openPaymentModePicker = useCallback(() => {
     setPaymentModeIndex(PAYMENT_MODE_OPTIONS.indexOf(paymentMode));
     setPaymentModeOpen(true);
@@ -1771,6 +1906,41 @@ export function PurchaseEntryWorkspace({
     setWarehouseIndex(currentIndex < 0 ? 0 : currentIndex);
     setWarehousePickerOpen(true);
   }, [warehouseId, warehouses]);
+
+  async function createInlineWarehouse() {
+    if (!warehouseForm.code.trim() || !warehouseForm.name.trim()) {
+      toast.error("Warehouse code and name are required");
+      return;
+    }
+    setCreatingWarehouse(true);
+    try {
+      const created = asObject(await postBackend("/masters/warehouses", {
+        code: warehouseForm.code.trim(),
+        name: warehouseForm.name.trim(),
+        street: warehouseForm.street.trim() || null,
+        city: warehouseForm.city.trim() || null,
+        state: warehouseForm.state.trim() || null,
+        pincode: warehouseForm.pincode.trim() || null,
+      }));
+      const nextWarehouse = {
+        id: String(created.id ?? ""),
+        name: String(created.name ?? warehouseForm.name.trim()),
+        code: String(created.code ?? warehouseForm.code.trim()),
+        state: created.state ? String(created.state) : null,
+      };
+      setWarehouses((prev) => [...prev.filter((item) => item.id !== nextWarehouse.id), nextWarehouse].sort((a, b) => a.name.localeCompare(b.name)));
+      setWarehouseId(nextWarehouse.id);
+      setWarehouseState(nextWarehouse.state);
+      setWarehouseForm({ code: "", name: "", street: "", city: "", state: "", pincode: "" });
+      setWarehouseCreateOpen(false);
+      setWarehousePickerOpen(false);
+      toast.success("Warehouse created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create warehouse");
+    } finally {
+      setCreatingWarehouse(false);
+    }
+  }
 
   const openProductEdit = useCallback(async (product: ProductSummary) => {
     const full = mapProductSummary(
@@ -1812,7 +1982,7 @@ export function PurchaseEntryWorkspace({
       const refreshed = mapProductSummary(
         asObject(await fetchBackend(purchaseProductSummaryUrl(activeLine.product.product_id, vendorSummary?.vendor_id))),
       );
-      updateLine(activeRow, { product: refreshed, amount: computeLineAmount({ ...activeLine, product: refreshed }).toFixed(2) });
+      updateLine(activeRow, { product: refreshed, amount: computeLineAmount({ ...activeLine, product: refreshed }).toFixed(4) });
       setProductEditOpen(false);
       toast.success("Product updated");
     } catch (error) {
@@ -1918,6 +2088,11 @@ export function PurchaseEntryWorkspace({
       toast.error("Add at least one product line");
       return;
     }
+    const invalidFreeLineIndex = validLines.findIndex((line) => validateFreeDiscountLine(line));
+    if (invalidFreeLineIndex !== -1) {
+      toast.error(validateFreeDiscountLine(validLines[invalidFreeLineIndex]) || "Invalid free-product discount");
+      return;
+    }
     if (mode === "challan" && !billNumber.trim()) {
       toast.error("Enter a reference / challan number");
       return;
@@ -1952,10 +2127,14 @@ export function PurchaseEntryWorkspace({
             rate_unit_level: line.rateUnitLevel || null,
             discount_percent: line.discountPercent ? parseFloat(line.discountPercent) || null : null,
             discount_lumpsum: line.discountLumpsum ? parseFloat(line.discountLumpsum) || null : null,
-            line_subtotal: null,
-            line_discount_amount: null,
-            line_taxable_amount: null,
-            line_tax_amount: null,
+            discount_mode: line.discountMode,
+            free_buy_quantity: line.discountMode === "FREE" ? Number(line.freeBuyQuantity || 0) : null,
+            free_quantity: line.discountMode === "FREE" ? Number(line.freeQuantity || 0) : null,
+            effective_unit_cost: computeLineEffectiveUnitCost(line),
+            line_subtotal: computeLineSubtotal(line),
+            line_discount_amount: computeLineDiscountAmount(line),
+            line_taxable_amount: computeLineTaxableAmount(line),
+            line_tax_amount: computeLineTaxAmount(line),
             line_total_amount: line.amount ? parseFloat(line.amount) || null : null,
             expiry_date: null as string | null,
           })),
@@ -2000,7 +2179,15 @@ export function PurchaseEntryWorkspace({
             rate_unit_level: line.rateUnitLevel,
             discount_percent: Number(line.discountPercent || 0),
             discount_lumpsum: Number(line.discountLumpsum || 0),
-            line_total_amount: Number(computeLineAmount(line).toFixed(2)),
+            discount_mode: line.discountMode,
+            free_buy_quantity: line.discountMode === "FREE" ? Number(line.freeBuyQuantity || 0) : null,
+            free_quantity: line.discountMode === "FREE" ? Number(line.freeQuantity || 0) : null,
+            effective_unit_cost: computeLineEffectiveUnitCost(line),
+            line_subtotal: computeLineSubtotal(line),
+            line_discount_amount: computeLineDiscountAmount(line),
+            line_taxable_amount: computeLineTaxableAmount(line),
+            line_tax_amount: computeLineTaxAmount(line),
+            line_total_amount: Number(computeLineAmount(line).toFixed(4)),
           })),
         };
         if (initialId) {
@@ -2133,7 +2320,11 @@ export function PurchaseEntryWorkspace({
       return;
     }
     if (field === "rateUnitLevel") {
-      moveGridFocus(rowIndex, "discountPercent");
+      moveGridFocus(rowIndex, "discountMode");
+      return;
+    }
+    if (field === "discountMode") {
+      moveGridFocus(rowIndex, lines[rowIndex]?.discountMode === "FREE" ? "freeBuyQuantity" : "discountPercent");
       return;
     }
     if (field === "discountPercent") {
@@ -2144,11 +2335,20 @@ export function PurchaseEntryWorkspace({
       moveGridFocus(rowIndex, "taxable");
       return;
     }
+    if (field === "freeBuyQuantity") {
+      moveGridFocus(rowIndex, "freeQuantity");
+      return;
+    }
+    if (field === "freeQuantity") {
+      moveGridFocus(rowIndex, "taxable");
+      return;
+    }
     if (field === "taxable") {
       moveGridFocus(rowIndex, "lineAmount");
       return;
     }
     if (field === "lineAmount") {
+      openPricingForLine(rowIndex);
       const nextRow = rowIndex + 1;
       if (nextRow >= lines.length) {
         setLines((prev) => (nextRow >= prev.length ? [...prev, makeLine()] : prev));
@@ -2158,7 +2358,7 @@ export function PurchaseEntryWorkspace({
       setTimeout(() => focusLineField(nextRow, "product"), 0);
       return;
     }
-  }, [focusLineField, lines, moveGridFocus, openProductSelector]);
+  }, [focusLineField, lines, moveGridFocus, openPricingForLine, openProductSelector]);
 
   const applyBillDateFromPicker = useCallback((iso: string) => {
     if (!iso) return;
@@ -2595,38 +2795,47 @@ export function PurchaseEntryWorkspace({
               </div>
               <div className="bg-[#fbfcf7] p-1 md:col-span-4">
                 <Label htmlFor="warehouseSelect" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Warehouse</Label>
-                <Button
-                  id="warehouseSelect"
-                  name="warehouseSelect"
-                  ref={warehouseButtonRef}
-                  type="button"
-                  variant="ghost"
-                  tabIndex={viewOnly ? -1 : 0}
-                  className={cn(
-                    "mt-1 h-8 w-full justify-start rounded-sm border border-transparent bg-[#eef1ea] px-2 text-left text-xs font-semibold text-[#111714] shadow-none",
-                    viewOnlyButtonClass,
-                  )}
-                  onClick={() => {
-                    if (viewOnly) return;
-                    openWarehousePicker();
-                  }}
-                  onKeyDown={(e) => {
-                    if (viewOnly) return;
-                    handleTopFieldKeyDown(e, 5, false);
-                    if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
-                      e.preventDefault();
+                <div className="mt-1 flex gap-1">
+                  <Button
+                    id="warehouseSelect"
+                    name="warehouseSelect"
+                    ref={warehouseButtonRef}
+                    type="button"
+                    variant="ghost"
+                    tabIndex={viewOnly ? -1 : 0}
+                    className={cn(
+                      "h-8 min-w-0 flex-1 justify-start rounded-sm border border-transparent bg-[#eef1ea] px-2 text-left text-xs font-semibold text-[#111714] shadow-none",
+                      viewOnlyButtonClass,
+                    )}
+                    onClick={() => {
+                      if (viewOnly) return;
                       openWarehousePicker();
-                    }
-                  }}
-                >
-                  {warehouses.find((warehouse) => warehouse.id === warehouseId)?.name || "-"}
-                  {warehouses.find((warehouse) => warehouse.id === warehouseId)?.code ? ` (${warehouses.find((warehouse) => warehouse.id === warehouseId)?.code})` : ""}
-                </Button>
+                    }}
+                    onKeyDown={(e) => {
+                      if (viewOnly) return;
+                      handleTopFieldKeyDown(e, 5, false);
+                      if (!e.defaultPrevented && (e.key === "Enter" || e.key === "ArrowDown")) {
+                        e.preventDefault();
+                        openWarehousePicker();
+                      }
+                    }}
+                  >
+                    <span className="truncate">
+                      {warehouses.find((warehouse) => warehouse.id === warehouseId)?.name || "-"}
+                      {warehouses.find((warehouse) => warehouse.id === warehouseId)?.code ? ` (${warehouses.find((warehouse) => warehouse.id === warehouseId)?.code})` : ""}
+                    </span>
+                  </Button>
+                  {!viewOnly ? (
+                    <Button type="button" variant="ghost" className="h-8 w-8 rounded-sm bg-[#eef1ea] px-0 text-xs font-bold" onClick={() => setWarehouseCreateOpen(true)}>
+                      +
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             </div>
 
             <div className="border-t overflow-x-auto">
-              <Table className="min-w-[800px] table-fixed">
+              <Table className="min-w-[1120px] table-fixed">
                 <TableHeader>
                   <TableRow className="bg-[#e7f0cb] hover:bg-[#e7f0cb]">
                     <TableHead className="w-[30px] text-center text-[10px] font-semibold text-foreground">#</TableHead>
@@ -2637,8 +2846,12 @@ export function PurchaseEntryWorkspace({
                     <TableHead className="w-[65px] text-center text-[10px] font-semibold text-foreground">MRP</TableHead>
                     <TableHead className="w-[65px] text-center text-[10px] font-semibold text-foreground">P.RATE</TableHead>
                     <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">UNIT</TableHead>
+                    <TableHead className="w-[65px] text-center text-[10px] font-semibold text-foreground">DISC TYPE</TableHead>
                     <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">DISC%</TableHead>
                     <TableHead className="w-[75px] text-center text-[10px] font-semibold text-foreground">DISC AMT</TableHead>
+                    <TableHead className="w-[60px] text-center text-[10px] font-semibold text-foreground">BOUGHT</TableHead>
+                    <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">FREE</TableHead>
+                    <TableHead className="w-[85px] text-right text-[10px] font-semibold text-foreground">SUM RATE</TableHead>
                     <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">TAXABLE</TableHead>
                     <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
@@ -2712,8 +2925,8 @@ export function PurchaseEntryWorkspace({
                       <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity3`} name={`line-${index}-quantity3`} aria-label="Quantity 3" ref={setLineRef(line.id, "quantity3")} inputMode="numeric" value={displayWholeQty(line.quantity3)} readOnly={viewOnly && !!line.product?.unit_3rd_name} disabled={!line.product?.unit_3rd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity3"); }} onChange={(e) => updateLine(index, { quantity3: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity3")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity2`} name={`line-${index}-quantity2`} aria-label="Quantity 2" ref={setLineRef(line.id, "quantity2")} inputMode="numeric" value={displayWholeQty(line.quantity2)} readOnly={viewOnly && !!line.product?.unit_2nd_name} disabled={!line.product?.unit_2nd_name} onFocus={() => { setActiveRow(index); setActiveField("quantity2"); }} onChange={(e) => updateLine(index, { quantity2: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity2")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-quantity1`} name={`line-${index}-quantity1`} aria-label="Quantity 1" ref={setLineRef(line.id, "quantity1")} inputMode="numeric" value={displayWholeQty(line.quantity1)} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("quantity1"); }} onChange={(e) => updateLine(index, { quantity1: sanitizeDigits(e.target.value) })} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "quantity1")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.mrp) updateLine(index, { mrp: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.rateValue) updateLine(index, { rateValue: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-mrp`} name={`line-${index}-mrp`} aria-label="MRP" ref={setLineRef(line.id, "mrp")} value={line.mrp} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("mrp"); }} onChange={(e) => updateLine(index, { mrp: e.target.value })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.mrp) updateLine(index, { mrp: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "mrp")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.rateValue) updateLine(index, { rateValue: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[55px] py-0.5">
                         <Button
                           id={`line-${index}-rateUnitLevel`}
@@ -2741,8 +2954,45 @@ export function PurchaseEntryWorkspace({
                           {line.rateUnitLevel === 3 ? (line.product?.unit_3rd_name || "3rd") : line.rateUnitLevel === 2 ? (line.product?.unit_2nd_name || "2nd") : (line.product?.unit_1st_name || "1st")}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: sanitizeMoneyInput2dp(e.target.value) })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.discountPercent) updateLine(index, { discountPercent: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: sanitizeMoneyInput2dp(e.target.value) })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.discountLumpsum) updateLine(index, { discountLumpsum: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5">
+                        <Button
+                          id={`line-${index}-discountMode`}
+                          name={`line-${index}-discountMode`}
+                          aria-label="Discount type"
+                          ref={setLineRef(line.id, "discountMode")}
+                          type="button"
+                          variant="ghost"
+                          tabIndex={viewOnly ? -1 : 0}
+                          className={cn(
+                            "h-7 w-full justify-center rounded-none border-0 bg-transparent px-1 text-center text-[10px] font-semibold text-[#111714] shadow-none",
+                            viewOnly && "pointer-events-none cursor-default opacity-100",
+                            index === activeRow && activeField === "discountMode" ? "bg-[#2f5d50] text-white hover:bg-[#2f5d50]" : "",
+                          )}
+                          onFocus={() => { setActiveRow(index); setActiveField("discountMode"); }}
+                          onClick={() => {
+                            if (viewOnly) return;
+                            updateLine(index, { discountMode: line.discountMode === "FREE" ? "PERCENT" : "FREE" });
+                          }}
+                          onKeyDown={(e) => {
+                            if (viewOnly) return;
+                            if (e.key === " " || e.key === "Enter") {
+                              e.preventDefault();
+                              updateLine(index, { discountMode: line.discountMode === "FREE" ? "PERCENT" : "FREE" });
+                              return;
+                            }
+                            handleLineFieldKeyDown(e, index, "discountMode");
+                          }}
+                        >
+                          {line.discountMode === "FREE" ? "FREE" : "%/AMT"}
+                        </Button>
+                      </TableCell>
+                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.discountPercent) updateLine(index, { discountPercent: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.discountLumpsum) updateLine(index, { discountLumpsum: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[60px] py-0.5"><Input id={`line-${index}-freeBuyQuantity`} name={`line-${index}-freeBuyQuantity`} aria-label="Bought quantity" ref={setLineRef(line.id, "freeBuyQuantity")} value={line.freeBuyQuantity} readOnly={viewOnly || line.discountMode !== "FREE"} disabled={line.discountMode !== "FREE"} onFocus={() => { setActiveRow(index); setActiveField("freeBuyQuantity"); }} onChange={(e) => updateLine(index, { freeBuyQuantity: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.freeBuyQuantity) updateLine(index, { freeBuyQuantity: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "freeBuyQuantity")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-freeQuantity`} name={`line-${index}-freeQuantity`} aria-label="Free quantity" ref={setLineRef(line.id, "freeQuantity")} value={line.freeQuantity} readOnly={viewOnly || line.discountMode !== "FREE"} disabled={line.discountMode !== "FREE"} onFocus={() => { setActiveRow(index); setActiveField("freeQuantity"); }} onChange={(e) => updateLine(index, { freeQuantity: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.freeQuantity) updateLine(index, { freeQuantity: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "freeQuantity")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[85px] py-0.5">
+                        <Input aria-label="Summarized purchase rate" readOnly tabIndex={-1} value={computeLineEffectiveUnitCost(line).toFixed(4)} className={cn(COMPACT_GRID_INPUT_BASE, "cursor-default text-right")} />
+                      </TableCell>
                       <TableCell className="w-[90px] py-0.5">
                         <Input
                           id={`line-${index}-taxable`}
@@ -2751,7 +3001,7 @@ export function PurchaseEntryWorkspace({
                           readOnly
                           tabIndex={0}
                           ref={setLineRef(line.id, "taxable")}
-                          value={computeLineTaxableAmount(line).toFixed(2)}
+                          value={computeLineTaxableAmount(line).toFixed(4)}
                           onFocus={() => {
                             setActiveRow(index);
                             setActiveField("taxable");
@@ -2772,7 +3022,7 @@ export function PurchaseEntryWorkspace({
                           readOnly
                           tabIndex={0}
                           ref={setLineRef(line.id, "lineAmount")}
-                          value={Number(line.amount || 0).toFixed(2)}
+                          value={Number(line.amount || 0).toFixed(4)}
                           onFocus={() => {
                             setActiveRow(index);
                             setActiveField("lineAmount");
@@ -2802,8 +3052,8 @@ export function PurchaseEntryWorkspace({
                     <div className="text-sm font-semibold leading-snug md:col-span-2">{activeLine.product.name}</div>
                     <div className="text-xs text-[#5b655f] md:col-span-2">{activeLine.product.brand || "—"}</div>
                     <div className="text-sm">Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
-                    <div className="text-sm">MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
-                    <div className="text-sm md:col-span-2">COST: <span className="font-semibold">{Number(activeLine.product.cost_price).toFixed(2)}</span></div>
+                    <div className="text-sm">MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(4)}</span></div>
+                    <div className="text-sm md:col-span-2">COST: <span className="font-semibold">{Number(activeLine.product.cost_price).toFixed(4)}</span></div>
                     {convLines.length ? (
                       <div className="md:col-span-2 mt-1 space-y-1 border-t border-[#dde6dc] pt-2">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#6a746e]">Unit conversion</div>
@@ -2823,9 +3073,9 @@ export function PurchaseEntryWorkspace({
               </div>
               <div className="bg-[#fbfcf7] p-3 text-sm">
                 <div className="grid grid-cols-2 gap-y-2.5">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Value of goods</div><div className="text-right text-sm font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Discount</div><div className="text-right text-sm font-semibold">{totals.discount.toFixed(2)}</div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">GST</div><div className="text-right text-sm font-semibold">{totals.gst.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Value of goods</div><div className="text-right text-sm font-semibold">{totals.valueOfGoods.toFixed(4)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Discount</div><div className="text-right text-sm font-semibold">{totals.discount.toFixed(4)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">GST</div><div className="text-right text-sm font-semibold">{totals.gst.toFixed(4)}</div>
                   <div className="self-center text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Freight</div>
                   <div>
                     <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
@@ -2857,8 +3107,8 @@ export function PurchaseEntryWorkspace({
                       }}
                     />
                   </div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Round off</div><div className="text-right text-sm font-semibold">{totals.roundOff.toFixed(2)}</div>
-                  <div className="pt-1 text-xs font-bold uppercase tracking-wide text-[#2f5d50]">Final bill</div><div className="pt-1 text-right text-base font-bold">{totals.finalAmount.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Round off</div><div className="text-right text-sm font-semibold">{totals.roundOff.toFixed(4)}</div>
+                  <div className="pt-1 text-xs font-bold uppercase tracking-wide text-[#2f5d50]">Final bill</div><div className="pt-1 text-right text-base font-bold">{totals.finalAmount.toFixed(4)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
                   <Button
@@ -2919,12 +3169,12 @@ export function PurchaseEntryWorkspace({
                           <tr key={`${bill.bill_number}-${bill.bill_date}`} className="border-b border-[#f0f4f0] last:border-0">
                             <td className="py-2.5">{formatDisplayDate(bill.bill_date)}</td>
                             <td className="py-2.5 font-medium">{bill.bill_number}</td>
-                            <td className="py-2.5 text-right">{Number(bill.quantity).toFixed(2)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.quantity).toFixed(4)}</td>
                             <td className="py-2.5">{bill.unit_name}</td>
-                            <td className="py-2.5 text-right">{Number(bill.mrp).toFixed(2)}</td>
-                            <td className="py-2.5 text-right">{Number(bill.rate_value).toFixed(2)}</td>
-                            <td className="py-2.5 text-right">{Number(bill.discount_percent).toFixed(2)}%</td>
-                            <td className="py-2.5 text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.mrp).toFixed(4)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.rate_value).toFixed(4)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.discount_percent).toFixed(4)}%</td>
+                            <td className="py-2.5 text-right font-semibold">{Number(bill.line_total_amount).toFixed(4)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2950,9 +3200,9 @@ export function PurchaseEntryWorkspace({
                       Vendor snapshot
                     </div>
                     <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                      <div className="text-[#5b655f]">Annual purchase</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.annual_purchase_amount).toFixed(2)}</div>
-                      <div className="text-[#5b655f]">Month purchase</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.monthly_purchase_amount).toFixed(2)}</div>
-                      <div className="text-[#5b655f]">Balance</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.balance).toFixed(2)} {vendorSummary.balance_side}</div>
+                      <div className="text-[#5b655f]">Annual purchase</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.annual_purchase_amount).toFixed(4)}</div>
+                      <div className="text-[#5b655f]">Month purchase</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.monthly_purchase_amount).toFixed(4)}</div>
+                      <div className="text-[#5b655f]">Balance</div><div className="text-right font-semibold text-[#111714]">{Number(vendorSummary.balance).toFixed(4)} {vendorSummary.balance_side}</div>
                       <div className="text-[#5b655f]">Last purchase</div><div className="text-right font-semibold text-[#111714]">{vendorSummary.last_purchase_date ? formatDisplayDate(vendorSummary.last_purchase_date) : "—"}</div>
                       <div className="text-[#5b655f]">Last payment</div><div className="text-right font-semibold text-[#111714]">{vendorSummary.last_payment_date ? formatDisplayDate(vendorSummary.last_payment_date) : "—"}</div>
                       <div className="text-[#5b655f]">GSTIN</div><div className="text-right font-mono text-[11px] font-semibold text-[#111714]">{vendorSummary.gstin || "—"}</div>
@@ -2969,7 +3219,7 @@ export function PurchaseEntryWorkspace({
                         <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-md border border-[#dde8e0] bg-white px-2 py-1.5 text-xs shadow-sm">
                           <span className="truncate font-medium">{bill.bill_number}</span>
                           <span className="text-[#5b655f]">{formatDisplayDate(bill.bill_date)}</span>
-                          <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(2)}</span>
+                          <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(4)}</span>
                         </div>
                       ))}
                     </div>
@@ -3090,7 +3340,7 @@ export function PurchaseEntryWorkspace({
                   if (!rateUnitPicker) return;
                   updateLine(rateUnitPicker.rowIndex, { rateUnitLevel: option.level });
                   setRateUnitPicker(null);
-                  setTimeout(() => focusLineField(rateUnitPicker.rowIndex, "discountPercent"), 0);
+                  setTimeout(() => focusLineField(rateUnitPicker.rowIndex, "discountMode"), 0);
                 }}
                 onKeyDown={(e) => {
                   if (!rateUnitPicker) return;
@@ -3104,7 +3354,7 @@ export function PurchaseEntryWorkspace({
                     e.preventDefault();
                     updateLine(rateUnitPicker.rowIndex, { rateUnitLevel: option.level });
                     setRateUnitPicker(null);
-                    setTimeout(() => focusLineField(rateUnitPicker.rowIndex, "discountPercent"), 0);
+                    setTimeout(() => focusLineField(rateUnitPicker.rowIndex, "discountMode"), 0);
                   }
                 }}
                 autoFocus={rateUnitPicker?.optionIndex === index}
@@ -3119,7 +3369,14 @@ export function PurchaseEntryWorkspace({
       <Dialog open={warehousePickerOpen} onOpenChange={setWarehousePickerOpen}>
         <DialogContent className="max-w-md border-0 bg-card p-0 font-mono">
           <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
-            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Warehouse</DialogTitle>
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Warehouse</DialogTitle>
+              {!viewOnly ? (
+                <Button type="button" variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setWarehouseCreateOpen(true)}>
+                  + Add
+                </Button>
+              ) : null}
+            </div>
           </DialogHeader>
           <div className="p-2">
             {warehouses.map((warehouse, index) => (
@@ -3169,6 +3426,26 @@ export function PurchaseEntryWorkspace({
                 <span>{warehouse.code}</span>
               </button>
             ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={warehouseCreateOpen} onOpenChange={setWarehouseCreateOpen}>
+        <DialogContent className="rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-2xl">
+          <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Warehouse</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1"><Label htmlFor="warehouse-code">Code *</Label><Input id="warehouse-code" value={warehouseForm.code} onChange={(e) => setWarehouseForm((prev) => ({ ...prev, code: e.target.value }))} /></div>
+            <div className="space-y-1"><Label htmlFor="warehouse-name">Name *</Label><Input id="warehouse-name" value={warehouseForm.name} onChange={(e) => setWarehouseForm((prev) => ({ ...prev, name: e.target.value }))} /></div>
+            <div className="space-y-1 md:col-span-2"><Label htmlFor="warehouse-street">Street</Label><Input id="warehouse-street" value={warehouseForm.street} onChange={(e) => setWarehouseForm((prev) => ({ ...prev, street: e.target.value }))} /></div>
+            <div className="space-y-1"><Label htmlFor="warehouse-city">City</Label><Input id="warehouse-city" value={warehouseForm.city} onChange={(e) => setWarehouseForm((prev) => ({ ...prev, city: e.target.value }))} /></div>
+            <div className="space-y-1"><Label htmlFor="warehouse-state">State</Label><Input id="warehouse-state" value={warehouseForm.state} onChange={(e) => setWarehouseForm((prev) => ({ ...prev, state: e.target.value }))} /></div>
+            <div className="space-y-1"><Label htmlFor="warehouse-pincode">Pincode</Label><Input id="warehouse-pincode" value={warehouseForm.pincode} onChange={(e) => setWarehouseForm((prev) => ({ ...prev, pincode: e.target.value }))} /></div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setWarehouseCreateOpen(false)}>Cancel</Button>
+            <Button type="button" disabled={creatingWarehouse} onClick={() => void createInlineWarehouse()}>{creatingWarehouse ? "Saving..." : "Save Warehouse"}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -3239,7 +3516,7 @@ export function PurchaseEntryWorkspace({
                       {vendor.city || "-"} {vendor.state ? `• ${vendor.state}` : ""}
                     </div>
                   </div>
-                  <span className="text-right font-semibold">{Number(vendor.balance).toFixed(2)} {vendor.balance_side}</span>
+                  <span className="text-right font-semibold">{Number(vendor.balance).toFixed(4)} {vendor.balance_side}</span>
                 </button>
               ))}
             </div>
@@ -3255,8 +3532,8 @@ export function PurchaseEntryWorkspace({
                   <div>Area</div><div className="text-right font-semibold">{vendorResults[vendorIndex].area || "-"}</div>
                   <div>Route</div><div className="text-right font-semibold">{vendorResults[vendorIndex].route || "-"}</div>
                   <div>Brands</div><div className="text-right font-semibold">{vendorResults[vendorIndex].brand_names.length ? vendorResults[vendorIndex].brand_names.join(", ") : "None linked"}</div>
-                  <div>Monthly Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].monthly_purchase_amount).toFixed(2)}</div>
-                  <div>Annual Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].annual_purchase_amount).toFixed(2)}</div>
+                  <div>Monthly Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].monthly_purchase_amount).toFixed(4)}</div>
+                  <div>Annual Purchase</div><div className="text-right font-semibold">{Number(vendorResults[vendorIndex].annual_purchase_amount).toFixed(4)}</div>
                   <div>Last Purchase</div><div className="text-right font-semibold">{vendorResults[vendorIndex].last_purchase_date ? formatDisplayDate(vendorResults[vendorIndex].last_purchase_date) : "-"}</div>
                   <div>Last Payment</div><div className="text-right font-semibold">{vendorResults[vendorIndex].last_payment_date ? formatDisplayDate(vendorResults[vendorIndex].last_payment_date) : "-"}</div>
                 </div>
@@ -3267,7 +3544,7 @@ export function PurchaseEntryWorkspace({
                       <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                         <span>{bill.bill_number}</span>
                         <span>{formatDisplayDate(bill.bill_date)}</span>
-                        <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(2)}</span>
+                        <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(4)}</span>
                       </div>
                     ))}
                   </div>
@@ -3291,7 +3568,7 @@ export function PurchaseEntryWorkspace({
       ) : null}
 
       {productSearchOpen ? (
-        <div className="absolute inset-0 z-30 grid bg-card md:grid-cols-[1.25fr_0.95fr]">
+        <div className="absolute inset-x-0 bottom-0 top-[38%] z-30 grid border-t bg-card shadow-2xl md:grid-cols-[1.25fr_0.95fr]">
           <div className="flex min-h-0 flex-col border-r">
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
               <span>Product Selector</span>
@@ -3348,7 +3625,7 @@ export function PurchaseEntryWorkspace({
                       </div>
                     </div>
                     <span className="text-right font-semibold">{product.stock_ratio}</span>
-                    <span className="text-right font-semibold">{Number(product.latest_rate_value || product.cost_price).toFixed(2)}</span>
+                    <span className="text-right font-semibold">{Number(product.latest_rate_value || product.cost_price).toFixed(4)}</span>
                   </button>
                 ))
               ) : (
@@ -3364,9 +3641,9 @@ export function PurchaseEntryWorkspace({
                 <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border bg-background p-4 text-sm">
                   <div>Stock</div><div className="text-right font-semibold">{productResults[productIndex].stock_ratio}</div>
                   <div>Units</div><div className="text-right font-semibold">{[productResults[productIndex].unit_1st_name, productResults[productIndex].unit_2nd_name, productResults[productIndex].unit_3rd_name].filter(Boolean).join(" / ")}</div>
-                  <div>MRP</div><div className="text-right font-semibold">{Number(productResults[productIndex].mrp).toFixed(2)}</div>
-                  <div>Price</div><div className="text-right font-semibold">{Number(productResults[productIndex].latest_rate_value || productResults[productIndex].cost_price).toFixed(2)}</div>
-                  <div>Tax</div><div className="text-right font-semibold">{Number(productResults[productIndex].tax_percent).toFixed(2)}%</div>
+                  <div>MRP</div><div className="text-right font-semibold">{Number(productResults[productIndex].mrp).toFixed(4)}</div>
+                  <div>Price</div><div className="text-right font-semibold">{Number(productResults[productIndex].latest_rate_value || productResults[productIndex].cost_price).toFixed(4)}</div>
+                  <div>Tax</div><div className="text-right font-semibold">{Number(productResults[productIndex].tax_percent).toFixed(4)}%</div>
                   <div>HSN</div><div className="text-right font-semibold">{productResults[productIndex].hsn_code || "-"}</div>
                 </div>
                 <div className="mt-4 rounded-lg border bg-background p-4">
@@ -3376,7 +3653,7 @@ export function PurchaseEntryWorkspace({
                       <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                         <span>{bill.bill_number}</span>
                         <span>{formatDisplayDate(bill.bill_date)}</span>
-                        <span className="text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</span>
+                        <span className="text-right font-semibold">{Number(bill.line_total_amount).toFixed(4)}</span>
                       </div>
                     ))}
                   </div>
@@ -3386,6 +3663,74 @@ export function PurchaseEntryWorkspace({
           </div>
         </div>
       ) : null}
+
+      <Dialog open={pricingOpen} onOpenChange={setPricingOpen}>
+        <DialogContent className="rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-3xl">
+          <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
+            <DialogTitle className="text-sm uppercase tracking-[0.24em]">Product Pricing</DialogTitle>
+          </DialogHeader>
+          {pricingForm ? (
+            <div className="space-y-4">
+              <div className="text-sm font-semibold text-[#111714]">{pricingForm.productName}</div>
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="space-y-1">
+                  <Label htmlFor="pricing-mrp">MRP</Label>
+                  <Input
+                    id="pricing-mrp"
+                    value={pricingForm.mrp}
+                    onChange={(e) => {
+                      const mrp = sanitizeDecimalInput4dp(e.target.value);
+                      setPricingForm((prev) => prev ? ({
+                        ...prev,
+                        mrp,
+                        aClassPrice: priceFromMargin(mrp, prev.aMargin),
+                        bClassPrice: priceFromMargin(mrp, prev.bMargin),
+                        cClassPrice: priceFromMargin(mrp, prev.cMargin),
+                      }) : prev);
+                    }}
+                    onBlur={(e) => setPricingForm((prev) => prev ? ({ ...prev, mrp: roundMoney4(e.target.value) || "0.0000" }) : prev)}
+                  />
+                </div>
+                {([
+                  ["A", "aClassPrice", "aMargin"],
+                  ["B", "bClassPrice", "bMargin"],
+                  ["C", "cClassPrice", "cMargin"],
+                ] as const).map(([label, priceKey, marginKey]) => (
+                  <div key={label} className="space-y-2 rounded-sm border bg-white p-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#6a746e]">{label}-Class</div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`pricing-${label}-price`}>Price</Label>
+                      <Input
+                        id={`pricing-${label}-price`}
+                        value={pricingForm[priceKey]}
+                        onChange={(e) => {
+                          const price = sanitizeDecimalInput4dp(e.target.value);
+                          setPricingForm((prev) => prev ? ({ ...prev, [priceKey]: price, [marginKey]: marginFromPrice(prev.mrp, price) }) : prev);
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`pricing-${label}-margin`}>Margin %</Label>
+                      <Input
+                        id={`pricing-${label}-margin`}
+                        value={pricingForm[marginKey]}
+                        onChange={(e) => {
+                          const margin = sanitizeDecimalInput4dp(e.target.value);
+                          setPricingForm((prev) => prev ? ({ ...prev, [marginKey]: margin, [priceKey]: priceFromMargin(prev.mrp, margin) }) : prev);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setPricingOpen(false)}>Skip</Button>
+                <Button type="button" disabled={pricingSaving} onClick={() => void savePricingForm()}>{pricingSaving ? "Saving..." : "Save Pricing"}</Button>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={productEditOpen} onOpenChange={setProductEditOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
@@ -3793,9 +4138,9 @@ export function PurchaseEntryWorkspace({
                   <TableRow key={row.entry_id}>
                     <TableCell>{formatDisplayDate(row.entry_date)}</TableCell>
                     <TableCell>{row.description}</TableCell>
-                    <TableCell className="text-right">{Number(row.admin_debit).toFixed(2)}</TableCell>
-                    <TableCell className="text-right">{Number(row.admin_credit).toFixed(2)}</TableCell>
-                    <TableCell className="text-right">{Number(row.running_balance).toFixed(2)} {row.balance_side}</TableCell>
+                    <TableCell className="text-right">{Number(row.admin_debit).toFixed(4)}</TableCell>
+                    <TableCell className="text-right">{Number(row.admin_credit).toFixed(4)}</TableCell>
+                    <TableCell className="text-right">{Number(row.running_balance).toFixed(4)} {row.balance_side}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

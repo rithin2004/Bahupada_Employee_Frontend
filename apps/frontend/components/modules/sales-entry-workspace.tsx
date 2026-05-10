@@ -79,7 +79,7 @@ function formatDate(value: string | null | undefined) {
 
 function formatMoney(value: string | number) {
   const num = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(num) ? num.toFixed(2) : "0.00";
+  return Number.isFinite(num) ? num.toFixed(4) : "0.0000";
 }
 
 type SalesEntryWorkspaceProps = {
@@ -98,6 +98,8 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, 
   const [summary, setSummary] = useState<CustomerSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dueDays, setDueDays] = useState("0");
   const [deliverQtyByItemId, setDeliverQtyByItemId] = useState<Record<string, string>>({});
   const [creating, setCreating] = useState(false);
   const [activeItemId, setActiveItemId] = useState("");
@@ -119,6 +121,28 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, 
   const pendingSearchRef = useRef<HTMLInputElement | null>(null);
   const createButtonRef = useRef<HTMLButtonElement | null>(null);
   const initialHandledRef = useRef(false);
+
+  function applyInvoiceDate(iso: string) {
+    setInvoiceDate(iso);
+    if (dueDate < iso) {
+      setDueDate(iso);
+      setDueDays("0");
+    }
+  }
+
+  function applyDueDate(iso: string) {
+    const normalized = iso < invoiceDate ? invoiceDate : iso;
+    setDueDate(normalized);
+    setDueDays(String(Math.max(0, Math.round((new Date(normalized).getTime() - new Date(invoiceDate).getTime()) / 86400000))));
+  }
+
+  function applyDueDays(raw: string) {
+    const clean = raw.replace(/\D/g, "");
+    setDueDays(clean);
+    const next = new Date(`${invoiceDate}T00:00:00`);
+    next.setDate(next.getDate() + Number(clean || 0));
+    setDueDate(next.toISOString().slice(0, 10));
+  }
 
   const loadPendingRows = useCallback(async (term: string) => {
     setPendingLoading(true);
@@ -416,11 +440,16 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, 
       toast.error("Enter at least one invoice quantity.");
       return;
     }
+    if (dueDate < invoiceDate) {
+      toast.error("Due date cannot be before invoice date.");
+      return;
+    }
     setCreating(true);
     try {
       await postBackend("/sales/sales-final-invoices/from-sales-order", {
         sales_order_id: selectedOrder.sales_order_id,
         invoice_date: invoiceDate,
+        due_date: dueDate,
         items,
       });
       store.dispatch(
@@ -492,7 +521,7 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, 
                 ref={invoiceDateRef}
                 type="date"
                 value={invoiceDate}
-                onChange={(e) => setInvoiceDate(e.target.value)}
+                onChange={(e) => applyInvoiceDate(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === "ArrowDown") {
                     e.preventDefault();
@@ -501,6 +530,23 @@ export function SalesEntryWorkspace({ canWriteSales, onCreated, initialOrderId, 
                 }}
                 className="h-11 rounded-none border-[#ccd8d1] bg-[#eef4ed] font-mono text-lg shadow-none"
               />
+              <div className="mt-2 grid grid-cols-[1fr_90px] gap-2">
+                <Input
+                  type="date"
+                  min={invoiceDate}
+                  value={dueDate}
+                  onChange={(e) => applyDueDate(e.target.value)}
+                  className="h-9 rounded-none border-[#ccd8d1] bg-[#eef4ed] font-mono text-sm shadow-none"
+                  aria-label="Due date"
+                />
+                <Input
+                  inputMode="numeric"
+                  value={dueDays}
+                  onChange={(e) => applyDueDays(e.target.value)}
+                  className="h-9 rounded-none border-[#ccd8d1] bg-[#eef4ed] font-mono text-sm shadow-none"
+                  aria-label="Due days"
+                />
+              </div>
             </div>
           </div>
 

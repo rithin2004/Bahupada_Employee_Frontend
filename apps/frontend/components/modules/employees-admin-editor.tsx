@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -33,16 +34,16 @@ type EmployeeRole =
   | "BILL_MANAGER"
   | "LOADER";
 type Gender = "MALE" | "FEMALE" | "OTHER" | "";
+type MaritalStatus = "MARRIED" | "UNMARRIED" | "";
 
 type EmployeeRow = {
   id: string;
   full_name: string;
   role: EmployeeRole;
   role_id: string;
-  username: string;
-  password: string;
   sub_role_name: string;
   gender: Gender;
+  marital_status: MaritalStatus;
   phone: string;
   alternate_phone: string;
   email: string;
@@ -54,6 +55,8 @@ type EmployeeRow = {
   pan_number: string;
   driver_license_no: string;
   driver_license_expiry: string;
+  anniversary: string;
+  password_is_set: boolean;
 };
 
 type WarehouseOption = { id: string; name: string };
@@ -75,9 +78,8 @@ const EMPTY_CREATE_FORM = {
   full_name: "",
   role: "SALESMAN" as EmployeeRole,
   role_id: "",
-  username: "",
-  password: "",
   gender: "" as Gender,
+  marital_status: "" as MaritalStatus,
   phone: "",
   alternate_phone: "",
   email: "",
@@ -87,6 +89,7 @@ const EMPTY_CREATE_FORM = {
   pan_number: "",
   driver_license_no: "",
   driver_license_expiry: "",
+  anniversary: "",
 };
 
 function mapRow(row: Record<string, unknown>): EmployeeRow {
@@ -95,10 +98,9 @@ function mapRow(row: Record<string, unknown>): EmployeeRow {
     full_name: String(row.full_name ?? ""),
     role: String(row.role ?? "SALESMAN") as EmployeeRole,
     role_id: String(row.role_id ?? ""),
-    username: String(row.username ?? ""),
-    password: "",
     sub_role_name: String(row.sub_role_name ?? ""),
     gender: (String(row.gender ?? "") as Gender) || "",
+    marital_status: (String(row.marital_status ?? "") as MaritalStatus) || "",
     phone: String(row.phone ?? ""),
     alternate_phone: String(row.alternate_phone ?? ""),
     email: String(row.email ?? ""),
@@ -110,6 +112,8 @@ function mapRow(row: Record<string, unknown>): EmployeeRow {
     pan_number: String(row.pan_number ?? ""),
     driver_license_no: String(row.driver_license_no ?? ""),
     driver_license_expiry: String(row.driver_license_expiry ?? ""),
+    anniversary: String(row.anniversary ?? ""),
+    password_is_set: Boolean(row.password_is_set ?? false),
   };
 }
 
@@ -291,11 +295,11 @@ export function EmployeesAdminEditor() {
         full_name: selected.full_name.trim(),
         role: selected.role,
         role_id: selected.role_id || null,
-        username: selected.username.trim() || null,
-        password: selected.password.trim() || null,
         phone: selected.phone.trim(),
         dob: selected.dob || null,
         gender: selected.gender || null,
+        marital_status: selected.marital_status || null,
+        anniversary: selected.marital_status === "MARRIED" ? selected.anniversary || null : null,
         alternate_phone: selected.alternate_phone.trim() || null,
         email: selected.email.trim() || null,
         aadhaar_hash: selected.aadhaar_hash.trim() || null,
@@ -336,11 +340,11 @@ export function EmployeesAdminEditor() {
         full_name: createForm.full_name.trim(),
         role: createForm.role,
         phone: createForm.phone.trim(),
-        username: createForm.username.trim() || null,
-        password: createForm.password.trim() || null,
         role_id: createForm.role_id || null,
         dob: createForm.dob || null,
         gender: createForm.gender || null,
+        marital_status: createForm.marital_status || null,
+        anniversary: createForm.marital_status === "MARRIED" ? createForm.anniversary || null : null,
         alternate_phone: createForm.alternate_phone.trim() || null,
         email: createForm.email.trim() || null,
         aadhaar_hash: createForm.aadhaar_hash.trim() || null,
@@ -527,25 +531,8 @@ export function EmployeesAdminEditor() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Phone *</Label>
+                  <Label>Whatsapp Number *</Label>
                   <Input value={createForm.phone} onChange={(e) => setCreateForm((prev) => ({ ...prev, phone: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Username</Label>
-                  <Input
-                    value={createForm.username}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, username: e.target.value }))}
-                    placeholder="Auto-generated if empty"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Password</Label>
-                  <Input
-                    type="password"
-                    value={createForm.password}
-                    onChange={(e) => setCreateForm((prev) => ({ ...prev, password: e.target.value }))}
-                    placeholder="Defaults to ChangeMe@123"
-                  />
                 </div>
                 <div className="space-y-1">
                   <Label>Role *</Label>
@@ -671,6 +658,24 @@ export function EmployeesAdminEditor() {
                   <Input type="date" value={createForm.dob} onChange={(e) => setCreateForm((prev) => ({ ...prev, dob: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
+                  <Label>Marital Status</Label>
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={createForm.marital_status}
+                    onChange={(e) =>
+                      setCreateForm((prev) => ({
+                        ...prev,
+                        marital_status: e.target.value as MaritalStatus,
+                        anniversary: e.target.value === "MARRIED" ? prev.anniversary : "",
+                      }))
+                    }
+                  >
+                    <option value="">Select status</option>
+                    <option value="MARRIED">Married</option>
+                    <option value="UNMARRIED">Unmarried</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
                   <Label>Alternate Phone</Label>
                   <Input
                     value={createForm.alternate_phone}
@@ -680,6 +685,21 @@ export function EmployeesAdminEditor() {
                 <div className="space-y-1">
                   <Label>Email</Label>
                   <Input value={createForm.email} onChange={(e) => setCreateForm((prev) => ({ ...prev, email: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Anniversary Date</Label>
+                  <Input
+                    type="date"
+                    disabled={createForm.marital_status !== "MARRIED"}
+                    value={createForm.anniversary}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, anniversary: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Password Status</Label>
+                  <div className="flex h-10 items-center">
+                    <Badge variant="secondary">Not set</Badge>
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <Label>Aadhaar Hash</Label>
@@ -745,6 +765,7 @@ export function EmployeesAdminEditor() {
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Gender</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Phone</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Warehouse</TableHead>
+                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Password</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Action</TableHead>
               </TableRow>
@@ -767,7 +788,7 @@ export function EmployeesAdminEditor() {
                 : null}
               {!loading && rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="text-center text-muted-foreground">
                     No employees found.
                   </TableCell>
                 </TableRow>
@@ -788,6 +809,9 @@ export function EmployeesAdminEditor() {
                     <TableCell>{row.gender || "-"}</TableCell>
                     <TableCell>{row.phone || "-"}</TableCell>
                     <TableCell>{row.warehouse_name || "-"}</TableCell>
+                    <TableCell>
+                      <Badge variant={row.password_is_set ? "default" : "secondary"}>{row.password_is_set ? "Set" : "Not set"}</Badge>
+                    </TableCell>
                     <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                     <TableCell>
                       <Dialog open={openId === row.id} onOpenChange={(open) => setOpenId(canWriteEmployees && open ? row.id : null)}>
@@ -819,23 +843,12 @@ export function EmployeesAdminEditor() {
                                 <Input value={selected.phone} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("phone", e.target.value)} />
                               </div>
                               <div className="space-y-1">
-                                <Label>Username</Label>
-                                <Input
-                                  value={selected.username}
-                                  disabled={selected.role === "ADMIN"}
-                                  onChange={(e) => updateSelected("username", e.target.value)}
-                                  placeholder="Auto-generated if empty"
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <Label>New Password</Label>
-                                <Input
-                                  type="password"
-                                  value={selected.password}
-                                  disabled={selected.role === "ADMIN"}
-                                  onChange={(e) => updateSelected("password", e.target.value)}
-                                  placeholder="Leave blank to keep current password"
-                                />
+                                <Label>Password Status</Label>
+                                <div className="flex h-10 items-center">
+                                  <Badge variant={selected.password_is_set ? "default" : "secondary"}>
+                                    {selected.password_is_set ? "Set" : "Not set"}
+                                  </Badge>
+                                </div>
                               </div>
                               <div className="space-y-1">
                                 <Label>Role</Label>
@@ -902,6 +915,26 @@ export function EmployeesAdminEditor() {
                                 <Input type="date" value={selected.dob} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("dob", e.target.value)} />
                               </div>
                               <div className="space-y-1">
+                                <Label>Marital Status</Label>
+                                <select
+                                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                                  value={selected.marital_status}
+                                  disabled={selected.role === "ADMIN"}
+                                  onChange={(e) => {
+                                    const value = e.target.value as MaritalStatus;
+                                    setRows((prev) =>
+                                      prev.map((row) =>
+                                        row.id === selected.id ? { ...row, marital_status: value, anniversary: value === "MARRIED" ? row.anniversary : "" } : row
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <option value="">Select status</option>
+                                  <option value="MARRIED">Married</option>
+                                  <option value="UNMARRIED">Unmarried</option>
+                                </select>
+                              </div>
+                              <div className="space-y-1">
                                 <Label>Alternate Phone</Label>
                                 <Input
                                   value={selected.alternate_phone}
@@ -912,6 +945,15 @@ export function EmployeesAdminEditor() {
                               <div className="space-y-1">
                                 <Label>Email</Label>
                                 <Input value={selected.email} disabled={selected.role === "ADMIN"} onChange={(e) => updateSelected("email", e.target.value)} />
+                              </div>
+                              <div className="space-y-1">
+                                <Label>Anniversary Date</Label>
+                                <Input
+                                  type="date"
+                                  value={selected.anniversary}
+                                  disabled={selected.role === "ADMIN" || selected.marital_status !== "MARRIED"}
+                                  onChange={(e) => updateSelected("anniversary", e.target.value)}
+                                />
                               </div>
                               <div className="space-y-1">
                                 <Label>Aadhaar Hash</Label>

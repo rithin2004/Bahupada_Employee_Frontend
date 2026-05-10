@@ -16,6 +16,7 @@ class SchemeCreate(BaseModel):
     category: str | None = None
     sub_category: str | None = None
     product_id: uuid.UUID | None = None
+    product_ids: list[uuid.UUID] = Field(default_factory=list)
     reward_type: str = Field(pattern="^(DISCOUNT|FREE_ITEM)$")
     reward_discount_percent: Decimal | None = Field(default=None, gt=0, le=100)
     reward_product_id: uuid.UUID | None = None
@@ -69,6 +70,7 @@ class SchemeUpdate(BaseModel):
     category: str | None = None
     sub_category: str | None = None
     product_id: uuid.UUID | None = None
+    product_ids: list[uuid.UUID] | None = None
     reward_type: str | None = Field(default=None, pattern="^(DISCOUNT|FREE_ITEM)$")
     reward_discount_percent: Decimal | None = Field(default=None, gt=0, le=100)
     reward_product_id: uuid.UUID | None = None
@@ -110,6 +112,8 @@ class SchemeOut(BaseModel):
     sub_category: str | None
     product_id: uuid.UUID | None
     product_name: str | None
+    product_ids: list[uuid.UUID] = Field(default_factory=list)
+    product_names: list[str] = Field(default_factory=list)
     reward_type: str
     reward_discount_percent: Decimal | None
     reward_product_id: uuid.UUID | None
@@ -119,4 +123,3 @@ class SchemeOut(BaseModel):
     start_date: date
     end_date: date
     is_active: bool
-

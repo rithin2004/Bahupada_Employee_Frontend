@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     s3_bucket_name: str | None = None
     s3_endpoint_url: str | None = None
     s3_docs_prefix: str = "customer-docs"
+    taxpro_api_key: str | None = None
+    taxpro_gst_lookup_url: str | None = None
 
     @model_validator(mode="after")
     def _prefer_test_database_url(self):

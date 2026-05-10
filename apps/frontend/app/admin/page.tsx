@@ -4,7 +4,7 @@ import { AppShell } from "@/components/layout/app-shell";
 export default function AdminDashboardPage() {
   return (
     <AppShell role="admin" activeKey="dashboard" userName="Admin User">
-      <DashboardHome />
+      <DashboardHome role="admin" />
     </AppShell>
   );
 }

@@ -38,7 +38,7 @@ export default function DashboardPage() {
   return (
     <PortalAuthGate portal="ANY">
       <AppShell role={role} activeKey="dashboard" userName={userName}>
-        <DashboardHome />
+        <DashboardHome role={role} />
       </AppShell>
     </PortalAuthGate>
   );

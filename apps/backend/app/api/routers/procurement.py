@@ -1,7 +1,7 @@
 import base64
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, Query
@@ -80,6 +80,7 @@ from app.services.idempotency import idempotency_precheck, idempotency_store_res
 from app.services.stock import post_purchase_bill
 
 router = APIRouter()
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _encode_stock_cursor(created_at: datetime, batch_id: str) -> str:
@@ -103,12 +104,12 @@ def _challan_batch_no(challan_id: uuid.UUID, line_number: int, created_at: datet
 
 
 def _purchase_entry_number(now: datetime | None = None) -> str:
-    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    ts = (now or datetime.now(IST)).astimezone(IST)
     return f"P{ts.strftime('%y%m%d%H%M%S')}"
 
 
 def _purchase_bill_batch_no(bill_number: str, line_number: int, now: datetime | None = None) -> str:
-    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    ts = (now or datetime.now(IST)).astimezone(IST)
     compact_bill = "".join(ch for ch in bill_number.upper() if ch.isalnum())[-8:] or "AUTO"
     return f"PBL-{ts.strftime('%Y%m%d')}-{compact_bill}-{line_number:03d}"
 
@@ -356,6 +357,9 @@ async def _build_product_summary(db: AsyncSession, product: Product, vendor_id: 
         tax_percent=Decimal(product.tax_percent or 0),
         mrp=Decimal(pricing.mrp if pricing else 0),
         cost_price=Decimal(pricing.cost_price if pricing else 0),
+        a_class_price=Decimal(pricing.a_class_price if pricing else 0),
+        b_class_price=Decimal(pricing.b_class_price if pricing else 0),
+        c_class_price=Decimal(pricing.c_class_price if pricing else 0),
         unit_1st_name=await _unit_name(db, product.primary_unit_id),
         unit_2nd_name=await _unit_name(db, product.secondary_unit_id),
         unit_3rd_name=await _unit_name(db, product.third_unit_id),
@@ -534,11 +538,15 @@ async def _create_purchase_bill_internal(
         discount_percent = Decimal(item.discount_percent or 0)
         percent_discount_amount = (line_subtotal * discount_percent / Decimal("100")) if discount_percent > 0 else Decimal("0")
         discount_lumpsum = Decimal(item.discount_lumpsum or 0)
+        discount_mode = (item.discount_mode or "PERCENT").upper()
+        free_buy_quantity = Decimal(item.free_buy_quantity or 0)
+        free_quantity = Decimal(item.free_quantity or 0)
         line_discount_amount = Decimal(item.line_discount_amount or (percent_discount_amount + discount_lumpsum))
         taxable_amount = Decimal(item.line_taxable_amount or (line_subtotal - line_discount_amount))
         tax_percent = Decimal(product.tax_percent or 0)
         line_tax_amount = Decimal(item.line_tax_amount or (taxable_amount * tax_percent / Decimal("100")))
         line_total_amount = Decimal(item.line_total_amount or (taxable_amount + line_tax_amount))
+        effective_unit_cost = Decimal(item.effective_unit_cost or (taxable_amount / base_quantity))
 
         if item.mrp is not None:
             next_mrp = Decimal(item.mrp or 0)
@@ -583,6 +591,10 @@ async def _create_purchase_bill_internal(
                 rate_unit_level=rate_unit_level,
                 discount_percent=discount_percent if discount_percent > 0 else None,
                 discount_lumpsum=discount_lumpsum if discount_lumpsum > 0 else None,
+                discount_mode=discount_mode,
+                free_buy_quantity=free_buy_quantity if free_buy_quantity > 0 else None,
+                free_quantity=free_quantity if free_quantity > 0 else None,
+                effective_unit_cost=effective_unit_cost,
                 line_subtotal=line_subtotal,
                 line_discount_amount=line_discount_amount,
                 line_taxable_amount=taxable_amount,
@@ -874,6 +886,10 @@ async def create_purchase_challan(
                 rate_unit_level=item.rate_unit_level,
                 discount_percent=item.discount_percent,
                 discount_lumpsum=item.discount_lumpsum,
+                discount_mode=item.discount_mode,
+                free_buy_quantity=item.free_buy_quantity,
+                free_quantity=item.free_quantity,
+                effective_unit_cost=item.effective_unit_cost,
                 line_subtotal=item.line_subtotal,
                 line_discount_amount=item.line_discount_amount,
                 line_taxable_amount=item.line_taxable_amount,
@@ -1023,6 +1039,10 @@ async def get_purchase_challan(purchase_challan_id: uuid.UUID, db: AsyncSession 
                 "rate_unit_level": item.rate_unit_level,
                 "discount_percent": str(item.discount_percent or 0) if item.discount_percent is not None else None,
                 "discount_lumpsum": str(item.discount_lumpsum or 0) if item.discount_lumpsum is not None else None,
+                "discount_mode": item.discount_mode,
+                "free_buy_quantity": str(item.free_buy_quantity or 0) if item.free_buy_quantity is not None else None,
+                "free_quantity": str(item.free_quantity or 0) if item.free_quantity is not None else None,
+                "effective_unit_cost": str(item.effective_unit_cost or 0) if item.effective_unit_cost is not None else None,
                 "line_subtotal": str(item.line_subtotal or 0) if item.line_subtotal is not None else None,
                 "line_discount_amount": str(item.line_discount_amount or 0) if item.line_discount_amount is not None else None,
                 "line_taxable_amount": str(item.line_taxable_amount or 0) if item.line_taxable_amount is not None else None,
@@ -1101,6 +1121,10 @@ async def update_purchase_challan(
                     rate_unit_level=item.rate_unit_level,
                     discount_percent=item.discount_percent,
                     discount_lumpsum=item.discount_lumpsum,
+                    discount_mode=item.discount_mode,
+                    free_buy_quantity=item.free_buy_quantity,
+                    free_quantity=item.free_quantity,
+                    effective_unit_cost=item.effective_unit_cost,
                     line_subtotal=item.line_subtotal,
                     line_discount_amount=item.line_discount_amount,
                     line_taxable_amount=item.line_taxable_amount,
@@ -1242,6 +1266,10 @@ async def get_purchase_bill(purchase_bill_id: uuid.UUID, db: AsyncSession = Depe
                 "mrp": str(getattr(item, "mrp", None) or (product.mrp if product and hasattr(product, "mrp") else 0)),
                 "discount_percent": str(item.discount_percent or 0),
                 "discount_lumpsum": str(item.discount_lumpsum or 0),
+                "discount_mode": item.discount_mode,
+                "free_buy_quantity": str(item.free_buy_quantity or 0) if item.free_buy_quantity is not None else None,
+                "free_quantity": str(item.free_quantity or 0) if item.free_quantity is not None else None,
+                "effective_unit_cost": str(item.effective_unit_cost or 0) if item.effective_unit_cost is not None else None,
                 "line_discount_amount": str(item.line_discount_amount or 0),
                 "line_subtotal": str(item.line_subtotal or 0),
                 "line_taxable_amount": str(item.line_taxable_amount or 0),
@@ -1483,10 +1511,10 @@ async def purchase_entry_bootstrap(db: AsyncSession = Depends(get_db)):
     ).scalar_one_or_none()
     company_gstin = company.gstin if company else None
     return PurchaseEntryBootstrap(
-        today=datetime.now(timezone.utc).date(),
+        today=datetime.now(IST).date(),
         next_entry_number=_purchase_entry_number(),
         default_warehouse_id=warehouses[0].id if warehouses else None,
-        warehouses=[{"id": warehouse.id, "name": warehouse.name, "code": warehouse.code} for warehouse in warehouses],
+        warehouses=[{"id": warehouse.id, "name": warehouse.name, "code": warehouse.code, "state": warehouse.state} for warehouse in warehouses],
         company_gstin=company_gstin,
     )
 

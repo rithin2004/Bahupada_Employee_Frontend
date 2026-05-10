@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, X } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -27,9 +28,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 
 type CustomerType = "B2B" | "B2C";
 type ConditionBasis = "VALUE" | "WEIGHT" | "QUANTITY";
@@ -66,6 +70,8 @@ type SchemeRow = {
   sub_category: string;
   product_id: string;
   product_name: string;
+  product_ids: string[];
+  product_names: string[];
   reward_type: RewardType;
   reward_discount_percent: string;
   reward_product_id: string;
@@ -86,7 +92,7 @@ const EMPTY_FORM = {
   brand: "",
   category: "",
   sub_category: "",
-  product_id: "",
+  product_ids: [] as string[],
   reward_type: "DISCOUNT" as RewardType,
   reward_discount_percent: "",
   reward_product_id: "",
@@ -132,6 +138,8 @@ function mapProduct(row: Record<string, unknown>): ProductOption {
 }
 
 function mapScheme(row: Record<string, unknown>): SchemeRow {
+  const productIds = asArray(row.product_ids).map((item) => String(item ?? "")).filter(Boolean);
+  const productNames = asArray(row.product_names).map((item) => String(item ?? "")).filter(Boolean);
   return {
     id: String(row.id ?? ""),
     scheme_name: String(row.scheme_name ?? ""),
@@ -145,6 +153,8 @@ function mapScheme(row: Record<string, unknown>): SchemeRow {
     sub_category: String(row.sub_category ?? ""),
     product_id: String(row.product_id ?? ""),
     product_name: String(row.product_name ?? ""),
+    product_ids: productIds,
+    product_names: productNames,
     reward_type: (String(row.reward_type ?? "DISCOUNT") as RewardType) || "DISCOUNT",
     reward_discount_percent: String(row.reward_discount_percent ?? ""),
     reward_product_id: String(row.reward_product_id ?? ""),
@@ -158,6 +168,9 @@ function mapScheme(row: Record<string, unknown>): SchemeRow {
 }
 
 function formatScope(row: SchemeRow) {
+  if (row.product_names.length > 0) {
+    return row.product_names.join(", ");
+  }
   if (row.product_name) {
     return row.product_name;
   }
@@ -184,8 +197,8 @@ function buildApplicabilityLabel(form: typeof EMPTY_FORM, categories: CustomerCa
   const categoryName = form.customer_category_id
     ? categories.find((item) => item.id === form.customer_category_id)?.name || "selected customers"
     : "all customer categories";
-  const scope = form.product_id
-    ? "selected product"
+  const scope = form.product_ids.length
+    ? `${form.product_ids.length} selected product${form.product_ids.length > 1 ? "s" : ""}`
     : form.sub_category
       ? [form.brand, form.category, form.sub_category].filter(Boolean).join(" / ")
       : form.category
@@ -210,7 +223,7 @@ function toFormFromRow(row: SchemeRow) {
     brand: row.brand || "",
     category: row.category || "",
     sub_category: row.sub_category || "",
-    product_id: row.product_id || "",
+    product_ids: row.product_ids.length ? row.product_ids : (row.product_id ? [row.product_id] : []),
     reward_type: row.reward_type,
     reward_discount_percent: row.reward_discount_percent || "",
     reward_product_id: row.reward_product_id || "",
@@ -246,6 +259,7 @@ export function SchemesAdminEditor() {
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [subCategoryOptions, setSubCategoryOptions] = useState<string[]>([]);
   const [scopeProducts, setScopeProducts] = useState<ProductOption[]>([]);
+  const [scopeProductsOpen, setScopeProductsOpen] = useState(false);
   const [rewardProductSearch, setRewardProductSearch] = useState(persistedUiState.rewardProductSearch);
   const [rewardProductOptions, setRewardProductOptions] = useState<ProductOption[]>([]);
 
@@ -268,6 +282,11 @@ export function SchemesAdminEditor() {
     }
     return ["PIECE"] as ThresholdUnit[];
   }, [form.condition_basis]);
+
+  const selectedScopeProducts = useMemo(
+    () => scopeProducts.filter((item) => form.product_ids.includes(item.id)),
+    [form.product_ids, scopeProducts]
+  );
 
   useEffect(() => {
     setPersistedUiState({
@@ -384,6 +403,29 @@ export function SchemesAdminEditor() {
     }
   }
 
+  async function loadScopeProducts(brand: string, category: string, subCategory: string) {
+    if (!canReadSchemes) {
+      return;
+    }
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "1000");
+      if (brand.trim()) {
+        params.set("brand", brand.trim());
+      }
+      if (category.trim()) {
+        params.set("category", category.trim());
+      }
+      if (subCategory.trim()) {
+        params.set("sub_category", subCategory.trim());
+      }
+      const res = asObject(await fetchBackend(`/schemes/meta/products?${params.toString()}`));
+      setScopeProducts(asArray(res).map((row) => mapProduct(asObject(row))));
+    } catch {
+      setScopeProducts([]);
+    }
+  }
+
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -435,12 +477,7 @@ export function SchemesAdminEditor() {
   }, [thresholdUnitOptions]);
 
   useEffect(() => {
-    if (!form.brand) {
-      setCategoryOptions([]);
-      setSubCategoryOptions([]);
-      setScopeProducts([]);
-      return;
-    }
+    setForm((prev) => ({ ...prev, product_ids: [] }));
     void (async () => {
       try {
         const rows = asArray(await fetchBackend(`/schemes/meta/categories?brand=${encodeURIComponent(form.brand)}`));
@@ -449,13 +486,13 @@ export function SchemesAdminEditor() {
         setCategoryOptions([]);
       }
     })();
+    void loadScopeProducts(form.brand, form.category, form.sub_category);
   }, [form.brand]);
 
   useEffect(() => {
+    setForm((prev) => ({ ...prev, product_ids: [] }));
     if (!form.brand || !form.category) {
       setSubCategoryOptions([]);
-      setScopeProducts([]);
-      return;
     }
     void (async () => {
       try {
@@ -469,26 +506,8 @@ export function SchemesAdminEditor() {
         setSubCategoryOptions([]);
       }
     })();
+    void loadScopeProducts(form.brand, form.category, form.sub_category);
   }, [form.brand, form.category]);
-
-  useEffect(() => {
-    if (!form.brand || !form.category || !form.sub_category) {
-      setScopeProducts([]);
-      return;
-    }
-    void (async () => {
-      try {
-        const rows = asArray(
-          await fetchBackend(
-            `/schemes/meta/products?brand=${encodeURIComponent(form.brand)}&category=${encodeURIComponent(form.category)}&sub_category=${encodeURIComponent(form.sub_category)}`
-          )
-        );
-        setScopeProducts(rows.map((row) => mapProduct(asObject(row))));
-      } catch {
-        setScopeProducts([]);
-      }
-    })();
-  }, [form.brand, form.category, form.sub_category]);
 
   useEffect(() => {
     if (!createOpen || !canReadSchemes || form.reward_type !== "FREE_ITEM") {
@@ -567,7 +586,8 @@ export function SchemesAdminEditor() {
         brand: form.brand || null,
         category: form.category || null,
         sub_category: form.sub_category || null,
-        product_id: form.product_id || null,
+        product_id: form.product_ids[0] || null,
+        product_ids: form.product_ids,
         reward_type: form.reward_type,
         reward_discount_percent: form.reward_type === "DISCOUNT" ? Number(form.reward_discount_percent) : null,
         reward_product_id: form.reward_type === "FREE_ITEM" ? form.reward_product_id : null,
@@ -596,6 +616,14 @@ export function SchemesAdminEditor() {
     } finally {
       setCreating(false);
     }
+  }
+
+  function toggleScopeProduct(productId: string) {
+    setForm((prev) => {
+      const exists = prev.product_ids.includes(productId);
+      const next = exists ? prev.product_ids.filter((id) => id !== productId) : [...prev.product_ids, productId];
+      return { ...prev, product_ids: next };
+    });
   }
 
   function openCreateDialog() {
@@ -845,7 +873,7 @@ export function SchemesAdminEditor() {
                             brand: e.target.value,
                             category: "",
                             sub_category: "",
-                            product_id: "",
+                            product_ids: [],
                           }))
                         }
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -868,7 +896,7 @@ export function SchemesAdminEditor() {
                             ...prev,
                             category: e.target.value,
                             sub_category: "",
-                            product_id: "",
+                            product_ids: [],
                           }))
                         }
                         disabled={!form.brand}
@@ -891,7 +919,7 @@ export function SchemesAdminEditor() {
                           setForm((prev) => ({
                             ...prev,
                             sub_category: e.target.value,
-                            product_id: "",
+                            product_ids: [],
                           }))
                         }
                         disabled={!form.category}
@@ -905,22 +933,75 @@ export function SchemesAdminEditor() {
                         ))}
                       </select>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="scheme-product">Product</Label>
-                      <select
-                        id="scheme-product"
-                        value={form.product_id}
-                        onChange={(e) => setForm((prev) => ({ ...prev, product_id: e.target.value }))}
-                        disabled={!form.sub_category}
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-60"
-                      >
-                        <option value="">{form.sub_category ? "Entire selected sub-category" : "Select sub-category first"}</option>
-                        {scopeProducts.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {(item.display_name || item.name) + (item.sku ? ` (${item.sku})` : "")}
-                          </option>
-                        ))}
-                      </select>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Products</Label>
+                      <Popover open={scopeProductsOpen} onOpenChange={setScopeProductsOpen}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 w-full justify-between overflow-hidden px-3"
+                          >
+                            <span className="truncate text-left">
+                              {selectedScopeProducts.length
+                                ? `${selectedScopeProducts.length} product${selectedScopeProducts.length > 1 ? "s" : ""} selected`
+                                : "Search and select products"}
+                            </span>
+                            <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[min(92vw,42rem)] p-0" align="start">
+                          <Command>
+                            <CommandInput placeholder="Search SKU, name, brand, category, sub-category" />
+                            <CommandList>
+                              <CommandEmpty>No products found.</CommandEmpty>
+                              <CommandGroup>
+                                {scopeProducts.map((item) => {
+                                  const selected = form.product_ids.includes(item.id);
+                                  const valueText = [item.sku, item.display_name || item.name, item.brand, item.category, item.sub_category]
+                                    .filter(Boolean)
+                                    .join(" ");
+                                  return (
+                                    <CommandItem
+                                      key={item.id}
+                                      value={valueText}
+                                      onSelect={() => toggleScopeProduct(item.id)}
+                                      className="flex items-center gap-2"
+                                    >
+                                      <Check className={`h-4 w-4 ${selected ? "opacity-100" : "opacity-0"}`} />
+                                      <div className="min-w-0">
+                                        <div className="truncate font-medium">{item.display_name || item.name}</div>
+                                        <div className="truncate text-xs text-muted-foreground">
+                                          {[item.sku, item.brand, item.category, item.sub_category].filter(Boolean).join(" / ")}
+                                        </div>
+                                      </div>
+                                    </CommandItem>
+                                  );
+                                })}
+                              </CommandGroup>
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                      <div className="flex min-h-8 flex-wrap gap-2">
+                        {selectedScopeProducts.length ? (
+                          selectedScopeProducts.map((item) => (
+                            <Badge key={item.id} variant="secondary" className="gap-1 pr-1">
+                              <span className="max-w-[16rem] truncate">{item.display_name || item.name}</span>
+                              <button
+                                type="button"
+                                className="rounded-full p-0.5 hover:bg-muted"
+                                onClick={() => toggleScopeProduct(item.id)}
+                                aria-label={`Remove ${item.display_name || item.name}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-xs text-muted-foreground">No products selected. Leave empty for all products.</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

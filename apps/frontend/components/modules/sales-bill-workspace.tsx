@@ -117,22 +117,23 @@ type ProductEditForm = {
 type UnitOption = { id: string; unit_code: string; unit_name: string };
 type HsnOption = { id: string; hsn_code: string; gst_percent: string };
 type CustomerCreateForm = {
-  firm_name: string;
-  brand_ids: string[];
+  outlet_name: string;
   sales_type: "LOCAL" | "CENTRAL";
   gstin: string;
   pan: string;
   owner_name: string;
-  phone: string;
-  alternate_phone: string;
+  whatsapp_number: string;
+  alternate_number: string;
   email: string;
-  street: string;
+  street_address_1: string;
+  street_address_2: string;
+  street_address_3: string;
   city: string;
   state: string;
   pincode: string;
-  bank_account_number: string;
-  ifsc_code: string;
   account_category_id: string;
+  customer_category_id: string;
+  price_class: "A" | "B" | "C";
 };
 type ProductCreateForm = {
   sku: string;
@@ -224,22 +225,23 @@ const EMPTY_PRODUCT_EDIT: ProductEditForm = {
   has_interactions: false,
 };
 const EMPTY_CUSTOMER_FORM: CustomerCreateForm = {
-  firm_name: "",
-  brand_ids: [],
+  outlet_name: "",
   sales_type: "CENTRAL",
   gstin: "",
   pan: "",
   owner_name: "",
-  phone: "",
-  alternate_phone: "",
+  whatsapp_number: "",
+  alternate_number: "",
   email: "",
-  street: "",
+  street_address_1: "",
+  street_address_2: "",
+  street_address_3: "",
   city: "",
   state: "",
   pincode: "",
-  bank_account_number: "",
-  ifsc_code: "",
   account_category_id: "",
+  customer_category_id: "",
+  price_class: "A",
 };
 const EMPTY_PRODUCT_FORM: ProductCreateForm = {
   sku: "",
@@ -341,18 +343,18 @@ function displayWholeQty(stateValue: string): string {
   return String(Math.round(n));
 }
 
-/** Money / % fields: at most 2 decimal places (rounded). */
-function roundMoney2(raw: string | number | null | undefined): string {
+/** Money / % fields: at most 4 decimal places (rounded). */
+function roundMoney4(raw: string | number | null | undefined): string {
   if (raw === null || raw === undefined) return "";
   const s = String(raw).trim().replace(/,/g, "");
   if (!s) return "";
   const n = Number(s);
   if (!Number.isFinite(n)) return String(raw).trim();
-  return n.toFixed(2);
+  return n.toFixed(4);
 }
 
-/** DISC % / DISC AMT typing: max 2 fractional digits; rounds if user pastes extra precision; keeps trailing "." while editing. */
-function sanitizeMoneyInput2dp(raw: string): string {
+/** Decimal typing: max 4 fractional digits; rounds if user pastes extra precision; keeps trailing "." while editing. */
+function sanitizeDecimalInput4dp(raw: string): string {
   const s = String(raw ?? "").trim().replace(/,/g, "").replace(/[^0-9.]/g, "");
   if (!s) return "";
   const firstDot = s.indexOf(".");
@@ -362,12 +364,12 @@ function sanitizeMoneyInput2dp(raw: string): string {
   if (fracRaw.length === 0 && s.endsWith(".")) {
     return (intPart || "0") + ".";
   }
-  if (fracRaw.length <= 2) {
+  if (fracRaw.length <= 4) {
     return (intPart || "0") + "." + fracRaw;
   }
   const n = Number((intPart || "0") + "." + fracRaw);
   if (!Number.isFinite(n)) return s;
-  return roundMoney2(n);
+  return roundMoney4(n);
 }
 
 /** Beats Input defaults (text-base / md:text-sm, h-9, px-3) so grid numbers fit h-7 without clipping. */
@@ -386,7 +388,7 @@ function makeLine(): LineDraft {
     rateUnitLevel: 1,
     discountPercent: "",
     discountLumpsum: "",
-    amount: "0.00",
+    amount: "0.0000",
   };
 }
 
@@ -494,21 +496,23 @@ const LINE_FIELD_ORDER: LineField[] = [
 ];
 const PAYMENT_MODE_OPTIONS: Array<"CREDIT" | "CASH"> = ["CREDIT", "CASH"];
 const CUSTOMER_CREATE_FIELD_ORDER = [
-  "firm_name",
+  "outlet_name",
   "sales_type",
   "gstin",
   "pan",
   "owner_name",
-  "phone",
-  "alternate_phone",
+  "whatsapp_number",
+  "alternate_number",
   "email",
-  "street",
+  "street_address_1",
+  "street_address_2",
+  "street_address_3",
   "city",
   "state",
   "pincode",
-  "bank_account_number",
-  "ifsc_code",
   "account_category_id",
+  "customer_category_id",
+  "price_class",
 ] as const;
 const PRODUCT_CREATE_FIELD_ORDER = [
   "sku",
@@ -661,13 +665,13 @@ function describeSchemeGap(lines: LineDraft[], scheme: SalesEntrySchemeOption): 
   const basis = (scheme.condition_basis || "QTY").toUpperCase();
   const tu = (scheme.threshold_unit || "").trim();
   if (basis === "VALUE") {
-    return `This bill contributes ${total.toFixed(2)} toward value; need ≥ ${threshold.toFixed(2)}. Short by ${short.toFixed(2)}.`;
+    return `This bill contributes ${total.toFixed(4)} toward value; need ≥ ${threshold.toFixed(4)}. Short by ${short.toFixed(4)}.`;
   }
   if (basis === "WEIGHT") {
     const unitLbl = tu || "";
     return `This bill contributes ${total.toFixed(3)}${unitLbl ? ` ${unitLbl}` : ""}; need ≥ ${threshold.toFixed(3)}. Short by ${short.toFixed(3)}${unitLbl ? ` ${unitLbl}` : ""}.`;
   }
-  return `This bill contributes ${total.toFixed(2)} in qualifying quantity; need ≥ ${threshold.toFixed(2)}. Short by ${short.toFixed(2)}.`;
+  return `This bill contributes ${total.toFixed(4)} in qualifying quantity; need ≥ ${threshold.toFixed(4)}. Short by ${short.toFixed(4)}.`;
 }
 
 /**
@@ -752,19 +756,19 @@ function applyQuantityPatchToLineDraft(line: LineDraft, patch: Partial<LineDraft
     const subtotal = baseQty * lineUnitPrice(next);
     if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
       const pct = asDecimal(patch.discountPercent);
-      next.discountLumpsum = subtotal > 0 ? (subtotal * (pct / 100)).toFixed(2) : "0.00";
+      next.discountLumpsum = subtotal > 0 ? (subtotal * (pct / 100)).toFixed(4) : "0.0000";
     } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
       const amt = asDecimal(patch.discountLumpsum);
-      next.discountPercent = subtotal > 0 ? ((amt / subtotal) * 100).toFixed(2) : "0.00";
+      next.discountPercent = subtotal > 0 ? ((amt / subtotal) * 100).toFixed(4) : "0.0000";
     } else if (
       ("quantity1" in patch || "quantity2" in patch || "quantity3" in patch || "rateValue" in patch || "rateUnitLevel" in patch) &&
       subtotal > 0
     ) {
       const pct = asDecimal(next.discountPercent);
-      next.discountLumpsum = (subtotal * (pct / 100)).toFixed(2);
+      next.discountLumpsum = (subtotal * (pct / 100)).toFixed(4);
     }
   }
-  return { ...next, amount: computeLineAmount(next).toFixed(2) };
+  return { ...next, amount: computeLineAmount(next).toFixed(4) };
 }
 
 function computeLineAmount(line: LineDraft) {
@@ -774,23 +778,31 @@ function computeLineAmount(line: LineDraft) {
   const discountPercent = asDecimal(line.discountPercent || "0");
   const discountLumpsum = asDecimal(line.discountLumpsum);
   const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
-  const taxable = subtotal - discountAmount;
-  const tax = taxable * (asDecimal(line.product.tax_percent) / 100);
-  return Math.max(0, taxable + tax);
-}
-
-function computeLineTaxableAmount(line: LineDraft) {
-  if (!line.product) return 0;
-  const baseQty = lineBaseQuantity(line);
-  const subtotal = baseQty * lineUnitPrice(line);
-  const discountPercent = asDecimal(line.discountPercent || "0");
-  const discountLumpsum = asDecimal(line.discountLumpsum);
-  const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
   return Math.max(0, subtotal - discountAmount);
 }
 
+function computeLineBasePrice(line: LineDraft) {
+  if (!line.product) return 0;
+  const inclusive = computeLineAmount(line);
+  const gstPercent = asDecimal(line.product.tax_percent);
+  if (gstPercent <= 0) return inclusive;
+  return inclusive / (1 + gstPercent / 100);
+}
+
+function computeLineGstSplit(line: LineDraft) {
+  if (!line.product) return { base: 0, cgst: 0, sgst: 0, igst: 0 };
+  const base = computeLineBasePrice(line);
+  const gstAmount = Math.max(0, computeLineAmount(line) - base);
+  return {
+    base,
+    cgst: gstAmount / 2,
+    sgst: gstAmount / 2,
+    igst: gstAmount,
+  };
+}
+
 function roundCurrency(value: number) {
-  return Math.round(value);
+  return Number(value.toFixed(4));
 }
 
 function mapCustomerSummary(row: Record<string, unknown>): CustomerSummary {
@@ -900,6 +912,7 @@ export function SalesBillWorkspace({
   const [billDateInput, setBillDateInput] = useState(formatDisplayDate(todayIso()));
   const [billDate, setBillDate] = useState(todayIso());
   const [dueDate, setDueDate] = useState(todayIso());
+  const [dueDays, setDueDays] = useState("0");
   const [billNumber, setBillNumber] = useState("");
   const [entryNumber, setEntryNumber] = useState("");
   const [receivedDateInput, setReceivedDateInput] = useState(formatDisplayDate(todayIso()));
@@ -952,6 +965,7 @@ export function SalesBillWorkspace({
   const [categoryOptions, setCategoryOptions] = useState<LookupOption[]>([]);
   const [subCategoryOptions, setSubCategoryOptions] = useState<SubCategoryOption[]>([]);
   const [customerCategoryOptions, setCustomerCategoryOptions] = useState<AccountCategoryOption[]>([]);
+  const [customerMasterCategoryOptions, setCustomerMasterCategoryOptions] = useState<LookupOption[]>([]);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
   const [productCreateOpen, setProductCreateOpen] = useState(false);
   const [quickCreateType, setQuickCreateType] = useState<"" | "brand" | "category" | "subCategory" | "unit" | "hsn">("");
@@ -1080,26 +1094,32 @@ export function SalesBillWorkspace({
     }
   }, []);
 
+  const applyDueDate = useCallback((iso: string) => {
+    const normalized = iso < billDate ? billDate : iso;
+    setDueDate(normalized);
+    const diffDays = Math.max(0, Math.round((new Date(normalized).getTime() - new Date(billDate).getTime()) / 86400000));
+    setDueDays(String(diffDays));
+  }, [billDate]);
+
+  const applyDueDays = useCallback((raw: string) => {
+    const clean = sanitizeDigits(raw);
+    setDueDays(clean);
+    const days = Number(clean || 0);
+    const next = new Date(`${billDate}T00:00:00`);
+    next.setDate(next.getDate() + (Number.isFinite(days) ? days : 0));
+    setDueDate(next.toISOString().slice(0, 10));
+  }, [billDate]);
+
   const totals = useMemo(() => {
+    const inclusiveGoods = lines.reduce((sum, line) => {
+      if (!line.product) return sum;
+      return sum + computeLineAmount(line);
+    }, 0);
     const valueOfGoods = lines.reduce((sum, line) => {
       if (!line.product) return sum;
-      const baseQty = lineBaseQuantity(line);
-      const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || "0");
-      const discountLumpsum = asDecimal(line.discountLumpsum);
-      const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
-      return sum + Math.max(0, subtotal - discountAmount);
+      return sum + computeLineBasePrice(line);
     }, 0);
-    const gst = lines.reduce((sum, line) => {
-      if (!line.product) return sum;
-      const baseQty = lineBaseQuantity(line);
-      const subtotal = baseQty * lineUnitPrice(line);
-      const discountPercent = asDecimal(line.discountPercent || "0");
-      const discountLumpsum = asDecimal(line.discountLumpsum);
-      const discountAmount = subtotal * (discountPercent / 100) + discountLumpsum;
-      const taxable = Math.max(0, subtotal - discountAmount);
-      return sum + taxable * (asDecimal(line.product.tax_percent) / 100);
-    }, 0);
+    const gst = Math.max(0, inclusiveGoods - valueOfGoods);
     const discount = lines.reduce((sum, line) => {
       if (!line.product) return sum;
       const baseQty = lineBaseQuantity(line);
@@ -1109,10 +1129,10 @@ export function SalesBillWorkspace({
       return sum + subtotal * (discountPercent / 100) + discountLumpsum;
     }, 0);
     const freight = asDecimal(freightAmount);
-    const grossFinalAmount = valueOfGoods + gst + freight;
+    const grossFinalAmount = inclusiveGoods + freight;
     const finalAmount = roundCurrency(grossFinalAmount);
     const roundOff = finalAmount - grossFinalAmount;
-    return { valueOfGoods, discount, gst, freight, grossFinalAmount, roundOff, finalAmount };
+    return { valueOfGoods, inclusiveGoods, discount, gst, freight, grossFinalAmount, roundOff, finalAmount };
   }, [freightAmount, lines]);
 
   const loadBootstrap = useCallback(async () => {
@@ -1148,21 +1168,24 @@ export function SalesBillWorkspace({
 
   const loadCreateReferences = useCallback(async () => {
     try {
-      const [brandRes, categoryRes, subCategoryRes, customerCategoryRes] = await Promise.all([
+      const [brandRes, categoryRes, subCategoryRes, customerAccountCategoryRes, customerMasterCategoryRes] = await Promise.all([
         fetchBackendFresh("/masters/product-brands?page=1&page_size=200"),
         fetchBackendFresh("/masters/product-categories?page=1&page_size=200"),
         fetchBackendFresh("/masters/product-sub-categories?page=1&page_size=200"),
         fetchBackendFresh("/masters/account-categories?party_type=CUSTOMER&page=1&page_size=200"),
+        fetchBackendFresh("/masters/customer-categories?page=1&page_size=200"),
       ]);
       setBrandOptions(asArray(asObject(brandRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
       setCategoryOptions(asArray(asObject(categoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
       setSubCategoryOptions(asArray(asObject(subCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? ""), category_id: item.category_id ? String(item.category_id) : undefined })));
-      setCustomerCategoryOptions(asArray(asObject(customerCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), code: String(item.code ?? ""), name: String(item.name ?? "") })));
+      setCustomerCategoryOptions(asArray(asObject(customerAccountCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), code: String(item.code ?? ""), name: String(item.name ?? "") })));
+      setCustomerMasterCategoryOptions(asArray(asObject(customerMasterCategoryRes).items).map((item) => ({ id: String(item.id ?? ""), name: String(item.name ?? "") })));
     } catch {
       setBrandOptions([]);
       setCategoryOptions([]);
       setSubCategoryOptions([]);
       setCustomerCategoryOptions([]);
+      setCustomerMasterCategoryOptions([]);
     }
   }, []);
 
@@ -1212,7 +1235,9 @@ export function SalesBillWorkspace({
         setBillDate(String(data.invoice_date || data.order_date || todayIso()));
         setBillDateInput(formatDisplayDate(String(data.invoice_date || data.order_date || todayIso())));
         const invOrOrderDate = String(data.invoice_date || data.order_date || todayIso());
-        setDueDate(String(data.due_date || invOrOrderDate).slice(0, 10));
+        const loadedDueDate = String(data.due_date || invOrOrderDate).slice(0, 10);
+        setDueDate(loadedDueDate < invOrOrderDate ? invOrOrderDate : loadedDueDate);
+        setDueDays(String(Math.max(0, Math.round((new Date(loadedDueDate).getTime() - new Date(invOrOrderDate).getTime()) / 86400000))));
         setReceivedDate(String(data.delivery_date || todayIso()));
         setReceivedDateInput(formatDisplayDate(String(data.delivery_date || todayIso())));
         setPaymentMode(data.payment_mode === "CASH" ? "CASH" : "CREDIT");
@@ -1236,12 +1261,12 @@ export function SalesBillWorkspace({
               quantity1: displayWholeQty(String(row.quantity ?? row.quantity_1st ?? "")),
               quantity2: displayWholeQty(String(row.quantity_2nd ?? "")),
               quantity3: displayWholeQty(String(row.quantity_3rd ?? "")),
-              mrp: roundMoney2(String(row.mrp ?? p.mrp ?? "0")),
-              rateValue: roundMoney2(String(row.selling_price ?? row.rate_value ?? p.latest_rate_value ?? p.selling_price ?? "0")),
+              mrp: roundMoney4(String(row.mrp ?? p.mrp ?? "0")),
+              rateValue: roundMoney4(String(row.selling_price ?? row.rate_value ?? p.latest_rate_value ?? p.selling_price ?? "0")),
               rateUnitLevel: (Number(row.rate_unit_level) || 1) as 1 | 2 | 3,
-              discountPercent: roundMoney2(String(row.discount_percent ?? "0")),
-              discountLumpsum: roundMoney2(String(row.discount_lumpsum ?? "0")),
-              amount: roundMoney2(String(row.line_total_amount ?? row.total_amount ?? "0")),
+              discountPercent: roundMoney4(String(row.discount_percent ?? "0")),
+              discountLumpsum: roundMoney4(String(row.discount_lumpsum ?? "0")),
+              amount: roundMoney4(String(row.line_total_amount ?? row.total_amount ?? "0")),
             };
             return line;
           }));
@@ -1378,12 +1403,12 @@ export function SalesBillWorkspace({
         quantity1: displayWholeQty(String(o.q1 ?? "")),
         quantity2: displayWholeQty(String(o.q2 ?? "")),
         quantity3: displayWholeQty(String(o.q3 ?? "")),
-        mrp: roundMoney2(String(o.mrp ?? "0")),
-        rateValue: roundMoney2(String(o.rv ?? "0")),
+        mrp: roundMoney4(String(o.mrp ?? "0")),
+        rateValue: roundMoney4(String(o.rv ?? "0")),
         rateUnitLevel: (Number(o.rul) || 1) as 1 | 2 | 3,
-        discountPercent: roundMoney2(String(o.dp ?? "0")),
-        discountLumpsum: roundMoney2(String(o.dl ?? "0")),
-        amount: roundMoney2(String(o.amt ?? "0")),
+        discountPercent: roundMoney4(String(o.dp ?? "0")),
+        discountLumpsum: roundMoney4(String(o.dl ?? "0")),
+        amount: roundMoney4(String(o.amt ?? "0")),
       });
     }
     if (!nextLines.some((l) => l.product === null)) {
@@ -1661,7 +1686,7 @@ export function SalesBillWorkspace({
 
   useEffect(() => {
     if (customerCreateOpen) {
-      setTimeout(() => focusCustomerCreateField("firm_name"), 0);
+      setTimeout(() => focusCustomerCreateField("outlet_name"), 0);
     }
   }, [focusCustomerCreateField, customerCreateOpen]);
 
@@ -1753,18 +1778,18 @@ export function SalesBillWorkspace({
         
         if ("discountPercent" in patch && !("discountLumpsum" in patch)) {
           const pct = asDecimal(patch.discountPercent);
-          next.discountLumpsum = subtotal > 0 ? (subtotal * (pct / 100)).toFixed(2) : "0.00";
+          next.discountLumpsum = subtotal > 0 ? (subtotal * (pct / 100)).toFixed(4) : "0.0000";
         } else if ("discountLumpsum" in patch && !("discountPercent" in patch)) {
           const amt = asDecimal(patch.discountLumpsum);
-          next.discountPercent = subtotal > 0 ? ((amt / subtotal) * 100).toFixed(2) : "0.00";
+          next.discountPercent = subtotal > 0 ? ((amt / subtotal) * 100).toFixed(4) : "0.0000";
         } else if (("quantity1" in patch || "quantity2" in patch || "quantity3" in patch || "rateValue" in patch || "rateUnitLevel" in patch) && subtotal > 0) {
           // If subtotal changes, keep percent and update lumpsum
           const pct = asDecimal(next.discountPercent);
-          next.discountLumpsum = (subtotal * (pct / 100)).toFixed(2);
+          next.discountLumpsum = (subtotal * (pct / 100)).toFixed(4);
         }
       }
 
-      return { ...next, amount: computeLineAmount(next).toFixed(2) };
+      return { ...next, amount: computeLineAmount(next).toFixed(4) };
     }));
   }, []);
 
@@ -1837,10 +1862,10 @@ export function SalesBillWorkspace({
       }
     updateLine(targetRow, {
       product,
-      mrp: product.mrp ? roundMoney2(product.mrp) : "0.00",
-      rateValue: roundMoney2(rateValue),
+      mrp: product.mrp ? roundMoney4(product.mrp) : "0.0000",
+      rateValue: roundMoney4(rateValue),
       rateUnitLevel: (product.latest_rate_unit_level as 1 | 2 | 3 | null) ?? 1,
-      discountPercent: "0.00",
+      discountPercent: "0.0000",
     });
     setProductSearchOpen(false);
     setProductSearch("");
@@ -1908,7 +1933,7 @@ export function SalesBillWorkspace({
         tax_percent: Number(productEditForm.tax_percent || 0),
       });
       const refreshed = mapProductSummary(asObject(await fetchBackend(`/sales/sales-entry/products/${activeLine.product.product_id}/summary`)));
-      updateLine(activeRow, { product: refreshed, amount: computeLineAmount({ ...activeLine, product: refreshed }).toFixed(2) });
+      updateLine(activeRow, { product: refreshed, amount: computeLineAmount({ ...activeLine, product: refreshed }).toFixed(4) });
       setProductEditOpen(false);
       toast.success("Product updated");
     } catch (error) {
@@ -2096,7 +2121,7 @@ export function SalesBillWorkspace({
       };
 
       if (scheme.reward_type === "DISCOUNT" && scheme.reward_discount_percent) {
-        updateLine(targetRowIndex, { ...qtyPatch, discountPercent: roundMoney2(String(scheme.reward_discount_percent)) });
+        updateLine(targetRowIndex, { ...qtyPatch, discountPercent: roundMoney4(String(scheme.reward_discount_percent)) });
         const extra =
           Object.keys(qtyPatch).length > 0
             ? ` Quantity updated to meet threshold (${scheme.condition_basis} ≥ ${scheme.threshold_value}${scheme.threshold_unit ? ` ${scheme.threshold_unit}` : ""}).`
@@ -2118,14 +2143,14 @@ export function SalesBillWorkspace({
             quantity1: displayWholeQty(String(qty)),
             quantity2: "",
             quantity3: "",
-            mrp: p.mrp ? roundMoney2(p.mrp) : "0.00",
+            mrp: p.mrp ? roundMoney4(p.mrp) : "0.0000",
             rateValue: "0",
             rateUnitLevel: 1,
             discountPercent: "100",
             discountLumpsum: "0",
-            amount: "0.00",
+            amount: "0.0000",
           };
-          freeLine.amount = computeLineAmount(freeLine).toFixed(2);
+          freeLine.amount = computeLineAmount(freeLine).toFixed(4);
           setLines((prev) => {
             const withQty = prev.map((line, idx) => {
               if (idx !== targetRowIndex) return line;
@@ -2204,6 +2229,10 @@ export function SalesBillWorkspace({
     const validLines = lines.filter((line) => line.product && lineBaseQuantity(line) > 0 && !line.schemePreviewFree);
     if (!validLines.length) {
       toast.error("Add at least one product line");
+      return;
+    }
+    if (mode === "bill" && dueDate < billDate) {
+      toast.error("Due date cannot be before bill date");
       return;
     }
     const convertChallanToBill = Boolean(localSourceChallanId) && mode === "bill" && !initialId;
@@ -2450,8 +2479,12 @@ export function SalesBillWorkspace({
     if (!iso) return;
     setBillDate(iso);
     setBillDateInput(formatDisplayDate(iso));
+    if (dueDate < iso) {
+      setDueDate(iso);
+      setDueDays("0");
+    }
     setTimeout(() => setCustomerSearchOpen(true), 0);
-  }, []);
+  }, [dueDate]);
 
   const applyReceivedDateFromPicker = useCallback((iso: string) => {
     if (!iso) return;
@@ -2856,13 +2889,26 @@ export function SalesBillWorkspace({
                     id="dueDate"
                     name="dueDate"
                     type="date"
+                    min={billDate}
                     value={dueDate}
                     readOnly={viewOnly}
-                    onChange={(e) => setDueDate(e.target.value)}
+                    onChange={(e) => applyDueDate(e.target.value)}
                     className={cn(
                       "mt-1 h-7 rounded-sm border-0 bg-[#eef1ea] text-xs font-semibold text-[#111714] shadow-none",
                       viewReadOnlyInput,
                     )}
+                  />
+                </div>
+                <div className="bg-[#fbfcf7] p-1.5 md:col-span-2">
+                  <Label htmlFor="dueDays" className="text-[10px] uppercase tracking-[0.24em] text-[#6a746e]">Due days</Label>
+                  <Input
+                    id="dueDays"
+                    name="dueDays"
+                    inputMode="numeric"
+                    value={dueDays}
+                    readOnly={viewOnly}
+                    onChange={(e) => applyDueDays(e.target.value)}
+                    className={cn("mt-1 h-7 rounded-sm border-0 bg-[#eef1ea] text-xs font-semibold text-[#111714] shadow-none", viewReadOnlyInput)}
                   />
                 </div>
               </div>
@@ -2981,7 +3027,9 @@ export function SalesBillWorkspace({
                     <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">UNIT</TableHead>
                     <TableHead className="w-[55px] text-center text-[10px] font-semibold text-foreground">DISC%</TableHead>
                     <TableHead className="w-[75px] text-center text-[10px] font-semibold text-foreground">DISC AMT</TableHead>
-                    <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">TAXABLE</TableHead>
+                    <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">BASE</TableHead>
+                    <TableHead className="w-[70px] text-right text-[10px] font-semibold text-foreground">CGST</TableHead>
+                    <TableHead className="w-[70px] text-right text-[10px] font-semibold text-foreground">SGST</TableHead>
                     <TableHead className="w-[90px] text-right text-[10px] font-semibold text-foreground">AMOUNT</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -3089,7 +3137,7 @@ export function SalesBillWorkspace({
                           )}
                         />
                       </TableCell>
-                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onBlur={(e) => { const r = roundMoney2(e.target.value); if (r !== line.rateValue) updateLine(index, { rateValue: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput, index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
+                      <TableCell className="w-[65px] py-0.5"><Input id={`line-${index}-rateValue`} name={`line-${index}-rateValue`} aria-label="Rate" ref={setLineRef(line.id, "rateValue")} value={line.rateValue} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("rateValue"); }} onChange={(e) => updateLine(index, { rateValue: e.target.value })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.rateValue) updateLine(index, { rateValue: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "rateValue")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput, index === activeRow && activeField === "rateValue" ? "bg-white ring-2 ring-[#2f5d50] ring-inset" : "")} /></TableCell>
                       <TableCell className="w-[55px] py-0.5">
                         <Button
                           id={`line-${index}-rateUnitLevel`}
@@ -3137,9 +3185,9 @@ export function SalesBillWorkspace({
                                 setActiveField("discountPercent");
                                 onDiscountSchemesFocus(index, "discountPercent");
                               }}
-                              onChange={(e) => updateLine(index, { discountPercent: sanitizeMoneyInput2dp(e.target.value) })}
+                              onChange={(e) => updateLine(index, { discountPercent: sanitizeDecimalInput4dp(e.target.value) })}
                               onBlur={(e) => {
-                                const r = roundMoney2(e.target.value);
+                                const r = roundMoney4(e.target.value);
                                 if (r !== line.discountPercent) updateLine(index, { discountPercent: r });
                               }}
                               onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")}
@@ -3290,9 +3338,9 @@ export function SalesBillWorkspace({
                             setActiveField("discountLumpsum");
                             onDiscountSchemesFocus(index, "discountLumpsum");
                           }}
-                          onChange={(e) => updateLine(index, { discountLumpsum: sanitizeMoneyInput2dp(e.target.value) })}
+                          onChange={(e) => updateLine(index, { discountLumpsum: sanitizeDecimalInput4dp(e.target.value) })}
                           onBlur={(e) => {
-                            const r = roundMoney2(e.target.value);
+                            const r = roundMoney4(e.target.value);
                             if (r !== line.discountLumpsum) updateLine(index, { discountLumpsum: r });
                           }}
                           onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")}
@@ -3308,11 +3356,11 @@ export function SalesBillWorkspace({
                         <Input
                           id={`line-${index}-taxable`}
                           name={`line-${index}-taxable`}
-                          aria-label="Taxable amount"
+                          aria-label="Base price"
                           readOnly
                           tabIndex={0}
                           ref={setLineRef(line.id, "taxable")}
-                          value={computeLineTaxableAmount(line).toFixed(2)}
+                          value={computeLineBasePrice(line).toFixed(4)}
                           onFocus={() => {
                             setActiveRow(index);
                             setActiveField("taxable");
@@ -3325,6 +3373,12 @@ export function SalesBillWorkspace({
                           )}
                         />
                       </TableCell>
+                      <TableCell className="w-[70px] py-0.5">
+                        <Input aria-label="CGST amount" readOnly tabIndex={-1} value={computeLineGstSplit(line).cgst.toFixed(4)} className={cn(COMPACT_GRID_INPUT_BASE, "cursor-default text-right")} />
+                      </TableCell>
+                      <TableCell className="w-[70px] py-0.5">
+                        <Input aria-label="SGST amount" readOnly tabIndex={-1} value={computeLineGstSplit(line).sgst.toFixed(4)} className={cn(COMPACT_GRID_INPUT_BASE, "cursor-default text-right")} />
+                      </TableCell>
                       <TableCell className="w-[90px] py-0.5">
                         <Input
                           id={`line-${index}-lineAmount`}
@@ -3333,7 +3387,7 @@ export function SalesBillWorkspace({
                           readOnly
                           tabIndex={0}
                           ref={setLineRef(line.id, "lineAmount")}
-                          value={Number(line.amount || 0).toFixed(2)}
+                          value={Number(line.amount || 0).toFixed(4)}
                           onFocus={() => {
                             setActiveRow(index);
                             setActiveField("lineAmount");
@@ -3363,8 +3417,8 @@ export function SalesBillWorkspace({
                     <div className="text-sm font-semibold leading-snug md:col-span-2">{activeLine.product.name}</div>
                     <div className="text-xs text-[#5b655f] md:col-span-2">{activeLine.product.brand || "—"}</div>
                     <div className="text-sm">Stock: <span className="font-semibold">{activeLine.product.stock_ratio}</span></div>
-                    <div className="text-sm">MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(2)}</span></div>
-                    <div className="text-sm md:col-span-2">Selling: <span className="font-semibold">{Number(activeLine.product.selling_price || activeLine.product.latest_rate_value || 0).toFixed(2)}</span></div>
+                    <div className="text-sm">MRP: <span className="font-semibold">{Number(activeLine.product.mrp).toFixed(4)}</span></div>
+                    <div className="text-sm md:col-span-2">Selling: <span className="font-semibold">{Number(activeLine.product.selling_price || activeLine.product.latest_rate_value || 0).toFixed(4)}</span></div>
                     {convLines.length ? (
                       <div className="md:col-span-2 mt-1 space-y-1 border-t border-[#dde6dc] pt-2">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#6a746e]">Unit conversion</div>
@@ -3384,9 +3438,9 @@ export function SalesBillWorkspace({
                 </div>
               <div className="bg-[#fbfcf7] p-3 text-sm">
                 <div className="grid grid-cols-2 gap-y-2.5">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Value of goods</div><div className="text-right text-sm font-semibold">{totals.valueOfGoods.toFixed(2)}</div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Discount</div><div className="text-right text-sm font-semibold">{totals.discount.toFixed(2)}</div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">GST</div><div className="text-right text-sm font-semibold">{totals.gst.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Value of goods</div><div className="text-right text-sm font-semibold">{totals.valueOfGoods.toFixed(4)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Discount</div><div className="text-right text-sm font-semibold">{totals.discount.toFixed(4)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">GST</div><div className="text-right text-sm font-semibold">{totals.gst.toFixed(4)}</div>
                   <div className="self-center text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Freight</div>
                   <div>
                     <Label htmlFor="freightAmount" className="sr-only">Freight</Label>
@@ -3418,8 +3472,8 @@ export function SalesBillWorkspace({
                       }}
                     />
                   </div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Round off</div><div className="text-right text-sm font-semibold">{totals.roundOff.toFixed(2)}</div>
-                  <div className="pt-1 text-xs font-bold uppercase tracking-wide text-[#2f5d50]">Final bill</div><div className="pt-1 text-right text-base font-bold">{totals.finalAmount.toFixed(2)}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#3d5249]">Round off</div><div className="text-right text-sm font-semibold">{totals.roundOff.toFixed(4)}</div>
+                  <div className="pt-1 text-xs font-bold uppercase tracking-wide text-[#2f5d50]">Final bill</div><div className="pt-1 text-right text-base font-bold">{totals.finalAmount.toFixed(4)}</div>
                 </div>
                 <div className="mt-4 flex gap-2">
                   <Button
@@ -3480,12 +3534,12 @@ export function SalesBillWorkspace({
                           <tr key={`${bill.bill_number}-${bill.bill_date}`} className="border-b border-[#f0f4f0] last:border-0">
                             <td className="py-2.5">{formatDisplayDate(bill.bill_date)}</td>
                             <td className="py-2.5 font-medium">{bill.bill_number}</td>
-                            <td className="py-2.5 text-right">{Number(bill.quantity).toFixed(2)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.quantity).toFixed(4)}</td>
                             <td className="py-2.5">{bill.unit_name}</td>
-                            <td className="py-2.5 text-right">{Number(bill.mrp).toFixed(2)}</td>
-                            <td className="py-2.5 text-right">{Number(bill.rate_value).toFixed(2)}</td>
-                            <td className="py-2.5 text-right">{Number(bill.discount_percent).toFixed(2)}%</td>
-                            <td className="py-2.5 text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.mrp).toFixed(4)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.rate_value).toFixed(4)}</td>
+                            <td className="py-2.5 text-right">{Number(bill.discount_percent).toFixed(4)}%</td>
+                            <td className="py-2.5 text-right font-semibold">{Number(bill.line_total_amount).toFixed(4)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -3511,9 +3565,9 @@ export function SalesBillWorkspace({
                       Customer snapshot
                     </div>
                     <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                      <div className="text-[#5b655f]">Annual sales</div><div className="text-right font-semibold text-[#111714]">{Number(customerSummary.annual_sales_amount).toFixed(2)}</div>
-                      <div className="text-[#5b655f]">Month sales</div><div className="text-right font-semibold text-[#111714]">{Number(customerSummary.monthly_sales_amount).toFixed(2)}</div>
-                      <div className="text-[#5b655f]">Balance</div><div className="text-right font-semibold text-[#111714]">{Number(customerSummary.balance).toFixed(2)} {customerSummary.balance_side}</div>
+                      <div className="text-[#5b655f]">Annual sales</div><div className="text-right font-semibold text-[#111714]">{Number(customerSummary.annual_sales_amount).toFixed(4)}</div>
+                      <div className="text-[#5b655f]">Month sales</div><div className="text-right font-semibold text-[#111714]">{Number(customerSummary.monthly_sales_amount).toFixed(4)}</div>
+                      <div className="text-[#5b655f]">Balance</div><div className="text-right font-semibold text-[#111714]">{Number(customerSummary.balance).toFixed(4)} {customerSummary.balance_side}</div>
                       <div className="text-[#5b655f]">Last sale</div><div className="text-right font-semibold text-[#111714]">{customerSummary.last_sale_date ? formatDisplayDate(customerSummary.last_sale_date) : "—"}</div>
                       <div className="text-[#5b655f]">Last receipt</div><div className="text-right font-semibold text-[#111714]">{customerSummary.last_receipt_date ? formatDisplayDate(customerSummary.last_receipt_date) : "—"}</div>
                       <div className="text-[#5b655f]">GSTIN</div><div className="text-right font-mono text-[11px] font-semibold text-[#111714]">{customerSummary.gstin || "—"}</div>
@@ -3530,7 +3584,7 @@ export function SalesBillWorkspace({
                         <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-md border border-[#dde8e0] bg-white px-2 py-1.5 text-xs shadow-sm">
                           <span className="truncate font-medium">{bill.bill_number}</span>
                           <span className="text-[#5b655f]">{formatDisplayDate(bill.bill_date)}</span>
-                          <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(2)}</span>
+                          <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(4)}</span>
                         </div>
                       ))}
                     </div>
@@ -3792,7 +3846,7 @@ export function SalesBillWorkspace({
                       {customer.city || "-"} {customer.state ? `• ${customer.state}` : ""}
                     </div>
                   </div>
-                  <span className="text-right font-semibold">{Number(customer.balance).toFixed(2)} {customer.balance_side}</span>
+                  <span className="text-right font-semibold">{Number(customer.balance).toFixed(4)} {customer.balance_side}</span>
                 </button>
               ))}
             </div>
@@ -3808,8 +3862,8 @@ export function SalesBillWorkspace({
                   <div>Area</div><div className="text-right font-semibold">{customerResults[customerIndex].area || "-"}</div>
                   <div>Route</div><div className="text-right font-semibold">{customerResults[customerIndex].route || "-"}</div>
                   <div>Brands</div><div className="text-right font-semibold">{customerResults[customerIndex].brand_names.length ? customerResults[customerIndex].brand_names.join(", ") : "None linked"}</div>
-                  <div>Monthly Sales</div><div className="text-right font-semibold">{Number(customerResults[customerIndex].monthly_sales_amount).toFixed(2)}</div>
-                  <div>Annual Sales</div><div className="text-right font-semibold">{Number(customerResults[customerIndex].annual_sales_amount).toFixed(2)}</div>
+                  <div>Monthly Sales</div><div className="text-right font-semibold">{Number(customerResults[customerIndex].monthly_sales_amount).toFixed(4)}</div>
+                  <div>Annual Sales</div><div className="text-right font-semibold">{Number(customerResults[customerIndex].annual_sales_amount).toFixed(4)}</div>
                   <div>Last Sale</div><div className="text-right font-semibold">{customerResults[customerIndex].last_sale_date ? formatDisplayDate(customerResults[customerIndex].last_sale_date) : "-"}</div>
                   <div>Last Receipt</div><div className="text-right font-semibold">{customerResults[customerIndex].last_receipt_date ? formatDisplayDate(customerResults[customerIndex].last_receipt_date) : "-"}</div>
                 </div>
@@ -3820,7 +3874,7 @@ export function SalesBillWorkspace({
                       <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                         <span>{bill.bill_number}</span>
                         <span>{formatDisplayDate(bill.bill_date)}</span>
-                        <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(2)}</span>
+                        <span className="text-right font-semibold">{Number(bill.total_amount).toFixed(4)}</span>
                       </div>
                     ))}
                   </div>
@@ -3915,7 +3969,7 @@ export function SalesBillWorkspace({
                       </div>
                     </div>
                     <span className="text-right font-semibold">{product.stock_ratio}</span>
-                    <span className="text-right font-semibold">{Number(product.selling_price || product.latest_rate_value || 0).toFixed(2)}</span>
+                    <span className="text-right font-semibold">{Number(product.selling_price || product.latest_rate_value || 0).toFixed(4)}</span>
                   </button>
                 ))
               ) : (
@@ -3931,9 +3985,9 @@ export function SalesBillWorkspace({
                 <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border bg-background p-4 text-sm">
                   <div>Stock</div><div className="text-right font-semibold">{productResults[productIndex].stock_ratio}</div>
                   <div>Units</div><div className="text-right font-semibold">{[productResults[productIndex].unit_1st_name, productResults[productIndex].unit_2nd_name, productResults[productIndex].unit_3rd_name].filter(Boolean).join(" / ")}</div>
-                  <div>MRP</div><div className="text-right font-semibold">{Number(productResults[productIndex].mrp).toFixed(2)}</div>
-                  <div>Price</div><div className="text-right font-semibold">{Number(productResults[productIndex].selling_price || productResults[productIndex].latest_rate_value || 0).toFixed(2)}</div>
-                  <div>Tax</div><div className="text-right font-semibold">{Number(productResults[productIndex].tax_percent).toFixed(2)}%</div>
+                  <div>MRP</div><div className="text-right font-semibold">{Number(productResults[productIndex].mrp).toFixed(4)}</div>
+                  <div>Price</div><div className="text-right font-semibold">{Number(productResults[productIndex].selling_price || productResults[productIndex].latest_rate_value || 0).toFixed(4)}</div>
+                  <div>Tax</div><div className="text-right font-semibold">{Number(productResults[productIndex].tax_percent).toFixed(4)}%</div>
                   <div>HSN</div><div className="text-right font-semibold">{productResults[productIndex].hsn_code || "-"}</div>
                 </div>
                 <div className="mt-4 rounded-lg border bg-background p-4">
@@ -3943,7 +3997,7 @@ export function SalesBillWorkspace({
                       <div key={`${bill.bill_number}-${bill.bill_date}`} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs">
                         <span>{bill.bill_number}</span>
                         <span>{formatDisplayDate(bill.bill_date)}</span>
-                        <span className="text-right font-semibold">{Number(bill.line_total_amount).toFixed(2)}</span>
+                        <span className="text-right font-semibold">{Number(bill.line_total_amount).toFixed(4)}</span>
                       </div>
                     ))}
                   </div>
@@ -4041,8 +4095,8 @@ export function SalesBillWorkspace({
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-1 md:col-span-2">
-              <Label htmlFor="customer-firm-name">Firm Name</Label>
-              <Input id="customer-firm-name" name="firm_name" ref={setCustomerCreateRef("firm_name")} value={customerCreateForm.firm_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, firm_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "firm_name")} />
+              <Label htmlFor="customer-outlet-name">Outlet Name *</Label>
+              <Input id="customer-outlet-name" name="outlet_name" ref={setCustomerCreateRef("outlet_name")} value={customerCreateForm.outlet_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, outlet_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "outlet_name")} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="customer-sales-type">Type</Label>
@@ -4061,20 +4115,28 @@ export function SalesBillWorkspace({
               <Input id="customer-owner-name" name="owner_name" ref={setCustomerCreateRef("owner_name")} value={customerCreateForm.owner_name} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, owner_name: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "owner_name")} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="customer-phone">Phone</Label>
-              <Input id="customer-phone" name="phone" ref={setCustomerCreateRef("phone")} value={customerCreateForm.phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "phone")} />
+              <Label htmlFor="customer-whatsapp">Whatsapp Number</Label>
+              <Input id="customer-whatsapp" name="whatsapp_number" ref={setCustomerCreateRef("whatsapp_number")} value={customerCreateForm.whatsapp_number} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, whatsapp_number: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "whatsapp_number")} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="customer-alt-phone">Alternate Phone</Label>
-              <Input id="customer-alt-phone" name="alternate_phone" ref={setCustomerCreateRef("alternate_phone")} value={customerCreateForm.alternate_phone} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, alternate_phone: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "alternate_phone")} />
+              <Label htmlFor="customer-alt-phone">Alternate Number</Label>
+              <Input id="customer-alt-phone" name="alternate_number" ref={setCustomerCreateRef("alternate_number")} value={customerCreateForm.alternate_number} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, alternate_number: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "alternate_number")} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="customer-email">Email</Label>
               <Input id="customer-email" name="email" ref={setCustomerCreateRef("email")} value={customerCreateForm.email} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, email: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "email")} />
             </div>
             <div className="space-y-1 md:col-span-2">
-              <Label htmlFor="customer-street">Street</Label>
-              <Input id="customer-street" name="street" ref={setCustomerCreateRef("street")} value={customerCreateForm.street} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street")} />
+              <Label htmlFor="customer-street-1">Street Address 1</Label>
+              <Input id="customer-street-1" name="street_address_1" ref={setCustomerCreateRef("street_address_1")} value={customerCreateForm.street_address_1} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street_address_1: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street_address_1")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-street-2">Street Address 2</Label>
+              <Input id="customer-street-2" name="street_address_2" ref={setCustomerCreateRef("street_address_2")} value={customerCreateForm.street_address_2} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street_address_2: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street_address_2")} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-street-3">Street Address 3</Label>
+              <Input id="customer-street-3" name="street_address_3" ref={setCustomerCreateRef("street_address_3")} value={customerCreateForm.street_address_3} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, street_address_3: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "street_address_3")} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="customer-city">City</Label>
@@ -4089,34 +4151,23 @@ export function SalesBillWorkspace({
               <Input id="customer-pincode" name="pincode" ref={setCustomerCreateRef("pincode")} value={customerCreateForm.pincode} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, pincode: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "pincode")} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="customer-bank-acc">Bank Account Number</Label>
-              <Input id="customer-bank-acc" name="bank_account_number" ref={setCustomerCreateRef("bank_account_number")} value={customerCreateForm.bank_account_number} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, bank_account_number: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "bank_account_number")} />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="customer-ifsc">IFSC Code</Label>
-              <Input id="customer-ifsc" name="ifsc_code" ref={setCustomerCreateRef("ifsc_code")} value={customerCreateForm.ifsc_code} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, ifsc_code: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "ifsc_code")} />
-            </div>
-            <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <Label htmlFor="customer-acc-cat">Account Category</Label>
                 <Button type="button" variant="outline" size="sm" onClick={() => setCustomerCategoryCreateOpen(true)}>+ Add Account Category</Button>
               </div>
               <select id="customer-acc-cat" name="account_category_id" ref={setCustomerCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.account_category_id} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{customerCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
             </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label>Brands</Label>
-              <div className="grid max-h-40 gap-2 overflow-y-auto rounded-md border p-3 md:grid-cols-2">
-                {brandOptions.map((brand) => (
-                  <label key={brand.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={customerCreateForm.brand_ids.includes(brand.id)} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, brand_ids: e.target.checked ? [...prev.brand_ids, brand.id] : prev.brand_ids.filter((id) => id !== brand.id) }))} />
-                    <span>{brand.name}</span>
-                  </label>
-                ))}
-              </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-category">Customer Category</Label>
+              <select id="customer-category" name="customer_category_id" ref={setCustomerCreateRef("customer_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.customer_category_id} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, customer_category_id: e.target.value }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "customer_category_id")}><option value="">Optional</option>{customerMasterCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="customer-price-class">Pricing Type</Label>
+              <select id="customer-price-class" name="price_class" ref={setCustomerCreateRef("price_class")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={customerCreateForm.price_class} onChange={(e) => setCustomerCreateForm((prev) => ({ ...prev, price_class: e.target.value as "A" | "B" | "C" }))} onKeyDown={(e) => handleCustomerCreateKeyDown(e, "price_class")}><option value="A">A class</option><option value="B">B class</option><option value="C">C class</option></select>
             </div>
           </div>
           <div className="flex justify-end">
-            <Button ref={customerCreateSaveRef} type="button" disabled={creatingCustomer || !customerCreateForm.firm_name.trim()} onKeyDown={(e) => {
+            <Button ref={customerCreateSaveRef} type="button" disabled={creatingCustomer || !customerCreateForm.outlet_name.trim()} onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
                 e.stopPropagation();
@@ -4126,22 +4177,26 @@ export function SalesBillWorkspace({
               setCreatingCustomer(true);
               try {
                 const created = asObject(await postBackend("/masters/customers", {
-                  firm_name: customerCreateForm.firm_name.trim(),
-                  sales_type: customerCreateForm.sales_type,
+                  name: customerCreateForm.outlet_name.trim(),
+                  outlet_name: customerCreateForm.outlet_name.trim(),
+                  tax_type: customerCreateForm.sales_type,
                   gstin: customerCreateForm.gstin.trim() || null,
-                  pan: customerCreateForm.pan.trim() || null,
+                  pan_number: customerCreateForm.pan.trim() || null,
                   owner_name: customerCreateForm.owner_name.trim() || null,
-                  phone: customerCreateForm.phone.trim() || null,
-                  alternate_phone: customerCreateForm.alternate_phone.trim() || null,
+                  whatsapp_number: customerCreateForm.whatsapp_number.trim() || null,
+                  alternate_number: customerCreateForm.alternate_number.trim() || null,
+                  phone: customerCreateForm.whatsapp_number.trim() || null,
                   email: customerCreateForm.email.trim() || null,
-                  street: customerCreateForm.street.trim() || null,
+                  street_address_1: customerCreateForm.street_address_1.trim() || null,
+                  street_address_2: customerCreateForm.street_address_2.trim() || null,
+                  street_address_3: customerCreateForm.street_address_3.trim() || null,
                   city: customerCreateForm.city.trim() || null,
                   state: customerCreateForm.state.trim() || null,
                   pincode: customerCreateForm.pincode.trim() || null,
-                  bank_account_number: customerCreateForm.bank_account_number.trim() || null,
-                  ifsc_code: customerCreateForm.ifsc_code.trim() || null,
                   account_category_id: customerCreateForm.account_category_id || null,
-                  brand_ids: customerCreateForm.brand_ids,
+                  customer_category_id: customerCreateForm.customer_category_id || null,
+                  price_class: customerCreateForm.price_class,
+                  customer_type: "B2B",
                 }));
                 const createdSummary = mapCustomerSummary(asObject(await fetchBackend(`/sales/sales-entry/customers/${String(created.id ?? "")}/summary`)));
                 setCustomerCreateOpen(false);
@@ -4354,9 +4409,9 @@ export function SalesBillWorkspace({
                   <TableRow key={row.entry_id}>
                     <TableCell>{formatDisplayDate(row.entry_date)}</TableCell>
                     <TableCell>{row.description}</TableCell>
-                    <TableCell className="text-right">{Number(row.admin_debit).toFixed(2)}</TableCell>
-                    <TableCell className="text-right">{Number(row.admin_credit).toFixed(2)}</TableCell>
-                    <TableCell className="text-right">{Number(row.running_balance).toFixed(2)} {row.balance_side}</TableCell>
+                    <TableCell className="text-right">{Number(row.admin_debit).toFixed(4)}</TableCell>
+                    <TableCell className="text-right">{Number(row.admin_credit).toFixed(4)}</TableCell>
+                    <TableCell className="text-right">{Number(row.running_balance).toFixed(4)} {row.balance_side}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

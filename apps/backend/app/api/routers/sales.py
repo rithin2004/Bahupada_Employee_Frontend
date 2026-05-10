@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import json
 
@@ -100,11 +100,19 @@ from app.services.stock import (
 from app.services.workflow import assert_voucher_transition
 
 router = APIRouter()
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _sales_entry_number(now: datetime | None = None) -> str:
-    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    ts = (now or datetime.now(IST)).astimezone(IST)
     return f"S{ts.strftime('%y%m%d%H%M%S')}"
+
+
+def _split_inclusive_tax(inclusive_amount: Decimal, gst_percent: Decimal) -> tuple[Decimal, Decimal]:
+    if gst_percent <= 0:
+        return inclusive_amount, Decimal("0")
+    base_amount = inclusive_amount / (Decimal("1") + (gst_percent / Decimal("100")))
+    return base_amount, inclusive_amount - base_amount
 
 
 def _normalize_unit_ratio(base_quantity: Decimal, conv_2_to_1: Decimal | None, conv_3_to_1: Decimal | None) -> tuple[str, dict[str, Decimal]]:
@@ -405,7 +413,7 @@ async def create_sales_order(
 
     invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
     if invoice_number is None:
-        invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+        invoice_number = f"SO-{datetime.now(IST).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 
     order = SalesOrder(
         warehouse_id=payload.warehouse_id,
@@ -430,6 +438,7 @@ async def create_sales_order(
                 quantity=item.quantity,
                 unit_price=unit_price,
                 selling_price=unit_price,
+                gst_percent=product.tax_percent,
             )
         )
 
@@ -504,7 +513,7 @@ async def update_sales_order(
 
     invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
     if invoice_number is None:
-        invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+        invoice_number = f"SO-{datetime.now(IST).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 
     raise_if_duplicate_line_products(payload.items)
 
@@ -795,7 +804,7 @@ async def sales_entry_bootstrap(db: AsyncSession = Depends(get_db)):
         await db.execute(select(Warehouse).where(Warehouse.is_active.is_(True)).order_by(Warehouse.name.asc()))
     ).scalars().all()
     return SalesEntryBootstrap(
-        today=datetime.now(timezone.utc).date(),
+        today=datetime.now(IST).date(),
         default_warehouse_id=warehouses[0].id if warehouses else None,
         next_entry_number=_sales_entry_number(),
         warehouses=[{"id": warehouse.id, "name": warehouse.name, "code": warehouse.code} for warehouse in warehouses],
@@ -1298,6 +1307,8 @@ async def create_final_invoice(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sales order not found")
 
     due_dt = payload.due_date if payload.due_date is not None else payload.invoice_date
+    if due_dt < payload.invoice_date:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Due date cannot be before invoice date")
     final_invoice = SalesFinalInvoice(
         sales_order_id=payload.sales_order_id,
         invoice_number=payload.invoice_number,
@@ -1401,9 +1412,8 @@ async def create_final_invoice_from_sales_order(
         gst_percent = Decimal(order_item.gst_percent or 0)
         line_subtotal = unit_price * deliver_qty
         line_discount = (line_subtotal * discount_percent / Decimal("100")) if discount_percent else Decimal("0")
-        taxable_amount = line_subtotal - line_discount
-        line_gst = (taxable_amount * gst_percent / Decimal("100")) if gst_percent else Decimal("0")
-        line_total = taxable_amount + line_gst
+        line_total = line_subtotal - line_discount
+        taxable_amount, line_gst = _split_inclusive_tax(line_total, gst_percent)
 
         subtotal += taxable_amount
         gst_amount += line_gst
@@ -1427,7 +1437,7 @@ async def create_final_invoice_from_sales_order(
 
     invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
     if invoice_number is None:
-        invoice_number = f"SFI-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+        invoice_number = f"SFI-{datetime.now(IST).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 
     due_dt = payload.due_date if payload.due_date is not None else payload.invoice_date
     final_invoice = SalesFinalInvoice(
@@ -1490,9 +1500,13 @@ async def create_direct_final_invoice(
 
     raise_if_duplicate_line_products(payload.items)
 
+    due_dt = payload.due_date if payload.due_date is not None else payload.invoice_date
+    if due_dt < payload.invoice_date:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Due date cannot be before invoice date")
+
     invoice_number = payload.invoice_number.strip() if payload.invoice_number and payload.invoice_number.strip() else None
     if invoice_number is None:
-        invoice_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+        invoice_number = f"SO-{datetime.now(IST).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 
     order = SalesOrder(
         warehouse_id=payload.warehouse_id,
@@ -1518,6 +1532,7 @@ async def create_direct_final_invoice(
                 quantity=item.quantity,
                 unit_price=unit_price,
                 selling_price=unit_price,
+                gst_percent=product.tax_percent,
             )
         )
 
@@ -1607,6 +1622,8 @@ async def edit_final_invoice(
         if payload.delivery_status.upper() == "DELIVERED":
             invoice.delivered_at = datetime.now(timezone.utc)
     if payload.due_date is not None:
+        if payload.due_date < invoice.invoice_date:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Due date cannot be before invoice date")
         invoice.due_date = payload.due_date
 
     invoice.version = next_version

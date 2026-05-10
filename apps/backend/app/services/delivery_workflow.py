@@ -1,6 +1,6 @@
 import uuid
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 import math
@@ -58,6 +58,9 @@ ACTIVE_DELIVERY_RUN_STATUSES = {
     "READY_TO_START",
     InvoiceWorkflowStatus.DELIVERY_STARTED.value,
 }
+
+IST = timezone(timedelta(hours=5, minutes=30))
+SPECIAL_MOMENT_NOTIFICATION_TYPE = "SPECIAL_MOMENT"
 
 
 def _utcnow() -> datetime:
@@ -139,6 +142,111 @@ async def _create_notification(
     session.add(notification)
     await session.flush()
     return notification
+
+
+def _ist_day_bounds_utc(target_day: date) -> tuple[datetime, datetime]:
+    start_ist = datetime.combine(target_day, time.min, tzinfo=IST)
+    end_ist = start_ist + timedelta(days=1)
+    return start_ist.astimezone(timezone.utc), end_ist.astimezone(timezone.utc)
+
+
+async def _ensure_special_moment_notifications(session: AsyncSession, *, user_id: uuid.UUID) -> None:
+    user = await session.get(User, user_id)
+    if user is None or not user.is_super_admin or not user.is_active:
+        return
+
+    today_ist = datetime.now(IST).date()
+    day_start_utc, day_end_utc = _ist_day_bounds_utc(today_ist)
+    existing_rows = (
+        await session.execute(
+            select(UserNotification).where(
+                UserNotification.user_id == user_id,
+                UserNotification.type == SPECIAL_MOMENT_NOTIFICATION_TYPE,
+                UserNotification.created_at >= day_start_utc,
+                UserNotification.created_at < day_end_utc,
+            )
+        )
+    ).scalars().all()
+    existing_keys = {(row.entity_type or "", str(row.entity_id or ""), row.title, row.message) for row in existing_rows}
+
+    employee_rows = (
+        await session.execute(
+            select(Employee.id, Employee.full_name, Employee.dob, Employee.anniversary, Employee.marital_status)
+            .where(Employee.is_active.is_(True))
+        )
+    ).all()
+    for employee_id, full_name, dob_value, anniversary_value, marital_status in employee_rows:
+        if dob_value and dob_value.month == today_ist.month and dob_value.day == today_ist.day:
+            title = "Birthday Reminder"
+            message = f"Today is {full_name}'s birthday."
+            key = ("employee", str(employee_id), title, message)
+            if key not in existing_keys:
+                await _create_notification(
+                    session,
+                    user_id=user_id,
+                    notification_type=SPECIAL_MOMENT_NOTIFICATION_TYPE,
+                    title=title,
+                    message=message,
+                    entity_type="employee",
+                    entity_id=employee_id,
+                )
+                existing_keys.add(key)
+        if marital_status == "MARRIED" and anniversary_value and anniversary_value.month == today_ist.month and anniversary_value.day == today_ist.day:
+            title = "Anniversary Reminder"
+            message = f"Today is {full_name}'s anniversary."
+            key = ("employee", str(employee_id), title, message)
+            if key not in existing_keys:
+                await _create_notification(
+                    session,
+                    user_id=user_id,
+                    notification_type=SPECIAL_MOMENT_NOTIFICATION_TYPE,
+                    title=title,
+                    message=message,
+                    entity_type="employee",
+                    entity_id=employee_id,
+                )
+                existing_keys.add(key)
+
+    customer_rows = (
+        await session.execute(
+            select(Customer.id, Customer.outlet_name, Customer.owner_name, Customer.owner_birthday, Customer.anniversary, Customer.marital_status)
+            .where(Customer.is_active.is_(True))
+        )
+    ).all()
+    for customer_id, outlet_name, owner_name, owner_birthday, anniversary_value, marital_status in customer_rows:
+        subject = owner_name or outlet_name or "Customer"
+        if owner_birthday and owner_birthday.month == today_ist.month and owner_birthday.day == today_ist.day:
+            title = "Birthday Reminder"
+            message = f"Today is {subject}'s birthday."
+            key = ("customer", str(customer_id), title, message)
+            if key not in existing_keys:
+                await _create_notification(
+                    session,
+                    user_id=user_id,
+                    notification_type=SPECIAL_MOMENT_NOTIFICATION_TYPE,
+                    title=title,
+                    message=message,
+                    entity_type="customer",
+                    entity_id=customer_id,
+                )
+                existing_keys.add(key)
+        if marital_status == "MARRIED" and anniversary_value and anniversary_value.month == today_ist.month and anniversary_value.day == today_ist.day:
+            title = "Anniversary Reminder"
+            message = f"Today is {subject}'s anniversary."
+            key = ("customer", str(customer_id), title, message)
+            if key not in existing_keys:
+                await _create_notification(
+                    session,
+                    user_id=user_id,
+                    notification_type=SPECIAL_MOMENT_NOTIFICATION_TYPE,
+                    title=title,
+                    message=message,
+                    entity_type="customer",
+                    entity_id=customer_id,
+                )
+                existing_keys.add(key)
+
+    await session.flush()
 
 
 async def _reverse_shortfall_returns(session: AsyncSession, batch_invoice_id: uuid.UUID) -> None:
@@ -913,6 +1021,7 @@ async def supervisor_batches(session: AsyncSession, *, employee_id: uuid.UUID) -
 
 
 async def list_notifications(session: AsyncSession, *, user_id: uuid.UUID, unread_only: bool = False, limit: int = 20) -> list[dict[str, object]]:
+    await _ensure_special_moment_notifications(session, user_id=user_id)
     stmt = select(UserNotification).where(UserNotification.user_id == user_id)
     if unread_only:
         stmt = stmt.where(UserNotification.is_read.is_(False))

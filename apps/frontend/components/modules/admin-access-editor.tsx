@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { asArray, asObject, fetchBackend, patchBackend, postBackend } from "@/lib/backend-api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -22,12 +23,12 @@ type AdminUserRow = {
   email: string;
   warehouse_id: string;
   warehouse_name: string;
-  username: string;
   role_id: string;
   role_name: string;
   permissions: RoleMatrix;
   is_active: boolean;
   is_super_admin: boolean;
+  password_is_set: boolean;
 };
 
 const ADMIN_MODULES: ModuleOption[] = [
@@ -56,8 +57,6 @@ const EMPTY_ADMIN_FORM = {
   phone: "",
   alternate_phone: "",
   email: "",
-  username: "",
-  password: "",
   warehouse_id: "",
   permissions: emptyMatrix(ADMIN_MODULES),
 };
@@ -91,12 +90,12 @@ export function AdminAccessEditor() {
           email: String(item.email ?? ""),
           warehouse_id: String(item.warehouse_id ?? ""),
           warehouse_name: String(item.warehouse_name ?? ""),
-          username: String(item.username ?? ""),
           role_id: String(item.role_id ?? ""),
           role_name: String(item.role_name ?? ""),
           permissions: asObject(item.permissions) as RoleMatrix,
           is_active: Boolean(item.is_active),
           is_super_admin: Boolean(item.is_super_admin),
+          password_is_set: Boolean(item.password_is_set ?? false),
         }))
       );
       setWarehouses(
@@ -153,8 +152,6 @@ export function AdminAccessEditor() {
       phone: admin.phone,
       alternate_phone: admin.alternate_phone,
       email: admin.email,
-      username: admin.username,
-      password: "",
       warehouse_id: admin.warehouse_id,
       permissions: { ...emptyMatrix(ADMIN_MODULES), ...admin.permissions },
     });
@@ -173,8 +170,6 @@ export function AdminAccessEditor() {
         phone: adminForm.phone.trim(),
         alternate_phone: adminForm.alternate_phone.trim() || null,
         email: adminForm.email.trim() || null,
-        username: adminForm.username.trim() || null,
-        password: adminForm.password.trim() || null,
         warehouse_id: adminForm.warehouse_id,
         permissions: adminForm.permissions,
       };
@@ -247,14 +242,6 @@ export function AdminAccessEditor() {
                       <Input value={adminForm.phone} onChange={(e) => setAdminForm((prev) => ({ ...prev, phone: e.target.value }))} />
                     </div>
                     <div className="space-y-1">
-                      <Label>Username</Label>
-                      <Input value={adminForm.username} onChange={(e) => setAdminForm((prev) => ({ ...prev, username: e.target.value }))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Password</Label>
-                      <Input type="password" value={adminForm.password} onChange={(e) => setAdminForm((prev) => ({ ...prev, password: e.target.value }))} />
-                    </div>
-                    <div className="space-y-1">
                       <Label>Email</Label>
                       <Input value={adminForm.email} onChange={(e) => setAdminForm((prev) => ({ ...prev, email: e.target.value }))} />
                     </div>
@@ -264,6 +251,12 @@ export function AdminAccessEditor() {
                         value={adminForm.alternate_phone}
                         onChange={(e) => setAdminForm((prev) => ({ ...prev, alternate_phone: e.target.value }))}
                       />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Password Status</Label>
+                      <div className="flex h-10 items-center">
+                        <Badge variant="secondary">{editingAdminId ? "Managed by reset flow" : "Not set"}</Badge>
+                      </div>
                     </div>
                     <div className="space-y-1">
                       <Label>Warehouse *</Label>
@@ -330,7 +323,7 @@ export function AdminAccessEditor() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Username</TableHead>
+                  <TableHead>Password</TableHead>
                   <TableHead>Warehouse</TableHead>
                   <TableHead>Modules</TableHead>
                   <TableHead>Action</TableHead>
@@ -340,7 +333,9 @@ export function AdminAccessEditor() {
                 {loading ? null : admins.map((admin) => (
                   <TableRow key={admin.employee_id}>
                     <TableCell>{admin.full_name}{admin.is_super_admin ? " (Super Admin)" : ""}</TableCell>
-                    <TableCell>{admin.username || "-"}</TableCell>
+                    <TableCell>
+                      <Badge variant={admin.password_is_set ? "default" : "secondary"}>{admin.password_is_set ? "Set" : "Not set"}</Badge>
+                    </TableCell>
                     <TableCell>{admin.warehouse_name || "-"}</TableCell>
                     <TableCell>{admin.is_super_admin ? "All" : Object.values(admin.permissions).filter((entry) => entry.read || entry.write).length}</TableCell>
                     <TableCell>

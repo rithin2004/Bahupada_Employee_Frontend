@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { asArray, asObject, deleteBackend, fetchBackend, fetchPortalMe, patchBackend, postBackend, postBackendForm } from "@/lib/backend-api";
 import { usePersistedPage } from "@/lib/state/pagination-hooks";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -27,10 +29,9 @@ type CustomerType = "B2B" | "B2C";
 type CustomerRow = {
   id: string;
   name: string;
-  username: string;
-  password: string;
   outlet_name: string;
   customer_type: CustomerType;
+  tax_type: string;
   customer_category_id: string;
   category_name: string;
   account_category_id: string;
@@ -38,18 +39,27 @@ type CustomerRow = {
   whatsapp_number: string;
   alternate_number: string;
   gst_number: string;
+  owner_name: string;
   pan_number: string;
   email: string;
   street_address_1: string;
   street_address_2: string;
+  street_address_3: string;
   city: string;
   state: string;
   pincode: string;
+  opening_balance: string;
   credit_limit: string;
   latitude: string;
   longitude: string;
+  owner_birthday: string;
+  gender: string;
+  marital_status: string;
+  anniversary: string;
+  price_class: "A" | "B" | "C";
   is_line_sale_outlet: boolean;
   is_active: boolean;
+  password_is_set: boolean;
 };
 
 type CustomerCategory = {
@@ -72,10 +82,9 @@ function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
   return {
     id: String(row.id ?? ""),
     name: String(row.name ?? ""),
-    username: String(row.username ?? ""),
-    password: "",
     outlet_name: String(row.outlet_name ?? ""),
     customer_type: (String(row.customer_type ?? "B2C") === "B2B" ? "B2B" : "B2C") as CustomerType,
+    tax_type: String(row.tax_type ?? ""),
     customer_category_id: String(row.customer_category_id ?? ""),
     category_name: String(row.category_name ?? category.name ?? "-"),
     account_category_id: String(row.account_category_id ?? ""),
@@ -83,18 +92,30 @@ function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
     whatsapp_number: String(row.whatsapp_number ?? row.phone ?? ""),
     alternate_number: String(row.alternate_number ?? ""),
     gst_number: String(row.gst_number ?? row.gstin ?? ""),
+    owner_name: String(row.owner_name ?? ""),
     pan_number: String(row.pan_number ?? ""),
     email: String(row.email ?? ""),
     street_address_1: String(row.street_address_1 ?? ""),
     street_address_2: String(row.street_address_2 ?? ""),
+    street_address_3: String(row.street_address_3 ?? ""),
     city: String(row.city ?? ""),
     state: String(row.state ?? ""),
     pincode: String(row.pincode ?? ""),
+    opening_balance: String(row.opening_balance ?? "0"),
     credit_limit: String(row.credit_limit ?? "0"),
     latitude: String(row.latitude ?? ""),
     longitude: String(row.longitude ?? ""),
+    owner_birthday: String(row.owner_birthday ?? ""),
+    gender: String(row.gender ?? ""),
+    marital_status: String(row.marital_status ?? ""),
+    anniversary: String(row.anniversary ?? ""),
+    price_class: (String(row.price_class ?? "C") === "B" ? "B" : String(row.price_class ?? "C") === "A" ? "A" : "C") as
+      | "A"
+      | "B"
+      | "C",
     is_line_sale_outlet: Boolean(row.is_line_sale_outlet ?? false),
     is_active: Boolean(row.is_active ?? true),
+    password_is_set: Boolean(row.password_is_set ?? false),
   };
 }
 
@@ -129,15 +150,10 @@ export function CustomersAdminEditor() {
   const [creatingCategoryInline, setCreatingCategoryInline] = useState(false);
   const [newCategoryCode, setNewCategoryCode] = useState("");
   const [newCategoryName, setNewCategoryName] = useState("");
-  const [newCategoryType, setNewCategoryType] = useState<CustomerType>("B2B");
   const [newCategoryPriceClass, setNewCategoryPriceClass] = useState<"A" | "B" | "C">("A");
-  const [openAccountCategoryDialog, setOpenAccountCategoryDialog] = useState(false);
-  const [creatingAccountCategoryInline, setCreatingAccountCategoryInline] = useState(false);
-  const [newAccountCategoryCode, setNewAccountCategoryCode] = useState("");
-  const [newAccountCategoryName, setNewAccountCategoryName] = useState("");
-  const [newAccountCategoryDescription, setNewAccountCategoryDescription] = useState("");
   const [gstPdfFile, setGstPdfFile] = useState<File | null>(null);
   const [panPdfFile, setPanPdfFile] = useState<File | null>(null);
+  const [fetchingGstin, setFetchingGstin] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -149,30 +165,46 @@ export function CustomersAdminEditor() {
   );
 
   const [form, setForm] = useState({
-    name: "",
-    username: "",
-    password: "",
     outlet_name: "",
+    customer_type: "B2B" as CustomerType,
+    tax_type: "",
     customer_category_id: "",
     account_category_id: "",
     whatsapp_number: "",
     alternate_number: "",
     gst_number: "",
+    owner_name: "",
     pan_number: "",
     credit_limit: "0",
+    opening_balance: "0",
     email: "",
     street_address_1: "",
     street_address_2: "",
+    street_address_3: "",
     city: "",
     state: "",
     pincode: "",
     latitude: "",
     longitude: "",
+    owner_birthday: "",
+    gender: "",
+    marital_status: "",
+    anniversary: "",
+    price_class: "A" as "A" | "B" | "C",
     is_line_sale_outlet: false,
   });
 
   const selected = useMemo(() => rows.find((row) => row.id === openId) ?? null, [rows, openId]);
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
+  const sundryDebtorsCategory = useMemo(
+    () =>
+      accountCategories.find(
+        (category) =>
+          category.name.trim().toUpperCase() === "SUNDRY DEBTORS" ||
+          ["SUNDRY_DEBTORS", "SUNDRY-DEBTORS"].includes(category.code.trim().toUpperCase())
+      ) ?? null,
+    [accountCategories]
+  );
 
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -234,56 +266,30 @@ export function CustomersAdminEditor() {
         await postBackend("/masters/customer-categories", {
           code: newCategoryCode.trim(),
           name: newCategoryName.trim(),
-          customer_type: newCategoryType,
+          customer_type: form.customer_type,
           price_class: newCategoryPriceClass,
           is_active: true,
         })
       );
       await loadCategories();
-      setForm((prev) => ({ ...prev, customer_category_id: String(created.id ?? "") }));
+      setForm((prev) => ({
+        ...prev,
+        customer_category_id: String(created.id ?? ""),
+        price_class: (String(created.price_class ?? newCategoryPriceClass) === "B"
+          ? "B"
+          : String(created.price_class ?? newCategoryPriceClass) === "C"
+            ? "C"
+            : "A") as "A" | "B" | "C",
+      }));
       setOpenCategoryDialog(false);
       setNewCategoryCode("");
       setNewCategoryName("");
-      setNewCategoryType("B2B");
       setNewCategoryPriceClass("A");
-      toast.success(`Customer category added: ${String(created.name ?? newCategoryName.trim())}`, { duration: 4000 });
+      toast.success(`Customer sub category added: ${String(created.name ?? newCategoryName.trim())}`, { duration: 4000 });
     } catch (error) {
       toast.error(`Category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
     } finally {
       setCreatingCategoryInline(false);
-    }
-  }
-
-  async function createInlineAccountCategory() {
-    if (!canWriteCustomers) {
-      return;
-    }
-    if (!newAccountCategoryCode.trim() || !newAccountCategoryName.trim()) {
-      toast.error("Account category code and name are required.", { duration: 4000 });
-      return;
-    }
-    setCreatingAccountCategoryInline(true);
-    try {
-      const created = asObject(
-        await postBackend("/masters/account-categories", {
-          code: newAccountCategoryCode.trim(),
-          name: newAccountCategoryName.trim(),
-          party_type: "CUSTOMER",
-          description: newAccountCategoryDescription.trim() || null,
-          is_active: true,
-        })
-      );
-      await loadAccountCategories();
-      setForm((prev) => ({ ...prev, account_category_id: String(created.id ?? "") }));
-      setOpenAccountCategoryDialog(false);
-      setNewAccountCategoryCode("");
-      setNewAccountCategoryName("");
-      setNewAccountCategoryDescription("");
-      toast.success(`Account category added: ${String(created.name ?? newAccountCategoryName.trim())}`, { duration: 4000 });
-    } catch (error) {
-      toast.error(`Account category create failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
-    } finally {
-      setCreatingAccountCategoryInline(false);
     }
   }
 
@@ -350,7 +356,14 @@ export function CustomersAdminEditor() {
     }
     void loadCategories();
     void loadAccountCategories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permissionsLoaded, canReadCustomers]);
+
+  useEffect(() => {
+    if (sundryDebtorsCategory && !form.account_category_id) {
+      setForm((prev) => ({ ...prev, account_category_id: sundryDebtorsCategory.id }));
+    }
+  }, [sundryDebtorsCategory, form.account_category_id]);
 
   useEffect(() => {
     if (!permissionsLoaded || !canReadCustomers) {
@@ -362,11 +375,13 @@ export function CustomersAdminEditor() {
   }, [currentPage, pageSize, permissionsLoaded, canReadCustomers]);
 
   const categoryOptions = useMemo(() => {
-    return categories.map((item) => ({
-      value: item.id,
-      label: `${item.name} (${item.customer_type} / ${item.price_class})`,
-    }));
-  }, [categories]);
+    return categories
+      .filter((item) => item.customer_type === form.customer_type)
+      .map((item) => ({
+        value: item.id,
+        label: `${item.name} (${item.customer_type} / ${item.price_class})`,
+      }));
+  }, [categories, form.customer_type]);
 
   function toggleSelectAll(checked: boolean) {
     setSelectedIds(checked ? rows.map((row) => row.id) : []);
@@ -383,6 +398,43 @@ export function CustomersAdminEditor() {
     setRows((prev) => prev.map((row) => (row.id === selected.id ? { ...row, [field]: value } : row)));
   }
 
+  async function fetchGstinDetails(target: "create" | "edit") {
+    const gstin = target === "create" ? form.gst_number.trim() : selected?.gst_number.trim() ?? "";
+    if (!gstin) {
+      toast.error("Enter GSTIN before lookup.", { duration: 4000 });
+      return;
+    }
+    setFetchingGstin(true);
+    try {
+      const details = asObject(await fetchBackend(`/masters/customers/gstin-lookup?gstin=${encodeURIComponent(gstin)}`));
+      const patch = {
+        gst_number: String(details.gst_number ?? gstin),
+        tax_type: String(details.tax_type ?? ""),
+        outlet_name: String(details.firm_name ?? ""),
+        owner_name: String(details.owner_name ?? ""),
+        pan_number: String(details.pan ?? ""),
+        street_address_1: String(details.street_address_1 ?? details.street ?? ""),
+        street_address_2: String(details.street_address_2 ?? ""),
+        street_address_3: String(details.street_address_3 ?? ""),
+        city: String(details.city ?? ""),
+        state: String(details.state ?? ""),
+        pincode: String(details.pincode ?? ""),
+      };
+      if (target === "create") {
+        setForm((prev) => ({ ...prev, ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value)) }));
+      } else if (selected) {
+        setRows((prev) =>
+          prev.map((row) => (row.id === selected.id ? { ...row, ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value)) } : row))
+        );
+      }
+      toast.success("GSTIN details fetched.", { duration: 4000 });
+    } catch (error) {
+      toast.error(`GSTIN lookup failed: ${error instanceof Error ? error.message : "Unknown error"}`, { duration: 5000 });
+    } finally {
+      setFetchingGstin(false);
+    }
+  }
+
   async function saveSelected() {
     if (!canWriteCustomers) {
       return;
@@ -394,30 +446,37 @@ export function CustomersAdminEditor() {
     setFeedback("");
     try {
       await patchBackend(`/masters/customers/${selected.id}`, {
-        name: selected.name.trim(),
-        username: selected.username.trim() || null,
-        password: selected.password.trim() || null,
         outlet_name: selected.outlet_name.trim() || null,
+        customer_type: selected.customer_type,
+        tax_type: selected.tax_type || null,
         customer_category_id: selected.customer_category_id || null,
-        account_category_id: selected.account_category_id || null,
+        account_category_id: selected.account_category_id || sundryDebtorsCategory?.id || null,
         whatsapp_number: selected.whatsapp_number.trim() || null,
         alternate_number: selected.alternate_number.trim() || null,
         gst_number: selected.gst_number.trim() || null,
+        owner_name: selected.owner_name.trim() || null,
         pan_number: selected.pan_number.trim() || null,
         email: selected.email.trim() || null,
         street_address_1: selected.street_address_1.trim() || null,
         street_address_2: selected.street_address_2.trim() || null,
+        street_address_3: selected.street_address_3.trim() || null,
         city: selected.city.trim() || null,
         state: selected.state.trim() || null,
         pincode: selected.pincode.trim() || null,
+        opening_balance: Number(selected.opening_balance || "0"),
         credit_limit: Number(selected.credit_limit || "0"),
         latitude: selected.latitude.trim() ? Number(selected.latitude) : null,
         longitude: selected.longitude.trim() ? Number(selected.longitude) : null,
+        owner_birthday: selected.owner_birthday || null,
+        gender: selected.gender || null,
+        marital_status: selected.marital_status || null,
+        anniversary: selected.marital_status === "MARRIED" ? selected.anniversary || null : null,
+        price_class: selected.price_class || null,
         is_line_sale_outlet: selected.is_line_sale_outlet,
         is_active: selected.is_active,
       });
-      toast.success(`Customer updated: ${selected.name}`, { duration: 5000 });
-      setFeedback(`Customer updated: ${selected.name}`);
+      toast.success(`Customer updated: ${selected.outlet_name}`, { duration: 5000 });
+      setFeedback(`Customer updated: ${selected.outlet_name}`);
       setOpenId(null);
       await loadCustomers(currentPage, pageSize);
     } catch (error) {
@@ -456,8 +515,8 @@ export function CustomersAdminEditor() {
     if (!canWriteCustomers) {
       return;
     }
-    if (!form.name.trim()) {
-      toast.error("Customer name is required.", { duration: 4000 });
+    if (!form.outlet_name.trim() || !form.gst_number.trim() || !form.email.trim()) {
+      toast.error("Outlet Name, GSTIN, and Email are required.", { duration: 4000 });
       return;
     }
 
@@ -486,27 +545,34 @@ export function CustomersAdminEditor() {
       }
 
       await postBackend("/masters/customers", {
-        name: form.name.trim(),
-        username: form.username.trim() || null,
-        password: form.password.trim() || null,
         outlet_name: form.outlet_name.trim() || null,
+        customer_type: form.customer_type,
+        tax_type: form.tax_type || null,
         customer_category_id: form.customer_category_id || null,
-        account_category_id: form.account_category_id || null,
+        account_category_id: form.account_category_id || sundryDebtorsCategory?.id || null,
         whatsapp_number: form.whatsapp_number.trim() || null,
         alternate_number: form.alternate_number.trim() || null,
         gst_number: form.gst_number.trim() || null,
         gst_doc: gstDocPath || null,
+        owner_name: form.owner_name.trim() || null,
         pan_number: form.pan_number.trim() || null,
         pan_doc: panDocPath || null,
         email: form.email.trim() || null,
         street_address_1: form.street_address_1.trim() || null,
         street_address_2: form.street_address_2.trim() || null,
+        street_address_3: form.street_address_3.trim() || null,
         city: form.city.trim() || null,
         state: form.state.trim() || null,
         pincode: form.pincode.trim() || null,
+        opening_balance: Number(form.opening_balance || "0"),
         credit_limit: Number(form.credit_limit || "0"),
         latitude: form.latitude.trim() ? Number(form.latitude) : null,
         longitude: form.longitude.trim() ? Number(form.longitude) : null,
+        owner_birthday: form.owner_birthday || null,
+        gender: form.gender || null,
+        marital_status: form.marital_status || null,
+        anniversary: form.marital_status === "MARRIED" ? form.anniversary || null : null,
+        price_class: form.price_class,
         is_line_sale_outlet: form.is_line_sale_outlet,
       });
 
@@ -514,25 +580,32 @@ export function CustomersAdminEditor() {
       setFeedback("Customer created.");
       setOpenAddDialog(false);
       setForm({
-        name: "",
-        username: "",
-        password: "",
         outlet_name: "",
+        customer_type: "B2B",
+        tax_type: "",
         customer_category_id: "",
-        account_category_id: "",
+        account_category_id: sundryDebtorsCategory?.id ?? "",
         whatsapp_number: "",
         alternate_number: "",
         gst_number: "",
+        owner_name: "",
         pan_number: "",
         credit_limit: "0",
+        opening_balance: "0",
         email: "",
         street_address_1: "",
         street_address_2: "",
+        street_address_3: "",
         city: "",
         state: "",
         pincode: "",
         latitude: "",
         longitude: "",
+        owner_birthday: "",
+        gender: "",
+        marital_status: "",
+        anniversary: "",
+        price_class: "A",
         is_line_sale_outlet: false,
       });
       setGstPdfFile(null);
@@ -573,44 +646,65 @@ export function CustomersAdminEditor() {
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1">
-                    <Label>Name *</Label>
-                    <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Username</Label>
-                    <Input
-                      value={form.username}
-                      onChange={(e) => setForm((prev) => ({ ...prev, username: e.target.value }))}
-                      placeholder="Auto-generated if empty"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Password</Label>
-                    <Input
-                      type="password"
-                      value={form.password}
-                      onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
-                      placeholder="Defaults to ChangeMe@123"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Outlet Name</Label>
+                    <Label>Outlet Name *</Label>
                     <Input
                       value={form.outlet_name}
                       onChange={(e) => setForm((prev) => ({ ...prev, outlet_name: e.target.value }))}
                     />
                   </div>
                   <div className="space-y-1">
+                    <Label>GSTIN *</Label>
+                    <div className="flex gap-2">
+                      <Input value={form.gst_number} onChange={(e) => setForm((prev) => ({ ...prev, gst_number: e.target.value }))} />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => void fetchGstinDetails("create")}
+                        disabled={fetchingGstin || !form.gst_number.trim()}
+                        title="Fetch GSTIN details"
+                      >
+                        <Search className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Type</Label>
+                    <Input value={form.tax_type || "Auto from GSTIN"} readOnly className="bg-muted" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Owner Name</Label>
+                    <Input value={form.owner_name} onChange={(e) => setForm((prev) => ({ ...prev, owner_name: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Customer Category *</Label>
+                    <select
+                      className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                      value={form.customer_type}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          customer_type: (e.target.value === "B2C" ? "B2C" : "B2B") as CustomerType,
+                          customer_category_id: "",
+                          price_class: e.target.value === "B2C" ? "C" : prev.price_class === "C" ? "A" : prev.price_class,
+                        }))
+                      }
+                    >
+                      <option value="B2B">B2B</option>
+                      <option value="B2C">B2C</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
-                      <Label>Customer Category</Label>
+                      <Label>Customer Sub Category</Label>
                       <Dialog open={openCategoryDialog} onOpenChange={(open) => setOpenCategoryDialog(canWriteCustomers ? open : false)}>
                         <DialogTrigger asChild>
-                          <Button size="sm" type="button" variant="outline" disabled={!canWriteCustomers}>+ Add Category</Button>
+                          <Button size="sm" type="button" variant="outline" disabled={!canWriteCustomers}>+ Add Sub Category</Button>
                         </DialogTrigger>
                         <DialogContent className="w-[92vw] max-w-[520px]">
                           <DialogHeader>
-                            <DialogTitle>Add Customer Category</DialogTitle>
-                            <DialogDescription>Create a category without leaving customer creation.</DialogDescription>
+                            <DialogTitle>Add Customer Sub Category</DialogTitle>
+                            <DialogDescription>Create a sub category without leaving customer creation.</DialogDescription>
                           </DialogHeader>
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1">
@@ -622,15 +716,8 @@ export function CustomersAdminEditor() {
                               <Input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
                             </div>
                             <div className="space-y-1">
-                              <Label>Customer Type *</Label>
-                              <select
-                                className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
-                                value={newCategoryType}
-                                onChange={(e) => setNewCategoryType((e.target.value === "B2B" ? "B2B" : "B2C") as CustomerType)}
-                              >
-                                <option value="B2B">B2B</option>
-                                <option value="B2C">B2C</option>
-                              </select>
+                              <Label>Customer Category</Label>
+                              <Input value={form.customer_type} readOnly className="bg-muted" />
                             </div>
                             <div className="space-y-1">
                               <Label>Price Class *</Label>
@@ -658,7 +745,7 @@ export function CustomersAdminEditor() {
                               onClick={createInlineCategory}
                               disabled={creatingCategoryInline || !newCategoryCode.trim() || !newCategoryName.trim()}
                             >
-                              {creatingCategoryInline ? "Adding..." : "Add Category"}
+                              {creatingCategoryInline ? "Adding..." : "Add Sub Category"}
                             </Button>
                           </DialogFooter>
                         </DialogContent>
@@ -667,7 +754,15 @@ export function CustomersAdminEditor() {
                     <select
                       className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
                       value={form.customer_category_id}
-                      onChange={(e) => setForm((prev) => ({ ...prev, customer_category_id: e.target.value }))}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        const nextCategory = categories.find((item) => item.id === nextId);
+                        setForm((prev) => ({
+                          ...prev,
+                          customer_category_id: nextId,
+                          price_class: nextCategory?.price_class ?? prev.price_class,
+                        }));
+                      }}
                     >
                       <option value="">Select category</option>
                       {categoryOptions.map((option) => (
@@ -678,55 +773,12 @@ export function CustomersAdminEditor() {
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <Label>Account Category</Label>
-                      <Dialog open={openAccountCategoryDialog} onOpenChange={(open) => setOpenAccountCategoryDialog(canWriteCustomers ? open : false)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" type="button" variant="outline" disabled={!canWriteCustomers}>+ Add Account Category</Button>
-                        </DialogTrigger>
-                        <DialogContent className="w-[92vw] max-w-[520px]">
-                          <DialogHeader>
-                            <DialogTitle>Add Customer Account Category</DialogTitle>
-                            <DialogDescription>Create an account category without leaving customer creation.</DialogDescription>
-                          </DialogHeader>
-                          <div className="grid gap-3">
-                            <div className="space-y-1">
-                              <Label>Code *</Label>
-                              <Input value={newAccountCategoryCode} onChange={(e) => setNewAccountCategoryCode(e.target.value)} />
-                            </div>
-                            <div className="space-y-1">
-                              <Label>Name *</Label>
-                              <Input value={newAccountCategoryName} onChange={(e) => setNewAccountCategoryName(e.target.value)} />
-                            </div>
-                            <div className="space-y-1">
-                              <Label>Description</Label>
-                              <Input
-                                value={newAccountCategoryDescription}
-                                onChange={(e) => setNewAccountCategoryDescription(e.target.value)}
-                              />
-                            </div>
-                          </div>
-                          <DialogFooter>
-                            <Button type="button" variant="outline" onClick={() => setOpenAccountCategoryDialog(false)}>
-                              Cancel
-                            </Button>
-                            <Button
-                              type="button"
-                              onClick={createInlineAccountCategory}
-                              disabled={
-                                creatingAccountCategoryInline || !newAccountCategoryCode.trim() || !newAccountCategoryName.trim()
-                              }
-                            >
-                              {creatingAccountCategoryInline ? "Adding..." : "Add Account Category"}
-                            </Button>
-                          </DialogFooter>
-                        </DialogContent>
-                      </Dialog>
-                    </div>
+                    <Label>Account Category</Label>
                     <select
-                      className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                      className="border-input h-9 w-full rounded-md border bg-muted px-3 text-sm"
                       value={form.account_category_id}
                       onChange={(e) => setForm((prev) => ({ ...prev, account_category_id: e.target.value }))}
+                      disabled
                     >
                       <option value="">Select account category</option>
                       {accountCategories.map((category) => (
@@ -749,10 +801,6 @@ export function CustomersAdminEditor() {
                       value={form.alternate_number}
                       onChange={(e) => setForm((prev) => ({ ...prev, alternate_number: e.target.value }))}
                     />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>GST Number</Label>
-                    <Input value={form.gst_number} onChange={(e) => setForm((prev) => ({ ...prev, gst_number: e.target.value }))} />
                   </div>
                   <div className="space-y-1">
                     <Label>GST PDF (Optional)</Label>
@@ -803,8 +851,14 @@ export function CustomersAdminEditor() {
                     {panPdfFile ? <p className="text-xs text-muted-foreground">{panPdfFile.name}</p> : null}
                   </div>
                   <div className="space-y-1">
-                    <Label>Email</Label>
+                    <Label>Email *</Label>
                     <Input value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Password Status</Label>
+                    <div className="flex h-9 items-center">
+                      <Badge variant="secondary">Not set</Badge>
+                    </div>
                   </div>
                   <div className="space-y-1 md:col-span-2">
                     <Label>Street Address 1</Label>
@@ -820,6 +874,13 @@ export function CustomersAdminEditor() {
                       onChange={(e) => setForm((prev) => ({ ...prev, street_address_2: e.target.value }))}
                     />
                   </div>
+                  <div className="space-y-1 md:col-span-2">
+                    <Label>Street Address 3</Label>
+                    <Input
+                      value={form.street_address_3}
+                      onChange={(e) => setForm((prev) => ({ ...prev, street_address_3: e.target.value }))}
+                    />
+                  </div>
                   <div className="space-y-1">
                     <Label>City</Label>
                     <Input value={form.city} onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))} />
@@ -833,21 +894,11 @@ export function CustomersAdminEditor() {
                     <Input value={form.pincode} onChange={(e) => setForm((prev) => ({ ...prev, pincode: e.target.value }))} />
                   </div>
                   <div className="space-y-1">
-                    <Label>Latitude</Label>
+                    <Label>Opening Balance</Label>
                     <Input
                       type="number"
-                      step="0.0000001"
-                      value={form.latitude}
-                      onChange={(e) => setForm((prev) => ({ ...prev, latitude: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Longitude</Label>
-                    <Input
-                      type="number"
-                      step="0.0000001"
-                      value={form.longitude}
-                      onChange={(e) => setForm((prev) => ({ ...prev, longitude: e.target.value }))}
+                      value={form.opening_balance}
+                      onChange={(e) => setForm((prev) => ({ ...prev, opening_balance: e.target.value }))}
                     />
                   </div>
                   <div className="space-y-1">
@@ -857,6 +908,39 @@ export function CustomersAdminEditor() {
                       value={form.credit_limit}
                       onChange={(e) => setForm((prev) => ({ ...prev, credit_limit: e.target.value }))}
                     />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Owner Birthday</Label>
+                    <Input type="date" value={form.owner_birthday} onChange={(e) => setForm((prev) => ({ ...prev, owner_birthday: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Gender</Label>
+                    <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={form.gender} onChange={(e) => setForm((prev) => ({ ...prev, gender: e.target.value }))}>
+                      <option value="">Select gender</option>
+                      <option value="MALE">Male</option>
+                      <option value="FEMALE">Female</option>
+                      <option value="OTHER">Other</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Married or Unmarried</Label>
+                    <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={form.marital_status} onChange={(e) => setForm((prev) => ({ ...prev, marital_status: e.target.value, anniversary: e.target.value === "MARRIED" ? prev.anniversary : "" }))}>
+                      <option value="">Select status</option>
+                      <option value="MARRIED">Married</option>
+                      <option value="UNMARRIED">Unmarried</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Anniversary</Label>
+                    <Input type="date" value={form.anniversary} disabled={form.marital_status !== "MARRIED"} onChange={(e) => setForm((prev) => ({ ...prev, anniversary: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Pricing Type</Label>
+                    <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={form.price_class} onChange={(e) => setForm((prev) => ({ ...prev, price_class: (e.target.value === "B" ? "B" : e.target.value === "C" ? "C" : "A") as "A" | "B" | "C" }))}>
+                      <option value="A">A Class</option>
+                      <option value="B">B Class</option>
+                      <option value="C">C Class</option>
+                    </select>
                   </div>
                   <label className="flex items-center gap-2 pt-7">
                     <input
@@ -869,7 +953,7 @@ export function CustomersAdminEditor() {
                 </div>
 
                 <DialogFooter>
-                  <Button onClick={createCustomer} disabled={!canWriteCustomers || creating || !form.name.trim()}>
+                  <Button onClick={createCustomer} disabled={!canWriteCustomers || creating || !form.outlet_name.trim() || !form.gst_number.trim() || !form.email.trim()}>
                     {creating ? "Creating..." : "Create Customer"}
                   </Button>
                 </DialogFooter>
@@ -892,7 +976,7 @@ export function CustomersAdminEditor() {
         ) : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <Input
-            placeholder="Search name, outlet, whatsapp, category"
+            placeholder="Search outlet, GSTIN, whatsapp, sub category"
             value={searchInput}
             onChange={(e) => {
               const value = e.target.value;
@@ -930,12 +1014,14 @@ export function CustomersAdminEditor() {
                 <TableHead className="w-10">
                   <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
                 </TableHead>
-                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Name</TableHead>
+                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Owner</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Outlet</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Type</TableHead>
-                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Category</TableHead>
+                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Customer Category</TableHead>
+                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Sub Category</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Account Category</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">WhatsApp</TableHead>
+                <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Password</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Credit Limit</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Active</TableHead>
                 <TableHead className="uppercase tracking-wide text-slate-600 dark:text-slate-300">Action</TableHead>
@@ -949,6 +1035,7 @@ export function CustomersAdminEditor() {
                       <TableCell><Skeleton className="h-5 w-40 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-40 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-20 dark:h-5" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-24 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-48 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-28 dark:h-5" /></TableCell>
                       <TableCell><Skeleton className="h-5 w-32 dark:h-5" /></TableCell>
@@ -961,7 +1048,7 @@ export function CustomersAdminEditor() {
 
               {!loading && filteredRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center text-muted-foreground">
+                  <TableCell colSpan={12} className="text-center text-muted-foreground">
                     No customers found.
                   </TableCell>
                 </TableRow>
@@ -977,12 +1064,16 @@ export function CustomersAdminEditor() {
                           onChange={(e) => toggleSelectOne(row.id, e.target.checked)}
                         />
                       </TableCell>
-                      <TableCell>{row.name || "-"}</TableCell>
+                      <TableCell>{row.owner_name || "-"}</TableCell>
                       <TableCell>{row.outlet_name || "-"}</TableCell>
+                      <TableCell>{row.tax_type || "-"}</TableCell>
                       <TableCell>{row.customer_type}</TableCell>
                       <TableCell>{row.category_name || "-"}</TableCell>
                       <TableCell>{row.account_category_name || "-"}</TableCell>
                       <TableCell>{row.whatsapp_number || "-"}</TableCell>
+                      <TableCell>
+                        <Badge variant={row.password_is_set ? "default" : "secondary"}>{row.password_is_set ? "Set" : "Not set"}</Badge>
+                      </TableCell>
                       <TableCell>{row.credit_limit}</TableCell>
                       <TableCell>{row.is_active ? "Yes" : "No"}</TableCell>
                       <TableCell>
@@ -1000,43 +1091,89 @@ export function CustomersAdminEditor() {
                             {selected && selected.id === row.id ? (
                               <div className="grid gap-3 md:grid-cols-2">
                                 <div className="space-y-1">
-                                  <Label>Name *</Label>
-                                  <Input value={selected.name} onChange={(e) => updateSelected("name", e.target.value)} />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label>Username</Label>
-                                  <Input
-                                    value={selected.username}
-                                    onChange={(e) => updateSelected("username", e.target.value)}
-                                    placeholder="Auto-generated if empty"
-                                  />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label>New Password</Label>
-                                  <Input
-                                    type="password"
-                                    value={selected.password}
-                                    onChange={(e) => updateSelected("password", e.target.value)}
-                                    placeholder="Leave blank to keep current password"
-                                  />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label>Outlet Name</Label>
+                                  <Label>Outlet Name *</Label>
                                   <Input value={selected.outlet_name} onChange={(e) => updateSelected("outlet_name", e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
-                                  <Label>Customer Category</Label>
+                                  <Label>GSTIN *</Label>
+                                  <div className="flex gap-2">
+                                    <Input value={selected.gst_number} onChange={(e) => updateSelected("gst_number", e.target.value)} />
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={() => void fetchGstinDetails("edit")}
+                                      disabled={fetchingGstin || !selected.gst_number.trim()}
+                                      title="Fetch GSTIN details"
+                                    >
+                                      <Search className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Type</Label>
+                                  <Input value={selected.tax_type || "Auto from GSTIN"} readOnly className="bg-muted" />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Owner Name</Label>
+                                  <Input value={selected.owner_name} onChange={(e) => updateSelected("owner_name", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Customer Category *</Label>
+                                  <select
+                                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                    value={selected.customer_type}
+                                    onChange={(e) => {
+                                      const nextType = (e.target.value === "B2C" ? "B2C" : "B2B") as CustomerType;
+                                      setRows((prev) =>
+                                        prev.map((customer) =>
+                                          customer.id === selected.id
+                                            ? {
+                                                ...customer,
+                                                customer_type: nextType,
+                                                customer_category_id: "",
+                                                category_name: "",
+                                                price_class: nextType === "B2C" ? "C" : customer.price_class === "C" ? "A" : customer.price_class,
+                                              }
+                                            : customer
+                                        )
+                                      );
+                                    }}
+                                  >
+                                    <option value="B2B">B2B</option>
+                                    <option value="B2C">B2C</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Customer Sub Category</Label>
                                   <select
                                     className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
                                     value={selected.customer_category_id}
-                                    onChange={(e) => updateSelected("customer_category_id", e.target.value)}
+                                    onChange={(e) => {
+                                      const nextId = e.target.value;
+                                      const nextCategory = categories.find((item) => item.id === nextId);
+                                      setRows((prev) =>
+                                        prev.map((customer) =>
+                                          customer.id === selected.id
+                                            ? {
+                                                ...customer,
+                                                customer_category_id: nextId,
+                                                category_name: nextCategory?.name ?? "",
+                                                price_class: (nextCategory?.price_class ?? customer.price_class) as "A" | "B" | "C",
+                                              }
+                                            : customer
+                                        )
+                                      );
+                                    }}
                                   >
                                     <option value="">Select category</option>
-                                    {categoryOptions.map((option) => (
-                                      <option key={option.value} value={option.value}>
-                                        {option.label}
-                                      </option>
-                                    ))}
+                                    {categories
+                                      .filter((item) => item.customer_type === selected.customer_type)
+                                      .map((item) => (
+                                        <option key={item.id} value={item.id}>
+                                          {item.name} ({item.customer_type} / {item.price_class})
+                                        </option>
+                                      ))}
                                   </select>
                                 </div>
                                 <div className="space-y-1">
@@ -1046,7 +1183,7 @@ export function CustomersAdminEditor() {
                                 <div className="space-y-1">
                                   <Label>Account Category</Label>
                                   <select
-                                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                                    className="border-input h-9 w-full rounded-md border bg-muted px-3 text-sm"
                                     value={selected.account_category_id}
                                     onChange={(e) => {
                                       const nextId = e.target.value;
@@ -1063,6 +1200,7 @@ export function CustomersAdminEditor() {
                                         )
                                       );
                                     }}
+                                    disabled
                                   >
                                     <option value="">Select account category</option>
                                     {accountCategories.map((category) => (
@@ -1077,16 +1215,20 @@ export function CustomersAdminEditor() {
                                   <Input value={selected.alternate_number} onChange={(e) => updateSelected("alternate_number", e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
-                                  <Label>GST Number</Label>
-                                  <Input value={selected.gst_number} onChange={(e) => updateSelected("gst_number", e.target.value)} />
-                                </div>
-                                <div className="space-y-1">
                                   <Label>PAN Number</Label>
                                   <Input value={selected.pan_number} onChange={(e) => updateSelected("pan_number", e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
-                                  <Label>Email</Label>
+                                  <Label>Email *</Label>
                                   <Input value={selected.email} onChange={(e) => updateSelected("email", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Password Status</Label>
+                                  <div className="flex h-9 items-center">
+                                    <Badge variant={selected.password_is_set ? "default" : "secondary"}>
+                                      {selected.password_is_set ? "Set" : "Not set"}
+                                    </Badge>
+                                  </div>
                                 </div>
                                 <div className="space-y-1 md:col-span-2">
                                   <Label>Street Address 1</Label>
@@ -1102,6 +1244,13 @@ export function CustomersAdminEditor() {
                                     onChange={(e) => updateSelected("street_address_2", e.target.value)}
                                   />
                                 </div>
+                                <div className="space-y-1 md:col-span-2">
+                                  <Label>Street Address 3</Label>
+                                  <Input
+                                    value={selected.street_address_3}
+                                    onChange={(e) => updateSelected("street_address_3", e.target.value)}
+                                  />
+                                </div>
                                 <div className="space-y-1">
                                   <Label>City</Label>
                                   <Input value={selected.city} onChange={(e) => updateSelected("city", e.target.value)} />
@@ -1113,6 +1262,10 @@ export function CustomersAdminEditor() {
                                 <div className="space-y-1">
                                   <Label>Pincode</Label>
                                   <Input value={selected.pincode} onChange={(e) => updateSelected("pincode", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Opening Balance</Label>
+                                  <Input value={selected.opening_balance} onChange={(e) => updateSelected("opening_balance", e.target.value)} />
                                 </div>
                                 <div className="space-y-1">
                                   <Label>Latitude</Label>
@@ -1136,6 +1289,42 @@ export function CustomersAdminEditor() {
                                   <Label>Credit Limit</Label>
                                   <Input value={selected.credit_limit} onChange={(e) => updateSelected("credit_limit", e.target.value)} />
                                 </div>
+                                <div className="space-y-1">
+                                  <Label>Owner Birthday</Label>
+                                  <Input type="date" value={selected.owner_birthday} onChange={(e) => updateSelected("owner_birthday", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Gender</Label>
+                                  <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={selected.gender} onChange={(e) => updateSelected("gender", e.target.value)}>
+                                    <option value="">Select gender</option>
+                                    <option value="MALE">Male</option>
+                                    <option value="FEMALE">Female</option>
+                                    <option value="OTHER">Other</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Married or Unmarried</Label>
+                                  <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={selected.marital_status} onChange={(e) => {
+                                    const value = e.target.value;
+                                    setRows((prev) => prev.map((customer) => customer.id === selected.id ? { ...customer, marital_status: value, anniversary: value === "MARRIED" ? customer.anniversary : "" } : customer));
+                                  }}>
+                                    <option value="">Select status</option>
+                                    <option value="MARRIED">Married</option>
+                                    <option value="UNMARRIED">Unmarried</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Anniversary</Label>
+                                  <Input type="date" value={selected.anniversary} disabled={selected.marital_status !== "MARRIED"} onChange={(e) => updateSelected("anniversary", e.target.value)} />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label>Pricing Type</Label>
+                                  <select className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm" value={selected.price_class} onChange={(e) => updateSelected("price_class", e.target.value)}>
+                                    <option value="A">A Class</option>
+                                    <option value="B">B Class</option>
+                                    <option value="C">C Class</option>
+                                  </select>
+                                </div>
                                 <label className="flex items-center gap-2 pt-7">
                                   <input
                                     type="checkbox"
@@ -1150,7 +1339,10 @@ export function CustomersAdminEditor() {
                               <Button variant="outline" onClick={() => setOpenId(null)}>
                                 Cancel
                               </Button>
-                              <Button onClick={saveSelected} disabled={!canWriteCustomers || savingId === row.id || !selected?.name.trim()}>
+                              <Button
+                                onClick={saveSelected}
+                                disabled={!canWriteCustomers || savingId === row.id || !selected?.outlet_name.trim() || !selected?.gst_number.trim() || !selected?.email.trim()}
+                              >
                                 {savingId === row.id ? "Saving..." : "Save"}
                               </Button>
                             </DialogFooter>
