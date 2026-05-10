@@ -261,10 +261,11 @@ export function MastersCreatePanel() {
     try {
       const payload = cleanPayload({
         name: customerForm.name,
-        outlet_name: customerForm.outlet_name,
+        outlet_name: customerForm.outlet_name || customerForm.name,
         customer_class: customerForm.customer_class,
         route_id: customerForm.route_id,
         route_name: customerForm.route_name,
+        gst_number: customerForm.gstin || "",
         gstin: customerForm.gstin,
         owner_name: customerForm.owner_name,
         phone: customerForm.phone,

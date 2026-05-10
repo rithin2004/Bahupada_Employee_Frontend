@@ -4180,6 +4180,7 @@ export function SalesBillWorkspace({
                   name: customerCreateForm.outlet_name.trim(),
                   outlet_name: customerCreateForm.outlet_name.trim(),
                   tax_type: customerCreateForm.sales_type,
+                  gst_number: customerCreateForm.gstin.trim() || "",
                   gstin: customerCreateForm.gstin.trim() || null,
                   pan_number: customerCreateForm.pan.trim() || null,
                   owner_name: customerCreateForm.owner_name.trim() || null,

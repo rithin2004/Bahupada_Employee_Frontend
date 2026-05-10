@@ -1051,7 +1051,7 @@ async def search_sales_entry_customers(
         stmt = stmt.where(
             or_(
                 Customer.name.ilike(term),
-                Customer.firm_name.ilike(term),
+                Customer.outlet_name.ilike(term),
                 Customer.city.ilike(term),
                 Customer.gst_number.ilike(term),
             )

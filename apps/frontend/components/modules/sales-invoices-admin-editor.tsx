@@ -469,6 +469,9 @@ export function SalesInvoicesAdminEditor({ initialSalesOrderId, onConsumedInitia
     try {
       const payload = {
         name: newCustomerForm.name.trim(),
+        outlet_name: newCustomerForm.name.trim(),
+        gst_number: newCustomerForm.gstin.trim() || "",
+        email: newCustomerForm.gstin.trim() ? `${newCustomerForm.gstin.trim().toLowerCase()}@placeholder.com` : "",
         phone: newCustomerForm.phone.trim() || null,
         gstin: newCustomerForm.gstin.trim() || null,
         street_address_1: newCustomerForm.street_address_1.trim() || null,
