@@ -34,7 +34,9 @@ export default function AdminPurchasePage() {
 
   useEffect(() => {
     if (!hasAdminAccessToken()) {
-      setPermissionsLoaded(true);
+      queueMicrotask(() => {
+        setPermissionsLoaded(true);
+      });
       return;
     }
     let active = true;

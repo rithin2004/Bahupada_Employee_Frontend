@@ -750,7 +750,7 @@ function buildSchemeThresholdQtyPatch(
 }
 
 function applyQuantityPatchToLineDraft(line: LineDraft, patch: Partial<LineDraft>): LineDraft {
-  let next = { ...line, ...patch };
+  const next = { ...line, ...patch };
   if (next.product) {
     const baseQty = lineBaseQuantity(next);
     const subtotal = baseQty * lineUnitPrice(next);
@@ -1616,15 +1616,19 @@ export function SalesBillWorkspace({
     async function fetchGeneralOpenChallans() {
       try {
         const raw = await fetchBackend("/sales/sales-orders?open_only=true");
-        // Check if raw is the Paginated response or direct list
-        const items = Array.isArray(raw) ? raw : (raw as any).items || [];
-        setGeneralOpenChallans(asArray(items).map((order: any) => ({
-          challan_id: String(order.id),
-          reference_no: String(order.invoice_number),
-          challan_date: order.created_at ? String(order.created_at).split("T")[0] : null,
-          item_count: Number(order.item_count || 0),
-          customer_name: String(order.customer_name || ""),
-        })));
+        const items = Array.isArray(raw) ? asArray(raw) : asArray(asObject(raw).items);
+        setGeneralOpenChallans(
+          items.map((orderRow) => {
+            const order = asObject(orderRow);
+            return {
+              challan_id: String(order.id ?? ""),
+              reference_no: String(order.invoice_number ?? ""),
+              challan_date: order.created_at ? String(order.created_at).split("T")[0] : null,
+              item_count: Number(order.item_count ?? 0),
+              customer_name: String(order.customer_name ?? ""),
+            };
+          }),
+        );
       } catch (err) {
         console.error("Failed to fetch general open sales orders", err);
       }
@@ -1769,7 +1773,7 @@ export function SalesBillWorkspace({
   const updateLine = useCallback((index: number, patch: Partial<LineDraft>) => {
     setLines((prev) => prev.map((line, idx) => {
       if (idx !== index) return line;
-      let next = { ...line, ...patch };
+      const next = { ...line, ...patch };
       
       // Bi-directional discount calculation
       if (next.product) {

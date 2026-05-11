@@ -1499,13 +1499,19 @@ export function PurchaseEntryWorkspace({
     async function fetchGeneralOpenChallans() {
       try {
         const raw = await fetchBackend("/procurement/purchase-challans?open_only=true");
-        setGeneralOpenChallans(asArray(raw).map((challan: any) => ({
-          challan_id: String(challan.id),
-          reference_no: String(challan.reference_no),
-          challan_date: challan.challan_date ? String(challan.challan_date) : null,
-          item_count: Array.isArray(challan.items) ? challan.items.length : 0,
-          vendor_name: String(challan.vendor_name || ""),
-        })));
+        const rows = Array.isArray(raw) ? asArray(raw) : asArray(asObject(raw).items);
+        setGeneralOpenChallans(
+          rows.map((challanRow) => {
+            const challan = asObject(challanRow);
+            return {
+              challan_id: String(challan.id ?? ""),
+              reference_no: String(challan.reference_no ?? ""),
+              challan_date: challan.challan_date ? String(challan.challan_date) : null,
+              item_count: Array.isArray(challan.items) ? challan.items.length : 0,
+              vendor_name: String(challan.vendor_name ?? ""),
+            };
+          }),
+        );
       } catch (err) {
         console.error("Failed to fetch general open challans", err);
       }
@@ -1737,7 +1743,7 @@ export function PurchaseEntryWorkspace({
     setLines((prev) =>
       prev.map((line, idx) => {
         if (idx !== index) return line;
-        let next = { ...line, ...patch };
+        const next = { ...line, ...patch };
 
         if ("discountMode" in patch) {
           if (patch.discountMode === "FREE") {
