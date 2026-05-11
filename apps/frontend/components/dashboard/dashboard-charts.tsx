@@ -54,7 +54,7 @@ function LineChartCard({ points }: { points: DashboardTrendPoint[] }) {
   const maxValue = Math.max(...sales, ...purchases, 1);
 
   return (
-    <Card className="xl:col-span-2">
+    <Card className="w-full min-w-0 xl:col-span-2">
       <CardHeader>
         <CardTitle>Sales and Purchase Trend</CardTitle>
         <CardDescription>Last 7 days of live activity.</CardDescription>
@@ -137,7 +137,7 @@ function BarChartCard({
   );
 
   return (
-    <Card>
+    <Card className="w-full min-w-0">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
@@ -153,7 +153,7 @@ function BarChartCard({
           return (
             <div key={label} className="space-y-2">
               <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="font-medium">{label}</span>
+                <span className="min-w-0 truncate font-medium">{label}</span>
                 <span className="text-muted-foreground">{detail}</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -180,7 +180,7 @@ export function DashboardCharts({
   warehouseStock: DashboardWarehouseStockPoint[];
 }) {
   return (
-    <section className="grid gap-4 xl:grid-cols-3">
+    <section className="grid w-full min-w-0 gap-4 xl:grid-cols-3">
       <LineChartCard points={salesTrend} />
       <BarChartCard
         title="Packing Workflow"
@@ -195,4 +195,3 @@ export function DashboardCharts({
     </section>
   );
 }
-

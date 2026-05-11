@@ -144,17 +144,17 @@ function formatTimestamp(value: string): string {
 
 function DashboardSkeleton() {
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="space-y-2">
+    <div className="w-full min-w-0 space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 space-y-2">
           <Skeleton className="h-8 w-40" />
-          <Skeleton className="h-4 w-72" />
+          <Skeleton className="h-4 w-full max-w-72" />
         </div>
         <Skeleton className="h-9 w-28" />
       </div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid w-full min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {Array.from({ length: 8 }, (_, index) => (
-          <Card key={index}>
+          <Card key={index} className="w-full min-w-0">
             <CardHeader className="space-y-2">
               <Skeleton className="h-4 w-24" />
               <Skeleton className="h-8 w-28" />
@@ -165,12 +165,12 @@ function DashboardSkeleton() {
           </Card>
         ))}
       </div>
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid w-full min-w-0 gap-4 xl:grid-cols-3">
         {Array.from({ length: 3 }, (_, index) => (
-          <Card key={index} className="min-h-[320px]">
+          <Card key={index} className="min-h-[320px] w-full min-w-0">
             <CardHeader>
               <Skeleton className="h-5 w-48" />
-              <Skeleton className="h-4 w-64" />
+              <Skeleton className="h-4 w-full max-w-64" />
             </CardHeader>
             <CardContent>
               <Skeleton className="h-56 w-full" />
@@ -178,20 +178,20 @@ function DashboardSkeleton() {
           </Card>
         ))}
       </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="min-h-[360px]">
+      <div className="grid w-full min-w-0 gap-4 xl:grid-cols-2">
+        <Card className="min-h-[360px] w-full min-w-0">
           <CardHeader>
             <Skeleton className="h-5 w-40" />
-            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-4 w-full max-w-64" />
           </CardHeader>
           <CardContent>
             <Skeleton className="h-72 w-full" />
           </CardContent>
         </Card>
-        <Card className="min-h-[360px]">
+        <Card className="min-h-[360px] w-full min-w-0">
           <CardHeader>
             <Skeleton className="h-5 w-40" />
-            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-4 w-full max-w-64" />
           </CardHeader>
           <CardContent>
             <Skeleton className="h-72 w-full" />
@@ -235,7 +235,7 @@ export function DashboardHome({ role }: DashboardHomeProps) {
   const dashboard = data;
 
   return (
-    <div className="space-y-6">
+    <div className="w-full min-w-0 space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
@@ -251,7 +251,7 @@ export function DashboardHome({ role }: DashboardHomeProps) {
       </div>
 
       {error ? (
-        <Card className="border-destructive/40">
+        <Card className="w-full min-w-0 border-destructive/40">
           <CardHeader>
             <CardTitle className="text-base">Dashboard data unavailable</CardTitle>
           </CardHeader>
@@ -272,7 +272,7 @@ export function DashboardHome({ role }: DashboardHomeProps) {
             packingStatus={dashboard.packing_status_breakdown}
             warehouseStock={dashboard.warehouse_stock}
           />
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid w-full min-w-0 gap-4 xl:grid-cols-2">
             <DispatchTable items={dashboard.dispatch_queue} />
             <LowStockTable items={dashboard.stock_alerts} />
           </div>

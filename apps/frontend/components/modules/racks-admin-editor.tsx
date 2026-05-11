@@ -238,11 +238,11 @@ export function RacksAdminEditor() {
   }
 
   return (
-    <Card>
+    <Card className="w-full min-w-0">
       <CardHeader>
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>Racks</CardTitle>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Button variant="destructive" onClick={deleteSelected} disabled={loading || selectedIds.length === 0}>
               Delete Selected
             </Button>
@@ -332,7 +332,7 @@ export function RacksAdminEditor() {
       <CardContent className="space-y-4">
         {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
 
-        <div className="overflow-x-auto rounded-lg border">
+        <div className="w-full overflow-x-auto rounded-lg border">
           <Table className="min-w-[760px]">
             <TableHeader>
               <TableRow>

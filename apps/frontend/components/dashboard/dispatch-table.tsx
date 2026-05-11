@@ -26,45 +26,47 @@ function formatCurrency(value: string | number | undefined | null): string {
 
 export function DispatchTable({ items }: DispatchTableProps) {
   return (
-    <Card>
+    <Card className="w-full min-w-0">
       <CardHeader>
         <CardTitle>Pending Dispatch Queue</CardTitle>
         <CardDescription>Orders waiting to enter packing.</CardDescription>
       </CardHeader>
       <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Invoice</TableHead>
-              <TableHead>Customer</TableHead>
-              <TableHead>Route</TableHead>
-              <TableHead>Warehouse</TableHead>
-              <TableHead>Amount</TableHead>
-              <TableHead>Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {items.map((row) => (
-              <TableRow key={row.invoice_number ?? row.sales_order_id}>
-                <TableCell className="font-medium">{row.invoice_number ?? row.sales_order_id.slice(0, 10)}</TableCell>
-                <TableCell>{row.customer_name}</TableCell>
-                <TableCell>{row.route_name ?? "-"}</TableCell>
-                <TableCell>{row.warehouse_name ?? "-"}</TableCell>
-                <TableCell>{formatCurrency(row.amount)}</TableCell>
-                <TableCell>
-                  <Badge variant={statusVariant(row.status)}>{row.status}</Badge>
-                </TableCell>
-              </TableRow>
-            ))}
-            {items.length === 0 ? (
+        <div className="overflow-x-auto">
+          <Table className="min-w-[760px]">
+            <TableHeader>
               <TableRow>
-                <TableCell className="text-muted-foreground" colSpan={6}>
-                  No pending orders right now.
-                </TableCell>
+                <TableHead>Invoice</TableHead>
+                <TableHead>Customer</TableHead>
+                <TableHead>Route</TableHead>
+                <TableHead>Warehouse</TableHead>
+                <TableHead>Amount</TableHead>
+                <TableHead>Status</TableHead>
               </TableRow>
-            ) : null}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {items.map((row) => (
+                <TableRow key={row.invoice_number ?? row.sales_order_id}>
+                  <TableCell className="font-medium">{row.invoice_number ?? row.sales_order_id.slice(0, 10)}</TableCell>
+                  <TableCell>{row.customer_name}</TableCell>
+                  <TableCell>{row.route_name ?? "-"}</TableCell>
+                  <TableCell>{row.warehouse_name ?? "-"}</TableCell>
+                  <TableCell>{formatCurrency(row.amount)}</TableCell>
+                  <TableCell>
+                    <Badge variant={statusVariant(row.status)}>{row.status}</Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {items.length === 0 ? (
+                <TableRow>
+                  <TableCell className="text-muted-foreground" colSpan={6}>
+                    No pending orders right now.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
       </CardContent>
     </Card>
   );

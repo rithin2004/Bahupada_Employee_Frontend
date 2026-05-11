@@ -1548,17 +1548,17 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
   }
 
   return (
-    <>
-    <Tabs value={hideTabs ? initialTab : activeTab} onValueChange={(v) => setActiveTab(v as "challan" | "bill")} className="w-full">
+    <div className="w-full min-w-0">
+    <Tabs value={hideTabs ? initialTab : activeTab} onValueChange={(v) => setActiveTab(v as "challan" | "bill")} className="w-full min-w-0">
       {!hideTabs ? (
-        <TabsList>
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="challan">Purchase Challan</TabsTrigger>
           <TabsTrigger value="bill">Purchase Bill</TabsTrigger>
         </TabsList>
       ) : null}
 
-      <TabsContent value="challan" className={hideTabs ? "mt-0" : undefined}>
-        <Card>
+      <TabsContent value="challan" className={hideTabs ? "mt-0 min-w-0" : "min-w-0"}>
+        <Card className="w-full min-w-0">
           <CardHeader>
             <CardTitle>Purchase Challan Entry</CardTitle>
             <CardDescription>Available challans are listed first. Click create new to open entry form.</CardDescription>
@@ -1575,22 +1575,22 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
               </p>
             ) : null}
             {feedback ? <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{feedback}</p> : null}
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <p className="text-sm text-muted-foreground">Available Challans</p>
-              <div className="flex w-full gap-2 md:w-auto">
+              <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
                 <Input
                   placeholder="Search challan, vendor, warehouse"
                   value={challanSearch}
                   onChange={(e) => setChallanSearch(e.target.value)}
-                  className="md:w-80"
+                  className="w-full lg:w-80"
                 />
                 {canWritePurchase ? (
-                  <Button onClick={() => { setWorkspaceMode("challan"); setEditingId(""); setShowWorkspace(true); }}>Create New</Button>
+                  <Button className="w-full sm:w-auto" onClick={() => { setWorkspaceMode("challan"); setEditingId(""); setShowWorkspace(true); }}>Create New</Button>
                 ) : null}
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-md border">
+            <div className="w-full overflow-x-auto rounded-md border">
               <table className="min-w-[760px] w-full text-sm">
                 <thead className="bg-muted/60">
                   <tr>
@@ -1744,8 +1744,8 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         </Card>
       </TabsContent>
 
-      <TabsContent value="bill">
-        <Card>
+      <TabsContent value="bill" className="min-w-0">
+        <Card className="w-full min-w-0">
           <CardHeader>
             <CardTitle>Purchase Bill</CardTitle>
             <CardDescription>Available bills are listed first. Click create new to open bill form.</CardDescription>
@@ -1762,14 +1762,14 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
               </p>
             ) : null}
             {feedback ? <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{feedback}</p> : null}
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <p className="text-sm text-muted-foreground">Available Bills</p>
-              <div className="flex w-full gap-2 md:w-auto">
+              <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
                 <Input
                   placeholder="Search bill no, vendor, warehouse, challan ref, status"
                   value={billSearch}
                   onChange={(e) => setBillSearch(e.target.value)}
-                  className="md:w-80"
+                  className="w-full lg:w-80"
                 />
                 <Dialog
                   open={showNewBill}
@@ -1784,13 +1784,13 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   }}
                 >
                   {canWritePurchase && !hideBillCreateButton ? (
-                    <Button onClick={() => { setWorkspaceMode("bill"); setEditingId(""); setShowWorkspace(true); }}>Create New</Button>
+                    <Button className="w-full sm:w-auto" onClick={() => { setWorkspaceMode("bill"); setEditingId(""); setShowWorkspace(true); }}>Create New</Button>
                   ) : null}
                 </Dialog>
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-md border">
+            <div className="w-full overflow-x-auto rounded-md border">
               <table className="min-w-[820px] w-full text-sm">
                 <thead className="bg-muted/60">
                   <tr>
@@ -2060,6 +2060,6 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
         highlightPurchaseBillId={billRefWizardCtx.purchaseBillId}
       />
     ) : null}
-    </>
+    </div>
   );
 }

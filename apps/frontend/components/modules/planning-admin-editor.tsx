@@ -579,7 +579,7 @@ export function PlanningAdminEditor() {
   }, []);
 
   return (
-    <div className="space-y-6">
+    <div className="w-full min-w-0 space-y-6">
       {permissionsLoaded && !canReadPlanning ? (
         <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
           You have no planning module access.
@@ -590,16 +590,16 @@ export function PlanningAdminEditor() {
           Read-only access. Plan creation, deletion, assignment changes, and quick vehicle creation are disabled.
         </p>
       ) : null}
-      <Card>
+      <Card className="w-full min-w-0">
         <CardHeader className="space-y-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-1">
               <CardTitle>Planner Workspace</CardTitle>
               <p className="text-sm text-muted-foreground">
                 Create weekly or monthly schedules for salesmen and delivery employees using the existing duty tables.
               </p>
             </div>
-            <div className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm text-muted-foreground">
+            <div className="flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm text-muted-foreground">
               <CalendarDays className="size-4" />
               {state.mode === "weekly" ? "Weekly schedule mode" : "Monthly schedule mode"}
             </div>
@@ -608,14 +608,14 @@ export function PlanningAdminEditor() {
           <Tabs
             value={state.activeTab}
             onValueChange={(value) => setState({ ...state, activeTab: value as PlannerTab })}
-            className="space-y-4"
+            className="w-full min-w-0 space-y-4"
           >
-            <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsList className="grid w-full max-w-md grid-cols-2 overflow-x-auto">
               <TabsTrigger value="salesman">Salesman Planner</TabsTrigger>
               <TabsTrigger value="delivery">Delivery Planner</TabsTrigger>
             </TabsList>
 
-            <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid w-full min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
                 <Label>Schedule Type</Label>
                 <select
@@ -667,11 +667,11 @@ export function PlanningAdminEditor() {
                   ))}
                 </select>
               </div>
-              <div className="flex items-end gap-2">
-                <Button onClick={() => void createPlan()} disabled={!canWritePlanning || planCreating || plansLoading}>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end md:col-span-2 xl:col-span-1">
+                <Button className="w-full sm:w-auto" onClick={() => void createPlan()} disabled={!canWritePlanning || planCreating || plansLoading}>
                   {planCreating ? "Creating..." : "Create Plan"}
                 </Button>
-                <Button variant="outline" onClick={() => void deletePlan()} disabled={!canWritePlanning || !selectedPlanId || planDeleting}>
+                <Button className="w-full sm:w-auto" variant="outline" onClick={() => void deletePlan()} disabled={!canWritePlanning || !selectedPlanId || planDeleting}>
                   {planDeleting ? "Deleting..." : "Delete Plan"}
                 </Button>
               </div>
@@ -679,11 +679,11 @@ export function PlanningAdminEditor() {
 
             {feedback ? <p className="text-sm text-destructive">{feedback}</p> : null}
 
-            <TabsContent value="salesman" className="space-y-4">
+            <TabsContent value="salesman" className="min-w-0 space-y-4">
               {(salesmanMissingEmployees || salesmanMissingRoutes) && (
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid w-full min-w-0 gap-4 md:grid-cols-2">
                   {salesmanMissingEmployees ? (
-                    <Card className="border-dashed">
+                    <Card className="w-full min-w-0 border-dashed">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-base">Missing Salesmen</CardTitle>
                       </CardHeader>
@@ -698,7 +698,7 @@ export function PlanningAdminEditor() {
                     </Card>
                   ) : null}
                   {salesmanMissingRoutes ? (
-                    <Card className="border-dashed">
+                    <Card className="w-full min-w-0 border-dashed">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-base">Missing Routes</CardTitle>
                       </CardHeader>
@@ -719,7 +719,7 @@ export function PlanningAdminEditor() {
                   ) : null}
                 </div>
               )}
-              <Card>
+              <Card className="w-full min-w-0">
                 <CardHeader className="pb-3">
                   <CardTitle>Salesman Schedule</CardTitle>
                 </CardHeader>
@@ -751,7 +751,7 @@ export function PlanningAdminEditor() {
                       No delivery vehicles found. Add vehicles first.
                     </div>
                   ) : (
-                    <div className="overflow-hidden rounded-xl border">
+                    <div className="w-full overflow-hidden rounded-xl border">
                       <div className="overflow-x-auto">
                         <Table>
                           <TableHeader>
@@ -802,11 +802,11 @@ export function PlanningAdminEditor() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="delivery" className="space-y-4">
+            <TabsContent value="delivery" className="min-w-0 space-y-4">
               {(deliveryMissingEmployees || deliveryMissingVehicles) && (
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid w-full min-w-0 gap-4 md:grid-cols-2">
                   {deliveryMissingEmployees ? (
-                    <Card className="border-dashed">
+                    <Card className="w-full min-w-0 border-dashed">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-base">Missing Delivery Employees</CardTitle>
                       </CardHeader>
@@ -821,7 +821,7 @@ export function PlanningAdminEditor() {
                     </Card>
                   ) : null}
                   {deliveryMissingVehicles ? (
-                    <Card className="border-dashed">
+                    <Card className="w-full min-w-0 border-dashed">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-base">Missing Vehicles</CardTitle>
                       </CardHeader>
@@ -892,7 +892,7 @@ export function PlanningAdminEditor() {
                   ) : null}
                 </div>
               )}
-              <Card>
+              <Card className="w-full min-w-0">
                 <CardHeader className="pb-3">
                   <CardTitle>Delivery Schedule</CardTitle>
                 </CardHeader>
@@ -908,7 +908,7 @@ export function PlanningAdminEditor() {
                       Create or select a delivery plan to start scheduling.
                     </div>
                   ) : (
-                    <div className="overflow-hidden rounded-xl border">
+                    <div className="w-full overflow-hidden rounded-xl border">
                       <div className="overflow-x-auto">
                         <Table>
                           <TableHeader>
@@ -976,26 +976,26 @@ export function PlanningAdminEditor() {
         </CardHeader>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
+      <div className="grid w-full min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Card className="w-full min-w-0">
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground">Visible Days</p>
             <p className="mt-2 text-2xl font-semibold">{visibleDates.length}</p>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="w-full min-w-0">
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground">Salesmen</p>
             <p className="mt-2 text-2xl font-semibold">{salesmanOptions.length}</p>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="w-full min-w-0">
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground">Delivery Employees</p>
             <p className="mt-2 text-2xl font-semibold">{deliveryEmployeeOptions.length}</p>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="w-full min-w-0">
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground">Vehicles</p>
             <p className="mt-2 text-2xl font-semibold">{vehicles.length}</p>

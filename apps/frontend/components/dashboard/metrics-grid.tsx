@@ -160,9 +160,9 @@ export function MetricsGrid({ data, showFinance }: MetricsGridProps) {
   const metricCards = getMetricCards(data, showFinance);
 
   return (
-    <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <section className="grid w-full min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
       {metricCards.map((card) => (
-        <Card key={card.key} className={cn(card.tone === "danger" && "border-destructive/40")}>
+        <Card key={card.key} className={cn("w-full min-w-0", card.tone === "danger" && "border-destructive/40")}>
           <CardHeader>
             <CardDescription>{card.title}</CardDescription>
             <CardTitle className="text-2xl">{card.value}</CardTitle>

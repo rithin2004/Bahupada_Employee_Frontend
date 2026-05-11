@@ -186,16 +186,16 @@ export function SalesCreateFlow() {
   }
 
   return (
-    <div className="space-y-4 p-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Sales Management</h1>
-        <div className="flex gap-2">
+    <div className="w-full min-w-0 space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">Sales Management</h1>
+        <div className="flex flex-wrap gap-2">
           {canWriteSales && (
             <>
-              <Button onClick={() => { setWorkspaceMode("challan"); setEditingId(""); setShowWorkspace(true); }}>
+              <Button className="flex-1 sm:flex-none" onClick={() => { setWorkspaceMode("challan"); setEditingId(""); setShowWorkspace(true); }}>
                 + New Challan
               </Button>
-              <Button onClick={() => { setWorkspaceMode("bill"); setEditingId(""); setShowWorkspace(true); }}>
+              <Button className="flex-1 sm:flex-none" onClick={() => { setWorkspaceMode("bill"); setEditingId(""); setShowWorkspace(true); }}>
                 + New Bill
               </Button>
             </>
@@ -203,23 +203,23 @@ export function SalesCreateFlow() {
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "challan" | "bill")}>
-        <TabsList>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "challan" | "bill")} className="w-full min-w-0">
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="bill">Sales Bills</TabsTrigger>
           <TabsTrigger value="challan">Sales Challans</TabsTrigger>
         </TabsList>
 
         <TabsContent value="challan" className="space-y-4 pt-4">
-          <Card>
+          <Card className="w-full min-w-0">
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
                   <CardTitle>Sales Challans</CardTitle>
                   <CardDescription>Manage and track your sales orders/challans.</CardDescription>
                 </div>
                 <Input 
                   placeholder="Search challans..." 
-                  className="max-w-xs" 
+                  className="w-full lg:max-w-sm"
                   value={challanSearch}
                   onChange={e => setChallanSearch(e.target.value)}
                 />
@@ -227,7 +227,7 @@ export function SalesCreateFlow() {
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto rounded-md border">
-                <table className="w-full text-sm">
+                <table className="min-w-[760px] w-full text-sm">
                   <thead className="bg-muted/60">
                     <tr>
                       <th className="px-3 py-2 text-left">Reference</th>
@@ -286,16 +286,16 @@ export function SalesCreateFlow() {
         </TabsContent>
 
         <TabsContent value="bill" className="space-y-4 pt-4">
-          <Card>
+          <Card className="w-full min-w-0">
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
                   <CardTitle>Sales Bills</CardTitle>
                   <CardDescription>View and manage final sales invoices.</CardDescription>
                 </div>
                 <Input 
                   placeholder="Search bills..." 
-                  className="max-w-xs" 
+                  className="w-full lg:max-w-sm"
                   value={billSearch}
                   onChange={e => setBillSearch(e.target.value)}
                 />
@@ -303,7 +303,7 @@ export function SalesCreateFlow() {
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto rounded-md border">
-                <table className="w-full text-sm">
+                <table className="min-w-[760px] w-full text-sm">
                   <thead className="bg-muted/60">
                     <tr>
                       <th className="px-3 py-2 text-left">Bill No</th>

@@ -259,7 +259,7 @@ export function AreasAdminEditor() {
   }
 
   return (
-    <Card>
+    <Card className="w-full min-w-0">
       <CardHeader>
         <CardTitle>Areas (Editable)</CardTitle>
       </CardHeader>
@@ -274,7 +274,7 @@ export function AreasAdminEditor() {
             Read-only access. Create, edit, and delete actions are hidden.
           </p>
         ) : null}
-        <div className="flex flex-col gap-3 md:flex-row md:items-center">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <Input
             placeholder="Search area, city, state, pincode"
             value={searchInput}
@@ -365,7 +365,7 @@ export function AreasAdminEditor() {
 
         {feedback ? <p className="rounded-md border/30 px-3 py-2 text-sm">{feedback}</p> : null}
 
-        <div className="overflow-x-auto rounded-lg border">
+        <div className="w-full overflow-x-auto rounded-lg border">
           <Table className="min-w-[1100px]">
             <TableHeader>
               <TableRow className="bg-slate-200/70 dark:bg-slate-800/60">

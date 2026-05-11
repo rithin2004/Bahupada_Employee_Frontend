@@ -29,25 +29,25 @@ export function AdminListRouteSkeleton({
   return (
     <AppShell role={role} activeKey={activeKey} userName={userName}>
       <span className="sr-only">Loading {title}</span>
-      <div className="space-y-4">
+      <div className="w-full min-w-0 space-y-4">
         {tabCount > 0 ? (
-          <div className="flex gap-2 border-b pb-2">
+          <div className="flex max-w-full gap-2 overflow-x-auto border-b pb-2">
             {Array.from({ length: tabCount }).map((_, i) => (
-              <Skeleton key={i} className="h-9 w-36" />
+              <Skeleton key={i} className="h-9 w-36 shrink-0" />
             ))}
           </div>
         ) : null}
-        <Card>
+        <Card className="w-full min-w-0">
           <CardHeader>
-            <Skeleton className="h-6 w-64" />
+            <Skeleton className="h-6 w-full max-w-64" />
             <Skeleton className="mt-2 h-4 w-full max-w-2xl" />
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <Skeleton className="h-4 w-40" />
-              <div className="flex w-full gap-2 md:w-auto md:justify-end">
+              <div className="flex w-full flex-col gap-2 sm:flex-row md:w-auto md:justify-end">
                 <Skeleton className="h-10 flex-1 md:w-80" />
-                <Skeleton className="h-10 w-28" />
+                <Skeleton className="h-10 w-full sm:w-28" />
               </div>
             </div>
             <div className="overflow-x-auto rounded-md border">

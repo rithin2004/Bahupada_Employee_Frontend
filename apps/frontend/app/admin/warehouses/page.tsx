@@ -23,19 +23,19 @@ export default async function AdminWarehousesPage({
 
   return (
     <AppShell role="admin" activeKey="warehouses" userName="Admin User">
-      <div className="space-y-6">
+      <div className="w-full min-w-0 space-y-6">
         <div className="space-y-2">
           <h2 className="text-2xl font-semibold tracking-tight">Warehouse Module</h2>
         </div>
-        <Tabs defaultValue={selectedTab} className="w-full">
-          <TabsList>
+        <Tabs defaultValue={selectedTab} className="w-full min-w-0">
+          <TabsList className="max-w-full overflow-x-auto">
             <TabsTrigger value="warehouses">Warehouses</TabsTrigger>
             <TabsTrigger value="racks">Racks</TabsTrigger>
           </TabsList>
-          <TabsContent value="warehouses">
+          <TabsContent value="warehouses" className="min-w-0">
             <WarehousesAdminEditor />
           </TabsContent>
-          <TabsContent value="racks">
+          <TabsContent value="racks" className="min-w-0">
             <RacksAdminEditor />
           </TabsContent>
         </Tabs>

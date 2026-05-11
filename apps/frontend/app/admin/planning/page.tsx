@@ -4,7 +4,9 @@ import { PlanningAdminEditor } from "@/components/modules/planning-admin-editor"
 export default function AdminPlanningPage() {
   return (
     <AppShell role="admin" activeKey="planning" userName="Admin User">
-      <PlanningAdminEditor />
+      <div className="w-full min-w-0">
+        <PlanningAdminEditor />
+      </div>
     </AppShell>
   );
 }

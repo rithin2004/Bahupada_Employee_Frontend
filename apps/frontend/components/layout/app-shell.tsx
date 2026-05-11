@@ -236,7 +236,7 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
         />
       ) : null}
 
-      <div className="mx-auto flex min-h-screen max-w-[1680px]">
+      <div className="flex min-h-screen w-full">
         <div
           className="relative hidden lg:block lg:w-[88px] lg:shrink-0"
           onMouseEnter={() => setDesktopSidebarExpanded(true)}
@@ -370,7 +370,7 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
           </nav>
         </aside>
 
-        <div className="flex min-h-screen min-w-0 flex-col">
+        <div className="flex min-h-screen min-w-0 flex-1 flex-col">
           <header className="border-b bg-card px-4 py-3 md:px-6">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex items-start gap-2">
@@ -415,7 +415,7 @@ function AppShellInner({ role, activeKey, userName, children }: AppShellProps) {
               </div>
             </div>
           </header>
-          <main className="flex-1 min-w-0 p-4 md:p-6">{children}</main>
+          <main className="min-w-0 flex-1 p-3 sm:p-4 md:p-6">{children}</main>
         </div>
       </div>
       <Dialog open={notificationsOpen} onOpenChange={setNotificationsOpen}>

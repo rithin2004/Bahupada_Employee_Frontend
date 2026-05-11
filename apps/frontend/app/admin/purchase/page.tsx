@@ -130,7 +130,7 @@ function PurchaseModuleTabs({
   const entryNav = useOptionalEntryNavigationGuard();
 
   return (
-    <div className="space-y-4">
+    <div className="w-full min-w-0 space-y-4">
       {permissionsLoaded && canReadPurchase && !canWritePurchase ? (
         <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
           Read-only access. Create and update actions are limited.
@@ -154,19 +154,19 @@ function PurchaseModuleTabs({
             }
           })();
         }}
-        className="w-full"
+        className="w-full min-w-0"
       >
-        <TabsList>
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="challan">Purchase Challan</TabsTrigger>
           <TabsTrigger value="bill">Purchase Bill</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="challan" className="mt-4">
+        <TabsContent value="challan" className="mt-4 min-w-0">
           <ProcurementCreateFlow initialTab="challan" hideTabs />
         </TabsContent>
 
-        <TabsContent value="bill" className="mt-4">
-          <div className="space-y-4">
+        <TabsContent value="bill" className="mt-4 min-w-0">
+          <div className="w-full min-w-0 space-y-4">
             {showPurchaseEntry ? (
               <PurchaseEntryWorkspace
                 canWritePurchase={canWritePurchase}
@@ -183,7 +183,7 @@ function PurchaseModuleTabs({
               />
             ) : (
               <>
-                <div className="flex items-center justify-end">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   <Button
                     onClick={() => setShowPurchaseEntry(true)}
                     disabled={!permissionsLoaded || !canWritePurchase}
