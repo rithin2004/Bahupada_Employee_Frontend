@@ -73,7 +73,6 @@ const DEFAULT_PAGE_SIZE = 50;
 
 const EMPTY_CREATE_FORM = {
   firm_name: "",
-  brand_ids: [] as string[],
   purchase_type: "CENTRAL",
   gstin: "",
   pan: "",
@@ -92,6 +91,10 @@ const EMPTY_CREATE_FORM = {
   area_id: "",
   route_id: "",
 };
+
+function deriveTaxTypeFromGstin(gstin: string) {
+  return gstin.trim().toUpperCase().startsWith("37") ? "LOCAL" : "CENTRAL";
+}
 
 const EMPTY_CATEGORY_FORM = {
   code: "",
@@ -410,6 +413,7 @@ export function VendorsAdminEditor() {
     try {
       await postBackend("/masters/vendors", {
         firm_name: createForm.firm_name.trim(),
+        purchase_type: deriveTaxTypeFromGstin(createForm.gstin),
         gstin: createForm.gstin.trim() || null,
         pan: createForm.pan.trim() || null,
         owner_name: createForm.owner_name.trim() || null,
@@ -496,7 +500,7 @@ export function VendorsAdminEditor() {
         city: String(details.city ?? ""),
         state: String(details.state ?? ""),
         pincode: String(details.pincode ?? ""),
-        purchase_type: String(details.purchase_type ?? ""),
+        purchase_type: String(details.purchase_type ?? "") || deriveTaxTypeFromGstin(String(details.gstin ?? gstin)),
       };
       if (target === "create") {
         setCreateForm((prev) => ({
@@ -661,10 +665,10 @@ export function VendorsAdminEditor() {
                 <Button>Add Vendor</Button>
               </DialogTrigger>
             ) : null}
-            <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
-              <DialogHeader>
-                <DialogTitle>Add Vendor</DialogTitle>
-                <DialogDescription>GSTIN lookup can fill the available TaxPro government profile fields.</DialogDescription>
+            <DialogContent className="max-h-[88vh] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono sm:max-w-4xl">
+              <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
+                <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Vendor</DialogTitle>
+                <DialogDescription className="text-white/80">GSTIN lookup can fill the available TaxPro government profile fields.</DialogDescription>
               </DialogHeader>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1 md:col-span-2">
@@ -678,7 +682,7 @@ export function VendorsAdminEditor() {
                 <div className="space-y-1">
                   <Label>GSTIN *</Label>
                   <div className="flex gap-2">
-                    <Input value={createForm.gstin} onChange={(e) => setCreateForm((prev) => ({ ...prev, gstin: e.target.value }))} />
+                    <Input value={createForm.gstin} onChange={(e) => setCreateForm((prev) => ({ ...prev, gstin: e.target.value, purchase_type: deriveTaxTypeFromGstin(e.target.value) }))} />
                     <Button
                       type="button"
                       variant="outline"
@@ -982,7 +986,10 @@ export function VendorsAdminEditor() {
                             <div className="space-y-1">
                               <Label>GSTIN *</Label>
                               <div className="flex gap-2">
-                                <Input value={selected.gstin} onChange={(e) => updateSelected("gstin", e.target.value)} />
+                                <Input value={selected.gstin} onChange={(e) => {
+                                  updateSelected("gstin", e.target.value);
+                                  updateSelected("purchase_type", deriveTaxTypeFromGstin(e.target.value));
+                                }} />
                                 <Button
                                   type="button"
                                   variant="outline"

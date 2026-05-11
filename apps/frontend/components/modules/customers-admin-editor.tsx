@@ -77,6 +77,10 @@ type AccountCategory = {
 
 const DEFAULT_PAGE_SIZE = 50;
 
+function deriveTaxTypeFromGstin(gstin: string) {
+  return gstin.trim().toUpperCase().startsWith("37") ? "LOCAL" : "CENTRAL";
+}
+
 function mapCustomerRow(row: Record<string, unknown>): CustomerRow {
   const category = asObject(row.customer_category);
   return {
@@ -409,7 +413,7 @@ export function CustomersAdminEditor() {
       const details = asObject(await fetchBackend(`/masters/customers/gstin-lookup?gstin=${encodeURIComponent(gstin)}`));
       const patch = {
         gst_number: String(details.gst_number ?? gstin),
-        tax_type: String(details.tax_type ?? ""),
+        tax_type: String(details.tax_type ?? "") || deriveTaxTypeFromGstin(String(details.gst_number ?? gstin)),
         outlet_name: String(details.firm_name ?? ""),
         owner_name: String(details.owner_name ?? ""),
         pan_number: String(details.pan ?? ""),
@@ -548,7 +552,7 @@ export function CustomersAdminEditor() {
       await postBackend("/masters/customers", {
         outlet_name: form.outlet_name.trim() || null,
         customer_type: form.customer_type,
-        tax_type: form.tax_type || null,
+        tax_type: form.tax_type || deriveTaxTypeFromGstin(trimmedGstNumber),
         customer_category_id: form.customer_category_id || null,
         account_category_id: form.account_category_id || sundryDebtorsCategory?.id || null,
         whatsapp_number: form.whatsapp_number.trim() || null,
@@ -639,10 +643,10 @@ export function CustomersAdminEditor() {
                   <Button>Add Customer</Button>
                 </DialogTrigger>
               ) : null}
-              <DialogContent className="max-h-[85vh] w-[92vw] max-w-[900px] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>Create Customer</DialogTitle>
-                  <DialogDescription>Add a customer record from the customer master schema.</DialogDescription>
+              <DialogContent className="max-h-[88vh] w-[92vw] max-w-[900px] overflow-y-auto rounded-none border border-[#5f8277] bg-[#fcfdf8] font-mono">
+                <DialogHeader className="-m-6 mb-4 border-b border-[#5f8277] bg-[#6d9187] px-6 py-3 text-white">
+                  <DialogTitle className="text-sm uppercase tracking-[0.24em]">Add Customer</DialogTitle>
+                  <DialogDescription className="text-white/80">Add a customer record from the customer master schema.</DialogDescription>
                 </DialogHeader>
 
                 <div className="grid gap-3 md:grid-cols-2">
@@ -656,7 +660,7 @@ export function CustomersAdminEditor() {
                   <div className="space-y-1">
                     <Label>GSTIN *</Label>
                     <div className="flex gap-2">
-                      <Input value={form.gst_number} onChange={(e) => setForm((prev) => ({ ...prev, gst_number: e.target.value }))} />
+                      <Input value={form.gst_number} onChange={(e) => setForm((prev) => ({ ...prev, gst_number: e.target.value, tax_type: deriveTaxTypeFromGstin(e.target.value) }))} />
                       <Button
                         type="button"
                         variant="outline"
@@ -1098,7 +1102,10 @@ export function CustomersAdminEditor() {
                                 <div className="space-y-1">
                                   <Label>GSTIN *</Label>
                                   <div className="flex gap-2">
-                                    <Input value={selected.gst_number} onChange={(e) => updateSelected("gst_number", e.target.value)} />
+                                    <Input value={selected.gst_number} onChange={(e) => {
+                                      updateSelected("gst_number", e.target.value);
+                                      updateSelected("tax_type", deriveTaxTypeFromGstin(e.target.value));
+                                    }} />
                                     <Button
                                       type="button"
                                       variant="outline"

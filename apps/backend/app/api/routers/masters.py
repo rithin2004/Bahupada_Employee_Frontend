@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, case, func, literal_column, or_, select
+from sqlalchemy import and_, case, func, literal_column, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2309,7 +2309,29 @@ async def deactivate_product_sub_category(sub_category_id: str, db: AsyncSession
 
 @router.delete("/units/{unit_id}", dependencies=[Depends(require_permission("products", "delete"))])
 async def delete_unit(unit_id: str, db: AsyncSession = Depends(get_db)):
-    obj = await _get_or_404(db, Unit, uuid.UUID(unit_id), "Unit")
+    unit_uuid = uuid.UUID(unit_id)
+    obj = await _get_or_404(db, Unit, unit_uuid, "Unit")
+    await db.execute(
+        update(Product)
+        .where(Product.primary_unit_id == unit_uuid)
+        .values(primary_unit_id=None, secondary_unit_id=None, third_unit_id=None, conv_2_to_1=None, conv_3_to_2=None, conv_3_to_1=None)
+    )
+    await db.execute(
+        update(Product)
+        .where(Product.secondary_unit_id == unit_uuid)
+        .values(secondary_unit_id=None, third_unit_id=None, conv_2_to_1=None, conv_3_to_2=None, conv_3_to_1=None)
+    )
+    await db.execute(
+        update(Product)
+        .where(Product.third_unit_id == unit_uuid)
+        .values(third_unit_id=None, conv_3_to_2=None, conv_3_to_1=None)
+    )
+    for model, fields in (
+        (PurchaseChallanItem, ("unit_1st_id", "unit_2nd_id", "unit_3rd_id")),
+        (PurchaseBillItem, ("unit_1st_id", "unit_2nd_id", "unit_3rd_id")),
+    ):
+        for field in fields:
+            await db.execute(update(model).where(getattr(model, field) == unit_uuid).values({field: None}))
     await db.delete(obj)
     try:
         await db.commit()

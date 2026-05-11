@@ -167,6 +167,7 @@ type ProductCreateForm = {
 type PricingForm = {
   productId: string;
   productName: string;
+  costPrice: string;
   mrp: string;
   aClassPrice: string;
   bClassPrice: string;
@@ -678,6 +679,21 @@ function validateFreeDiscountLine(line: LineDraft): string | null {
   return null;
 }
 
+function splitSavedQuantities(item: Record<string, unknown>) {
+  const quantity1 = item.quantity_1st == null ? "" : String(item.quantity_1st);
+  const quantity2 = item.quantity_2nd == null ? "" : String(item.quantity_2nd);
+  const quantity3 = item.quantity_3rd == null ? "" : String(item.quantity_3rd);
+  const hasSplitQuantity = [quantity1, quantity2, quantity3].some((value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0;
+  });
+  return {
+    quantity1: displayWholeQty(hasSplitQuantity ? quantity1 : String(item.quantity ?? "")),
+    quantity2: displayWholeQty(quantity2),
+    quantity3: displayWholeQty(quantity3),
+  };
+}
+
 function marginFromPrice(mrp: string | number, price: string | number) {
   const mrpValue = asDecimal(mrp);
   const priceValue = asDecimal(price);
@@ -693,7 +709,7 @@ function priceFromMargin(mrp: string | number, margin: string | number) {
 }
 
 function roundCurrency(value: number) {
-  return Number(value.toFixed(4));
+  return Math.round(value);
 }
 
 function mapVendorSummary(row: Record<string, unknown>): VendorSummary {
@@ -1112,7 +1128,8 @@ export function PurchaseEntryWorkspace({
 
         const items = asArray(data.items);
         if (items.length > 0) {
-          const mappedLines = await Promise.all(items.map(async (item) => {
+          const mappedLines = await Promise.all(items.map(async (rawItem) => {
+            const item = asObject(rawItem);
             const p = mapProductSummary(
               asObject(
                 await fetchBackend(
@@ -1120,15 +1137,15 @@ export function PurchaseEntryWorkspace({
                 ),
               ),
             );
-            // For challan mode, API returns 'quantity' field, not quantity_1st/2nd/3rd
-            // Map it to primary quantity field (quantity1)
+            const savedQuantities = splitSavedQuantities(item);
+            const savedMrp = asDecimal(item.mrp == null ? "" : String(item.mrp)) > 0 ? String(item.mrp) : p.mrp;
             const line: LineDraft = {
               id: crypto.randomUUID(),
               product: p,
-              quantity1: displayWholeQty(String(item.quantity ?? item.quantity_1st ?? "")),
-              quantity2: displayWholeQty(String(item.quantity_2nd ?? "")),
-              quantity3: displayWholeQty(String(item.quantity_3rd ?? "")),
-              mrp: roundMoney4(String(item.mrp ?? "0")),
+              quantity1: savedQuantities.quantity1,
+              quantity2: savedQuantities.quantity2,
+              quantity3: savedQuantities.quantity3,
+              mrp: roundMoney4(savedMrp || "0"),
               rateValue: roundMoney4(String(item.rate_value ?? "0")),
               rateUnitLevel: (Number(item.rate_unit_level) || 1) as 1 | 2 | 3,
               discountMode: item.discount_mode === "FREE" ? "FREE" : "PERCENT",
@@ -1851,15 +1868,18 @@ export function PurchaseEntryWorkspace({
   }, [activeRow, vendorSummary?.vendor_id]);
 
   const openPricingForLine = useCallback((rowIndex: number) => {
-    const product = linesRef.current[rowIndex]?.product;
+    const line = linesRef.current[rowIndex];
+    const product = line?.product;
     if (!product) return;
-    const mrp = roundMoney4(product.mrp || linesRef.current[rowIndex]?.mrp || "0") || "0.0000";
+    const mrp = roundMoney4(line.mrp || product.mrp || "0") || "0.0000";
+    const costPrice = roundMoney4(computeLineEffectiveUnitCost(line)) || "0.0000";
     const aClassPrice = roundMoney4(product.a_class_price || "0") || "0.0000";
     const bClassPrice = roundMoney4(product.b_class_price || "0") || "0.0000";
     const cClassPrice = roundMoney4(product.c_class_price || "0") || "0.0000";
     setPricingForm({
       productId: product.product_id,
       productName: product.name,
+      costPrice,
       mrp,
       aClassPrice,
       bClassPrice,
@@ -1877,6 +1897,7 @@ export function PurchaseEntryWorkspace({
     try {
       await patchBackend(`/masters/pricing/${pricingForm.productId}`, {
         mrp: Number(pricingForm.mrp || 0),
+        cost_price: Number(pricingForm.costPrice || 0),
         a_class_price: Number(pricingForm.aClassPrice || 0),
         b_class_price: Number(pricingForm.bClassPrice || 0),
         c_class_price: Number(pricingForm.cClassPrice || 0),
@@ -1886,6 +1907,7 @@ export function PurchaseEntryWorkspace({
         ...line,
         product: {
           ...line.product,
+          cost_price: pricingForm.costPrice,
           mrp: pricingForm.mrp,
           a_class_price: pricingForm.aClassPrice,
           b_class_price: pricingForm.bClassPrice,
@@ -2127,12 +2149,12 @@ export function PurchaseEntryWorkspace({
             unit_3rd_id: line.product?.unit_3rd_id || null,
             base_quantity: null,
             damaged_quantity: 0,
-            unit_price: line.rateValue ? parseFloat(line.rateValue) || null : null,
-            purchase_price: line.mrp ? parseFloat(line.mrp) || null : null,
+            unit_price: lineUnitPrice(line),
+            purchase_price: lineUnitPrice(line),
             rate_value: line.rateValue ? parseFloat(line.rateValue) || null : null,
             rate_unit_level: line.rateUnitLevel || null,
-            discount_percent: line.discountPercent ? parseFloat(line.discountPercent) || null : null,
-            discount_lumpsum: line.discountLumpsum ? parseFloat(line.discountLumpsum) || null : null,
+            discount_percent: line.discountMode === "FREE" ? null : (line.discountPercent ? parseFloat(line.discountPercent) || null : null),
+            discount_lumpsum: line.discountMode === "FREE" ? null : (line.discountLumpsum ? parseFloat(line.discountLumpsum) || null : null),
             discount_mode: line.discountMode,
             free_buy_quantity: line.discountMode === "FREE" ? Number(line.freeBuyQuantity || 0) : null,
             free_quantity: line.discountMode === "FREE" ? Number(line.freeQuantity || 0) : null,
@@ -2141,7 +2163,7 @@ export function PurchaseEntryWorkspace({
             line_discount_amount: computeLineDiscountAmount(line),
             line_taxable_amount: computeLineTaxableAmount(line),
             line_tax_amount: computeLineTaxAmount(line),
-            line_total_amount: line.amount ? parseFloat(line.amount) || null : null,
+            line_total_amount: Number(computeLineAmount(line).toFixed(4)),
             expiry_date: null as string | null,
           })),
         };
@@ -2183,8 +2205,8 @@ export function PurchaseEntryWorkspace({
             unit_price: lineUnitPrice(line),
             rate_value: Number(line.rateValue || 0),
             rate_unit_level: line.rateUnitLevel,
-            discount_percent: Number(line.discountPercent || 0),
-            discount_lumpsum: Number(line.discountLumpsum || 0),
+            discount_percent: line.discountMode === "FREE" ? 0 : Number(line.discountPercent || 0),
+            discount_lumpsum: line.discountMode === "FREE" ? 0 : Number(line.discountLumpsum || 0),
             discount_mode: line.discountMode,
             free_buy_quantity: line.discountMode === "FREE" ? Number(line.freeBuyQuantity || 0) : null,
             free_quantity: line.discountMode === "FREE" ? Number(line.freeQuantity || 0) : null,
@@ -2992,8 +3014,8 @@ export function PurchaseEntryWorkspace({
                           {line.discountMode === "FREE" ? "FREE" : "%/AMT"}
                         </Button>
                       </TableCell>
-                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.discountPercent) updateLine(index, { discountPercent: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
-                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.discountLumpsum) updateLine(index, { discountLumpsum: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-discountPercent`} name={`line-${index}-discountPercent`} aria-label="Discount %" ref={setLineRef(line.id, "discountPercent")} value={line.discountPercent} readOnly={viewOnly || line.discountMode === "FREE"} disabled={line.discountMode === "FREE"} onFocus={() => { setActiveRow(index); setActiveField("discountPercent"); }} onChange={(e) => updateLine(index, { discountPercent: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.discountPercent) updateLine(index, { discountPercent: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountPercent")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
+                      <TableCell className="w-[75px] py-0.5"><Input id={`line-${index}-discountLumpsum`} name={`line-${index}-discountLumpsum`} aria-label="Discount Lumpsum" ref={setLineRef(line.id, "discountLumpsum")} value={line.discountLumpsum} readOnly={viewOnly || line.discountMode === "FREE"} disabled={line.discountMode === "FREE"} onFocus={() => { setActiveRow(index); setActiveField("discountLumpsum"); }} onChange={(e) => updateLine(index, { discountLumpsum: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.discountLumpsum) updateLine(index, { discountLumpsum: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "discountLumpsum")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[60px] py-0.5"><Input id={`line-${index}-freeBuyQuantity`} name={`line-${index}-freeBuyQuantity`} aria-label="Bought quantity" ref={setLineRef(line.id, "freeBuyQuantity")} value={line.freeBuyQuantity} readOnly={viewOnly || line.discountMode !== "FREE"} disabled={line.discountMode !== "FREE"} onFocus={() => { setActiveRow(index); setActiveField("freeBuyQuantity"); }} onChange={(e) => updateLine(index, { freeBuyQuantity: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.freeBuyQuantity) updateLine(index, { freeBuyQuantity: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "freeBuyQuantity")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[55px] py-0.5"><Input id={`line-${index}-freeQuantity`} name={`line-${index}-freeQuantity`} aria-label="Free quantity" ref={setLineRef(line.id, "freeQuantity")} value={line.freeQuantity} readOnly={viewOnly || line.discountMode !== "FREE"} disabled={line.discountMode !== "FREE"} onFocus={() => { setActiveRow(index); setActiveField("freeQuantity"); }} onChange={(e) => updateLine(index, { freeQuantity: sanitizeDecimalInput4dp(e.target.value) })} onBlur={(e) => { const r = roundMoney4(e.target.value); if (r !== line.freeQuantity) updateLine(index, { freeQuantity: r }); }} onKeyDown={(e) => handleLineFieldKeyDown(e, index, "freeQuantity")} className={cn(COMPACT_GRID_INPUT_BASE, "text-center disabled:opacity-20", viewReadOnlyLineInput)} /></TableCell>
                       <TableCell className="w-[85px] py-0.5">
@@ -3028,7 +3050,7 @@ export function PurchaseEntryWorkspace({
                           readOnly
                           tabIndex={0}
                           ref={setLineRef(line.id, "lineAmount")}
-                          value={Number(line.amount || 0).toFixed(4)}
+                          value={computeLineAmount(line).toFixed(4)}
                           onFocus={() => {
                             setActiveRow(index);
                             setActiveField("lineAmount");
@@ -3685,7 +3707,11 @@ export function PurchaseEntryWorkspace({
           {pricingForm ? (
             <div className="space-y-4">
               <div className="text-sm font-semibold text-[#111714]">{pricingForm.productName}</div>
-              <div className="grid gap-3 md:grid-cols-4">
+              <div className="grid gap-3 md:grid-cols-5">
+                <div className="space-y-1">
+                  <Label htmlFor="pricing-cost">Cost</Label>
+                  <Input id="pricing-cost" value={pricingForm.costPrice} readOnly className="bg-muted/40" />
+                </div>
                 <div className="space-y-1">
                   <Label htmlFor="pricing-mrp">MRP</Label>
                   <Input
@@ -3847,7 +3873,7 @@ export function PurchaseEntryWorkspace({
             </div>
             <div className="space-y-1">
               <Label htmlFor="vendor-purchase-type">Type</Label>
-              <select id="vendor-purchase-type" name="purchase_type" ref={setVendorCreateRef("purchase_type")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.purchase_type} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, purchase_type: e.target.value as "LOCAL" | "CENTRAL" }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")}><option value="CENTRAL">CENTRAL</option><option value="LOCAL">LOCAL</option></select>
+              <Input id="vendor-purchase-type" name="purchase_type" ref={setVendorCreateRef("purchase_type")} value={vendorCreateForm.purchase_type || "Auto from GSTIN"} readOnly className="bg-muted" onKeyDown={(e) => handleVendorCreateKeyDown(e, "purchase_type")} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="vendor-gstin">GSTIN</Label>
@@ -3886,17 +3912,6 @@ export function PurchaseEntryWorkspace({
               </div>
               <select id="vendor-acc-cat" name="account_category_id" ref={setVendorCreateRef("account_category_id")} className="border-input h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorCreateForm.account_category_id} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, account_category_id: e.target.value }))} onKeyDown={(e) => handleVendorCreateKeyDown(e, "account_category_id")}><option value="">Optional</option>{vendorCategoryOptions.map((option) => <option key={option.id} value={option.id}>{option.code} - {option.name}</option>)}</select>
             </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label>Brands</Label>
-              <div className="grid max-h-40 gap-2 overflow-y-auto rounded-md border p-3 md:grid-cols-2">
-                {brandOptions.map((brand) => (
-                  <label key={brand.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={vendorCreateForm.brand_ids.includes(brand.id)} onChange={(e) => setVendorCreateForm((prev) => ({ ...prev, brand_ids: e.target.checked ? [...prev.brand_ids, brand.id] : prev.brand_ids.filter((id) => id !== brand.id) }))} />
-                    <span>{brand.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
           </div>
           <div className="flex justify-end">
             <Button ref={vendorCreateSaveRef} type="button" disabled={creatingVendor || !vendorCreateForm.firm_name.trim()} onKeyDown={(e) => {
@@ -3924,7 +3939,7 @@ export function PurchaseEntryWorkspace({
                   bank_account_number: vendorCreateForm.bank_account_number.trim() || null,
                   ifsc_code: vendorCreateForm.ifsc_code.trim() || null,
                   account_category_id: vendorCreateForm.account_category_id || null,
-                  brand_ids: vendorCreateForm.brand_ids,
+                  brand_ids: [],
                 }));
                 const createdSummary = mapVendorSummary(asObject(await fetchBackend(`/procurement/purchase-entry/vendors/${String(created.id ?? "")}/summary`)));
                 setVendorCreateOpen(false);
