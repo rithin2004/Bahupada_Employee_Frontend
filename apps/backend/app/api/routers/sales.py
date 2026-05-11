@@ -872,20 +872,6 @@ async def list_sales_entry_pending_customers(
     ]
 
 
-@router.get(
-    "/sales-entry/customers/{customer_id}/summary",
-    response_model=SalesEntryCustomerSummary,
-    dependencies=[Depends(require_permission("sales", "read"))],
-)
-async def get_sales_entry_customer_summary(
-    customer_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    _auth: AuthUserInfo = Depends(require_employee_or_admin_portal),
-):
-    customer = await db.get(Customer, customer_id)
-    if customer is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
-
 async def _build_customer_summary(db: AsyncSession, customer: Customer) -> dict[str, object]:
     now = datetime.now(timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc).date()

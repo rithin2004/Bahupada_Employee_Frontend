@@ -809,7 +809,10 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
       try {
         const payload = asObject(await fetchPortalMe());
         const isSuperAdmin = Boolean(payload.is_super_admin);
-        const purchasePermission = asObject(asObject(payload.admin_permissions).purchase);
+        const rawPerms = payload.admin_permissions;
+        const adminPerms =
+          rawPerms && typeof rawPerms === "object" && !Array.isArray(rawPerms) ? (rawPerms as Record<string, unknown>) : {};
+        const purchasePermission = asObject(adminPerms.purchase);
         const canRead = isSuperAdmin || Boolean(purchasePermission.read) || Boolean(purchasePermission.write);
         const canWrite = isSuperAdmin || Boolean(purchasePermission.write);
         if (!active) {
@@ -1237,6 +1240,9 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
     return filteredBills.slice(start, start + LIST_PAGE_SIZE);
   }, [filteredBills, billPage]);
 
+  const challansTableLoading = !permissionsLoaded || (canReadPurchase && loadingChallans);
+  const billsTableLoading = !permissionsLoaded || (canReadPurchase && loadingBills);
+
   function addProduct(product: ProductOption) {
     if (!canWritePurchase) {
       return;
@@ -1597,7 +1603,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   </tr>
                 </thead>
                 <tbody>
-                  {loadingChallans ? (
+                  {challansTableLoading ? (
                     Array.from({ length: 8 }).map((_, index) => (
                       <tr key={`challan-skeleton-${index}`} className="border-t">
                         <td className="px-3 py-2"><Skeleton className="h-5 w-40" /></td>
@@ -1608,9 +1614,15 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2"><Skeleton className="h-8 w-14" /></td>
                       </tr>
                     ))
+                  ) : permissionsLoaded && !canReadPurchase ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">
+                        You need purchase module access to view challans.
+                      </td>
+                    </tr>
                   ) : filteredChallans.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-2 text-muted-foreground">
+                      <td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">
                         No challans found.
                       </td>
                     </tr>
@@ -1698,7 +1710,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
               </DialogContent>
             </Dialog>
 
-            {!loadingChallans && filteredChallans.length > LIST_PAGE_SIZE ? (
+            {!challansTableLoading && filteredChallans.length > LIST_PAGE_SIZE ? (
               <div className="flex items-center justify-end gap-2">
                 <Button size="sm" variant="outline" onClick={() => setChallanPage(1)} disabled={challanPage <= 1}>
                   First
@@ -1794,7 +1806,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                   </tr>
                 </thead>
                 <tbody>
-                  {loadingBills ? (
+                  {billsTableLoading ? (
                     Array.from({ length: 8 }).map((_, index) => (
                       <tr key={`bill-skeleton-${index}`} className="border-t">
                         <td className="px-3 py-2"><Skeleton className="h-5 w-24" /></td>
@@ -1808,9 +1820,15 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
                         <td className="px-3 py-2"><Skeleton className="h-8 w-16" /></td>
                       </tr>
                     ))
+                  ) : permissionsLoaded && !canReadPurchase ? (
+                    <tr>
+                      <td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
+                        You need purchase module access to view bills.
+                      </td>
+                    </tr>
                   ) : filteredBills.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-2 text-muted-foreground">
+                      <td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
                         No bills found.
                       </td>
                     </tr>
@@ -1851,7 +1869,7 @@ export function ProcurementCreateFlow({ initialTab = "challan", hideTabs = false
               </table>
             </div>
 
-            {!loadingBills && filteredBills.length > LIST_PAGE_SIZE ? (
+            {!billsTableLoading && filteredBills.length > LIST_PAGE_SIZE ? (
               <div className="flex items-center justify-end gap-2">
                 <Button size="sm" variant="outline" onClick={() => setBillPage(1)} disabled={billPage <= 1}>
                   First

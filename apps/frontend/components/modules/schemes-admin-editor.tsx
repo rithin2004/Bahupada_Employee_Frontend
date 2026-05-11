@@ -113,6 +113,50 @@ const defaultSchemesUiState = {
   form: { ...EMPTY_FORM },
 };
 
+function mergeSchemesForm(persisted: unknown): typeof EMPTY_FORM {
+  const base = { ...EMPTY_FORM };
+  if (persisted == null || typeof persisted !== "object" || Array.isArray(persisted)) {
+    return base;
+  }
+  const p = persisted as Partial<typeof EMPTY_FORM> & Record<string, unknown>;
+  const product_ids = Array.isArray(p.product_ids)
+    ? (p.product_ids as unknown[]).map((id) => String(id)).filter(Boolean)
+    : base.product_ids;
+  const condition_basis: ConditionBasis =
+    p.condition_basis === "VALUE" || p.condition_basis === "WEIGHT" || p.condition_basis === "QUANTITY" ? p.condition_basis : base.condition_basis;
+  const reward_type: RewardType =
+    p.reward_type === "DISCOUNT" || p.reward_type === "FREE_ITEM" ? p.reward_type : base.reward_type;
+  let threshold_unit = (String(p.threshold_unit || base.threshold_unit) as ThresholdUnit) || base.threshold_unit;
+  if (condition_basis === "VALUE") {
+    threshold_unit = "INR";
+  } else if (condition_basis === "WEIGHT" && threshold_unit !== "GM" && threshold_unit !== "KG") {
+    threshold_unit = "KG";
+  } else if (condition_basis === "QUANTITY" && threshold_unit !== "PIECE") {
+    threshold_unit = "PIECE";
+  }
+  return {
+    ...base,
+    ...p,
+    product_ids,
+    condition_basis,
+    reward_type,
+    threshold_unit,
+    scheme_name: String(p.scheme_name ?? base.scheme_name),
+    customer_category_id: String(p.customer_category_id ?? ""),
+    threshold_value: String(p.threshold_value ?? base.threshold_value),
+    brand: String(p.brand ?? ""),
+    category: String(p.category ?? ""),
+    sub_category: String(p.sub_category ?? ""),
+    reward_discount_percent: String(p.reward_discount_percent ?? ""),
+    reward_product_id: String(p.reward_product_id ?? ""),
+    reward_product_quantity: String(p.reward_product_quantity ?? ""),
+    note: String(p.note ?? ""),
+    start_date: String(p.start_date ?? base.start_date),
+    end_date: String(p.end_date ?? base.end_date),
+    is_active: Boolean(p.is_active ?? base.is_active),
+  };
+}
+
 function mapCategory(row: Record<string, unknown>): CustomerCategory {
   return {
     id: String(row.id ?? ""),
@@ -197,8 +241,9 @@ function buildApplicabilityLabel(form: typeof EMPTY_FORM, categories: CustomerCa
   const categoryName = form.customer_category_id
     ? categories.find((item) => item.id === form.customer_category_id)?.name || "selected customers"
     : "all customer categories";
-  const scope = form.product_ids.length
-    ? `${form.product_ids.length} selected product${form.product_ids.length > 1 ? "s" : ""}`
+  const productIds = Array.isArray(form.product_ids) ? form.product_ids : [];
+  const scope = productIds.length
+    ? `${productIds.length} selected product${productIds.length > 1 ? "s" : ""}`
     : form.sub_category
       ? [form.brand, form.category, form.sub_category].filter(Boolean).join(" / ")
       : form.category
@@ -210,7 +255,9 @@ function buildApplicabilityLabel(form: typeof EMPTY_FORM, categories: CustomerCa
     form.reward_type === "DISCOUNT"
       ? `${form.reward_discount_percent || "0"}% discount`
       : `${form.reward_product_quantity || "0"} x free item`;
-  return `Applies to ${categoryName} on ${scope} when ${form.condition_basis.toLowerCase()} reaches ${form.threshold_value || "0"} ${form.threshold_unit}. Reward: ${reward}.`;
+  const basis = String(form.condition_basis ?? "VALUE").toLowerCase();
+  const unit = String(form.threshold_unit ?? "");
+  return `Applies to ${categoryName} on ${scope} when ${basis} reaches ${form.threshold_value || "0"} ${unit}. Reward: ${reward}.`;
 }
 
 function toFormFromRow(row: SchemeRow) {
@@ -252,7 +299,7 @@ export function SchemesAdminEditor() {
   const [createOpen, setCreateOpen] = useState(Boolean(persistedUiState.createOpen));
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(persistedUiState.editingId || null);
-  const [form, setForm] = useState({ ...persistedUiState.form });
+  const [form, setForm] = useState(() => mergeSchemesForm(persistedUiState.form));
 
   const [categories, setCategories] = useState<CustomerCategory[]>([]);
   const [brands, setBrands] = useState<string[]>([]);
@@ -432,7 +479,10 @@ export function SchemesAdminEditor() {
       try {
         const payload = asObject(await fetchPortalMe());
         const isSuperAdmin = Boolean(payload.is_super_admin);
-        const permission = asObject(asObject(payload.admin_permissions).schemes);
+        const rawPerms = payload.admin_permissions;
+        const adminPerms =
+          rawPerms && typeof rawPerms === "object" && !Array.isArray(rawPerms) ? (rawPerms as Record<string, unknown>) : {};
+        const permission = asObject(adminPerms.schemes);
         if (!active) {
           return;
         }
@@ -738,72 +788,14 @@ export function SchemesAdminEditor() {
                       ))}
                     </select>
                   </div>
-                  <Dialog open={addCategoryOpen} onOpenChange={setAddCategoryOpen}>
-                    <DialogTrigger asChild>
-                      <Button type="button" variant="outline" disabled={!canWriteSchemes}>
-                        + Add Category
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-lg">
-                      <DialogHeader>
-                        <DialogTitle>Add Customer Category</DialogTitle>
-                        <DialogDescription>Create the category here, then continue creating the scheme.</DialogDescription>
-                      </DialogHeader>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label htmlFor="new-scheme-category-code">Code *</Label>
-                          <Input
-                            id="new-scheme-category-code"
-                            value={newCategoryCode}
-                            onChange={(e) => setNewCategoryCode(e.target.value)}
-                            placeholder="DIST"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="new-scheme-category-name">Name *</Label>
-                          <Input
-                            id="new-scheme-category-name"
-                            value={newCategoryName}
-                            onChange={(e) => setNewCategoryName(e.target.value)}
-                            placeholder="Distributor"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="new-scheme-category-type">Customer Type *</Label>
-                          <select
-                            id="new-scheme-category-type"
-                            value={newCategoryType}
-                            onChange={(e) => setNewCategoryType((e.target.value as CustomerType) || "B2B")}
-                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                          >
-                            <option value="B2B">B2B</option>
-                            <option value="B2C">B2C</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="new-scheme-price-class">Price Class *</Label>
-                          <select
-                            id="new-scheme-price-class"
-                            value={newCategoryPriceClass}
-                            onChange={(e) => setNewCategoryPriceClass((e.target.value as "A" | "B" | "C") || "A")}
-                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                          >
-                            <option value="A">A</option>
-                            <option value="B">B</option>
-                            <option value="C">C</option>
-                          </select>
-                        </div>
-                      </div>
-                      <DialogFooter>
-                        <Button type="button" variant="outline" onClick={() => setAddCategoryOpen(false)}>
-                          Cancel
-                        </Button>
-                        <Button type="button" onClick={createInlineCategory} disabled={!canWriteSchemes || creatingCategory}>
-                          {creatingCategory ? "Adding..." : "Add Category"}
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!canWriteSchemes}
+                    onClick={() => setAddCategoryOpen(true)}
+                  >
+                    + Add Category
+                  </Button>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-3">
@@ -1249,6 +1241,68 @@ export function SchemesAdminEditor() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={addCategoryOpen} onOpenChange={setAddCategoryOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Customer Category</DialogTitle>
+            <DialogDescription>Create the category here, then continue creating the scheme.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="new-scheme-category-code">Code *</Label>
+              <Input
+                id="new-scheme-category-code"
+                value={newCategoryCode}
+                onChange={(e) => setNewCategoryCode(e.target.value)}
+                placeholder="DIST"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-scheme-category-name">Name *</Label>
+              <Input
+                id="new-scheme-category-name"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                placeholder="Distributor"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-scheme-category-type">Customer Type *</Label>
+              <select
+                id="new-scheme-category-type"
+                value={newCategoryType}
+                onChange={(e) => setNewCategoryType((e.target.value as CustomerType) || "B2B")}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="B2B">B2B</option>
+                <option value="B2C">B2C</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-scheme-price-class">Price Class *</Label>
+              <select
+                id="new-scheme-price-class"
+                value={newCategoryPriceClass}
+                onChange={(e) => setNewCategoryPriceClass((e.target.value as "A" | "B" | "C") || "A")}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="A">A</option>
+                <option value="B">B</option>
+                <option value="C">C</option>
+              </select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAddCategoryOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={createInlineCategory} disabled={!canWriteSchemes || creatingCategory}>
+              {creatingCategory ? "Adding..." : "Add Category"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

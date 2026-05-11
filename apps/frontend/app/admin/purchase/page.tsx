@@ -42,7 +42,10 @@ export default function AdminPurchasePage() {
       try {
         const payload = asObject(await fetchPortalMe());
         const isSuperAdmin = Boolean(payload.is_super_admin);
-        const purchasePermission = asObject(asObject(payload.admin_permissions).purchase);
+        const rawPerms = payload.admin_permissions;
+        const adminPerms =
+          rawPerms && typeof rawPerms === "object" && !Array.isArray(rawPerms) ? (rawPerms as Record<string, unknown>) : {};
+        const purchasePermission = asObject(adminPerms.purchase);
         const canRead = isSuperAdmin || Boolean(purchasePermission.read) || Boolean(purchasePermission.write);
         const canWrite = isSuperAdmin || Boolean(purchasePermission.write);
         if (!active) return;

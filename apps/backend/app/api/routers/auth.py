@@ -139,12 +139,13 @@ async def _load_linked_entities(db: AsyncSession, user: User) -> tuple[Employee 
 
 
 def _identifier_match_clause(normalized: str):
-    """Match login identifier to phone or email (emails compared case-insensitively)."""
+    """Match login identifier to phone, email, or username (email and username case-insensitive)."""
     parts = [User.phone == normalized]
     if "@" in normalized:
         parts.append(func.lower(User.email) == normalized.lower())
     else:
         parts.append(User.email == normalized)
+    parts.append(func.lower(User.username) == normalized.lower())
     return or_(*parts)
 
 

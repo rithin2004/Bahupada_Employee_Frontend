@@ -20,7 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -3367,15 +3367,22 @@ export function PurchaseEntryWorkspace({
       </Dialog>
 
       <Dialog open={warehousePickerOpen} onOpenChange={setWarehousePickerOpen}>
-        <DialogContent className="max-w-md border-0 bg-card p-0 font-mono">
+        <DialogContent showCloseButton={false} className="max-w-md border-0 bg-card p-0 font-mono">
           <DialogHeader className="border-b bg-[#6d9187] px-4 py-3 text-white">
             <div className="flex items-center justify-between gap-3">
-              <DialogTitle className="text-sm uppercase tracking-[0.24em]">Select Warehouse</DialogTitle>
-              {!viewOnly ? (
-                <Button type="button" variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setWarehouseCreateOpen(true)}>
-                  + Add
-                </Button>
-              ) : null}
+              <DialogTitle className="pr-2 text-sm uppercase tracking-[0.24em]">Select Warehouse</DialogTitle>
+              <div className="flex shrink-0 items-center gap-2">
+                {!viewOnly ? (
+                  <Button type="button" variant="outline" size="sm" className="h-8 border-white/30 bg-transparent px-2 text-white hover:bg-white/10 hover:text-white" onClick={() => setWarehouseCreateOpen(true)}>
+                    + Add
+                  </Button>
+                ) : null}
+                <DialogClose asChild>
+                  <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-white hover:bg-white/10 hover:text-white">
+                    Esc
+                  </Button>
+                </DialogClose>
+              </div>
             </div>
           </DialogHeader>
           <div className="p-2">
@@ -3568,7 +3575,7 @@ export function PurchaseEntryWorkspace({
       ) : null}
 
       {productSearchOpen ? (
-        <div className="absolute inset-x-0 bottom-0 top-[38%] z-30 grid border-t bg-card shadow-2xl md:grid-cols-[1.25fr_0.95fr]">
+        <div className="absolute inset-0 z-30 grid bg-card md:grid-cols-[1.2fr_0.9fr]">
           <div className="flex min-h-0 flex-col border-r">
             <div className="flex items-center justify-between border-b bg-[#6d9187] px-4 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white">
               <span>Product Selector</span>
@@ -3605,7 +3612,7 @@ export function PurchaseEntryWorkspace({
               <span className="text-right">Stock</span>
               <span className="text-right">Rate</span>
             </div>
-            <div className="max-h-[400px] min-h-0 flex-1 overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               {productResults.length ? (
                 productResults.map((product, index) => (
                   <button

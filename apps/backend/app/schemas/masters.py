@@ -168,7 +168,7 @@ class CustomerCreate(StrictModel):
     route_name: str | None = None
     pan_number: str | None = None
     pan_doc: str | None = None
-    gst_number: str
+    gst_number: str | None = None
     gst_doc: str | None = None
     whatsapp_number: str | None = None
     alternate_number: str | None = None

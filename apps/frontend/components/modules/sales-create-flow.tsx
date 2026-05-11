@@ -10,7 +10,6 @@ import {
   fetchBackendFresh,
   fetchPortalMe,
   postBackend,
-  readPortalSession,
 } from "@/lib/backend-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +59,9 @@ export function SalesCreateFlow() {
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<"challan" | "bill">("bill");
   const [editingId, setEditingId] = useState("");
+  const [activeTab, setActiveTab] = useState<"challan" | "bill">("bill");
+  const [receiptWizardOpen, setReceiptWizardOpen] = useState(false);
+  const [receiptWizardCtx, setReceiptWizardCtx] = useState<{ customerId: string; salesFinalInvoiceId?: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -67,14 +69,18 @@ export function SalesCreateFlow() {
       try {
         const payload = asObject(await fetchPortalMe());
         const isSuperAdmin = Boolean(payload.is_super_admin);
-        const permissions = asObject(payload.admin_permissions);
-        const sales = asObject(permissions.sales);
+        const rawPerms = payload.admin_permissions;
+        const adminPerms =
+          rawPerms && typeof rawPerms === "object" && !Array.isArray(rawPerms) ? (rawPerms as Record<string, unknown>) : {};
+        const sales = asObject(adminPerms.sales);
         if (!active) return;
         setCanReadSales(isSuperAdmin || Boolean(sales.read) || Boolean(sales.write));
         setCanWriteSales(isSuperAdmin || Boolean(sales.write));
         setPermissionsLoaded(true);
       } catch {
         if (!active) return;
+        setCanReadSales(false);
+        setCanWriteSales(false);
         setPermissionsLoaded(true);
       }
     })();
@@ -126,10 +132,16 @@ export function SalesCreateFlow() {
   }
 
   useEffect(() => {
-    if (permissionsLoaded && canReadSales) {
-      void loadChallans();
-      void loadBills();
+    if (!permissionsLoaded) {
+      return;
     }
+    if (!canReadSales) {
+      setLoadingChallans(false);
+      setLoadingBills(false);
+      return;
+    }
+    void loadChallans();
+    void loadBills();
   }, [permissionsLoaded, canReadSales]);
 
   const filteredChallans = challans.filter(c => 
@@ -142,9 +154,8 @@ export function SalesCreateFlow() {
     b.customer_name.toLowerCase().includes(billSearch.toLowerCase())
   );
 
-  const [activeTab, setActiveTab] = useState<"challan" | "bill">("bill");
-  const [receiptWizardOpen, setReceiptWizardOpen] = useState(false);
-  const [receiptWizardCtx, setReceiptWizardCtx] = useState<{ customerId: string; salesFinalInvoiceId?: string } | null>(null);
+  const challansTableLoading = !permissionsLoaded || (canReadSales && loadingChallans);
+  const billsTableLoading = !permissionsLoaded || (canReadSales && loadingBills);
 
   if (showWorkspace) {
     return (
@@ -228,14 +239,24 @@ export function SalesCreateFlow() {
                     </tr>
                   </thead>
                   <tbody>
-                    {loadingChallans ? (
-                      Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i} className="border-t">
-                          <td colSpan={6} className="px-3 py-4"><Skeleton className="h-4 w-full" /></td>
+                    {challansTableLoading ? (
+                      Array.from({ length: 8 }).map((_, row) => (
+                        <tr key={`sk-${row}`} className="border-t">
+                          {Array.from({ length: 6 }).map((__, col) => (
+                            <td key={col} className="px-3 py-2">
+                              <Skeleton className="h-5 w-full" />
+                            </td>
+                          ))}
                         </tr>
                       ))
+                    ) : permissionsLoaded && !canReadSales ? (
+                      <tr>
+                        <td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">
+                          You need sales module access to view challans.
+                        </td>
+                      </tr>
                     ) : filteredChallans.length === 0 ? (
-                      <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">No challans found.</td></tr>
+                      <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">No challans found.</td></tr>
                     ) : (
                       filteredChallans.map(challan => (
                         <tr key={challan.id} className="border-t">
@@ -294,14 +315,24 @@ export function SalesCreateFlow() {
                     </tr>
                   </thead>
                   <tbody>
-                    {loadingBills ? (
-                      Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i} className="border-t">
-                          <td colSpan={6} className="px-3 py-4"><Skeleton className="h-4 w-full" /></td>
+                    {billsTableLoading ? (
+                      Array.from({ length: 8 }).map((_, row) => (
+                        <tr key={`sk-b-${row}`} className="border-t">
+                          {Array.from({ length: 6 }).map((__, col) => (
+                            <td key={col} className="px-3 py-2">
+                              <Skeleton className="h-5 w-full" />
+                            </td>
+                          ))}
                         </tr>
                       ))
+                    ) : permissionsLoaded && !canReadSales ? (
+                      <tr>
+                        <td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">
+                          You need sales module access to view bills.
+                        </td>
+                      </tr>
                     ) : filteredBills.length === 0 ? (
-                      <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">No bills found.</td></tr>
+                      <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">No bills found.</td></tr>
                     ) : (
                       filteredBills.map(bill => (
                         <tr key={bill.id} className="border-t">
