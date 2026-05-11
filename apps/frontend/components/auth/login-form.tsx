@@ -198,9 +198,9 @@ export function LoginForm({ role, title, description }: LoginFormProps) {
             </DialogContent>
           </Dialog>
         </CardContent>
-        <CardFooter className="justify-between text-xs text-muted-foreground">
+        <CardFooter className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between text-xs text-muted-foreground">
           <Link href="/">Back to Login</Link>
-          <span>JWT session enabled</span>
+          <span>Bahupada ERP — secure sign-in</span>
         </CardFooter>
       </Card>
     </div>
